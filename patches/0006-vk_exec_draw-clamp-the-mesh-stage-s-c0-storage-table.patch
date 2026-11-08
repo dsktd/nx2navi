@@ -1,0 +1,43 @@
+From 46c2372c6e4abfcf1ab29cd72fc8e001806acfb3 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Sun, 8 Nov 2026 15:11:44 -0500
+Subject: [PATCH] vk_exec_draw: clamp the mesh stage's c0 storage table to the
+ 2 KiB bank
+
+---
+ runtime/vk_exec_draw.c | 9 +++++----
+ 1 file changed, 5 insertions(+), 4 deletions(-)
+
+diff --git a/runtime/vk_exec_draw.c b/runtime/vk_exec_draw.c
+index b30882d..0fdeb34 100644
+--- a/runtime/vk_exec_draw.c
++++ b/runtime/vk_exec_draw.c
+@@ -967,8 +967,8 @@ static int bind_range(VkExec *ex, uint64_t addr, uint64_t size, uint64_t align,
+     return 1;
+ }
+ 
+-static void c0_table(uint8_t *at, const p_bind_buf b[16]) {
+-    for (int r = 0; r < 16; r++) {
++static void c0_table(uint8_t *at, const p_bind_buf b[16], int rows) {
++    for (int r = 0; r < rows; r++) {
+         uint64_t a = b[r].addr;
+         uint32_t n = (uint32_t)b[r].size;
+         memcpy(at + 16 * r, &a, 8);
+@@ -994,11 +994,12 @@ void vk_c0_fill(uint8_t bank[VK_C0_BYTES], int stage, const p_bind_buf ssbo[16],
+     memset(bank, 0, VK_C0_BYTES);
+     int base = c0_ssbo_base(stage);
+     if (base < 0) return;
+-    c0_table(bank + base, ssbo);
++    int rows = (int)((VK_C0_BYTES - (uint32_t)base) / 16);  // the mesh stage's table at 0x770 has room for 9 rows, not 16
++    c0_table(bank + base, ssbo, rows < 16 ? rows : 16);
+     if (stage == NVN_STAGE_TASK || stage == NVN_STAGE_MESH) return;
+     if (stage == NVN_STAGE_CS) {
+         memcpy(bank + 0x200, dispatch, 12);
+-        c0_table(bank + 0x210, ubo);
++        c0_table(bank + 0x210, ubo, 16);
+         return;
+     }
+     const float max_point = 2047.0f;
+-- 
+2.56.0
+

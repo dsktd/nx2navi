@@ -91,10 +91,7 @@ PER_FILE_DEFINES = {
 }
 # Per-file flag replacements: the whole rtflags line for that file (see write_ninja)
 PER_FILE_FLAGS = {
-    # The kit's flags for this file (no -g, no -march, warnings off): upstream's mesh-stage c0 table overruns its
-    # 2 KiB stack bank by 112 bytes (upstream-issue-c0-mesh.md); under our flags clang parks the caller's exec pointer
-    # in that range and the game faults, under the kit's layout the Windows build gets away with it. Try the same.
-    'vk_exec_draw.c': ['-O0', '-g', '-fno-strict-aliasing', '-fdeclspec', '-w'],
+    # vk_exec_draw.c ran at -O0 to dodge the mesh-stage c0 overrun; patches/0006 fixes it on branch build
 }
 
 

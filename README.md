@@ -96,9 +96,8 @@ change run `just xlate game shaders` (the shader cache keys include the translat
 bytes past its end, which in this build zeroes the caller's exec pointer: a deterministic crash at the first
 mesh-shader scene (`upstream-issue-c0-mesh.md`, with the gdb backtrace and disassembly). `NX2NAVI_FIX_C0=0` (the
 bank left zero) passes the spot, replaying `build/v111/logs/input-20261108-032149.txt`, but the game picture is black
-with it: the shaders need those constants. What does work without a source change: `build-linux.py` compiles
-`vk_exec_draw.c` at `-O0` (PER_FILE_FLAGS), which lays the function's locals out so that the 112 bytes land on a
-dead structure; the recording replays past the spot. Cost: that file is the draw recorder, so some CPU per frame.
+with it: the shaders need those constants. The private patch 0006 clamps the table to the bank (9 rows for the mesh stage); before it, `build-linux.py`
+compiled `vk_exec_draw.c` at `-O0` so the 112 bytes landed on a dead structure, at a CPU cost in the draw recorder.
 
 Container replays are not representative past that point: Podman's default seccomp profile denies `userfaultfd`, the
 runtime logs "no asynchronous userfaultfd write protection" and copies whole pools to the GPU every frame (1.4 fps,
@@ -132,3 +131,5 @@ distribution). After `just update`, `build` may need a rebase onto the new upstr
 - `0004-shadow-sync-next-part-writes.patch`: the shadow sync copies the CPU's bytes under the next part's own GPU
   writes (the game zeroes the sky-SH block on the CPU each frame; skipping that whitened the lighting outdoors).
 - `0005-watch-range-log.patch`: `NX2NAVI_WATCH=<addr>:<size>` logs what touches a guest range (debug).
+- `0006-vk_exec_draw-clamp-the-mesh-stage-s-c0-storage-table.patch`: the mesh stage's c0 storage table stops at the
+  2 KiB bank (upstream-issue-c0-mesh.md), so `vk_exec_draw.c` builds at the normal `-O2` again instead of `-O0`.
