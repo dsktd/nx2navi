@@ -1,0 +1,378 @@
+From 087f7bcf7db481e6a8590babec794e2b91db95d4 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Sun, 8 Nov 2026 14:00:43 -0500
+Subject: [PATCH] Shader hot-reload test switch and on-request frame shots
+
+NX2NAVI_SHADER_RELOAD=1 watches the shader cache folder (inotify). A rewritten
+<key>.spv of a shader in memory replaces its SPIR-V; its pipelines and stage
+libraries leave the tables (kept alive, not destroyed) and rebuild at the next
+draw, and the draw memos look again. A build that fails puts the old SPIR-V and
+pipelines back. One log line per reload: key, ok or failed.
+
+With it, a file shot.req beside the cache folder writes the next present at
+full size to logs/shot-<n>.png there and is deleted.
+---
+ runtime/boot.c         |  19 +++++-
+ runtime/cfg.c          |   2 +-
+ runtime/gfx.h          |   5 ++
+ runtime/gfx_shader.c   |  65 +++++++++++++++++++++
+ runtime/vk.h           |   2 +
+ runtime/vk_backend.c   |   1 +
+ runtime/vk_exec_draw.c |   8 ++-
+ runtime/vk_pipeline.c  | 127 +++++++++++++++++++++++++++++++++++++++++
+ 8 files changed, 223 insertions(+), 6 deletions(-)
+
+diff --git a/runtime/boot.c b/runtime/boot.c
+index 33cc0b5..f510cea 100644
+--- a/runtime/boot.c
++++ b/runtime/boot.c
+@@ -261,7 +261,16 @@ static void series_shot(const tex_t *t, uint64_t n) {
+         if (hi) plat_file_mkdir_p(dir);
+         parsed = 1;
+     }
+-    if (world) {   // the first present at or after each step of the world clock
++    // NX2NAVI_SHADER_RELOAD=1 (test): a file shot.req beside the shader cache folder asks for this present, full size,
++    // as logs/shot-<n>.png there; the request is deleted once written
++    static int reload = -1;
++    static char req_path[PLAT_PATH_MAX];
++    if (reload < 0)
++        reload = cfg_get("NX2NAVI_SHADER_RELOAD") && atoi(cfg_get("NX2NAVI_SHADER_RELOAD")) == 1 &&
++                 gfx_shader_beside_cache("shot.req", req_path, sizeof req_path);
++    int req = reload && plat_file_exists(req_path);
++    if (req) {
++    } else if (world) {   // the first present at or after each step of the world clock
+         int64_t w = frame_step_world_us();
+         if (w < 0 || (unsigned long long)w < next || next > hi) return;
+         while (next <= (unsigned long long)w) next += step;
+@@ -271,7 +280,7 @@ static void series_shot(const tex_t *t, uint64_t n) {
+     int fmt = t->d.format;
+     int bgra = fmt == NVN_FORMAT_BGRA8 || fmt == NVN_FORMAT_BGRA8_SRGB;
+     if (!bgra && fmt != NVN_FORMAT_RGBA8 && fmt != NVN_FORMAT_RGBA8_SRGB) return;
+-    uint32_t w = t->d.width, h = t->d.height, ow = full ? w : 480, oh = full ? h : 270;
++    uint32_t w = t->d.width, h = t->d.height, ow = full || req ? w : 480, oh = full || req ? h : 270;
+     uint8_t *px = malloc(4ull * w * h), *out = malloc(4ull * ow * oh);
+     if (!px || !out) rt_fatal("boot: out of memory for a NX2NAVI_SHOTS frame");
+     view_t view;
+@@ -294,7 +303,13 @@ static void series_shot(const tex_t *t, uint64_t n) {
+         }
+     char path[PLAT_PATH_MAX];
+     snprintf(path, sizeof path, "%s/f%05llu.png", dir, (unsigned long long)n);
++    if (req) {
++        char name[64];
++        snprintf(name, sizeof name, "logs/shot-%05llu.png", (unsigned long long)n);
++        gfx_shader_beside_cache(name, path, sizeof path);
++    }
+     rt_write_png(path, out, ow, oh);
++    if (req) plat_file_delete(req_path), rt_log("boot: shot.req: present %llu written to %s", (unsigned long long)n, path);
+     free(out);
+     free(px);
+ }
+diff --git a/runtime/cfg.c b/runtime/cfg.c
+index 73fc3ef..346cf85 100644
+--- a/runtime/cfg.c
++++ b/runtime/cfg.c
+@@ -55,7 +55,7 @@ static const char *const known[] = {
+     "RENDER_SCALE", "REPLAY_ASYNC", "RTSS",
+     "REPLAY_CHECK", "RESOLVE_CHECK", "RESTART_WAIT", "ROMFS", "ROMFS_INDEX", "ROMFS_MMAP", "ROMFS_MODS", "ROMFS_PATCHES",
+     "ROMFS_PROOF_DIR", "ROMFS_VERIFY", "RSTICK_DEADZONE", "RUMBLE", "RUMBLE_CURVE", "RUMBLE_STRENGTH", "RUMBLE_TRIGGERS", "SHADER_CACHE",
+-    "SHADER_MEMO", "SHADOW_COMPARE", "SHADOW_RANGE", "SHADOW_RES", "SHADOW_SCALE", "SHARED_FONTS", "SHARPNESS", "SHOTS", "SHOTS_DIR",
++    "SHADER_MEMO", "SHADER_RELOAD", "SHADOW_COMPARE", "SHADOW_RANGE", "SHADOW_RES", "SHADOW_SCALE", "SHARED_FONTS", "SHARPNESS", "SHOTS", "SHOTS_DIR",
+     "SHOTS_FULL", "SPEED_PROBE", "SPIN", "SPIN_HANDOFF_US", "SPLIT_DRAWS", "SPLIT_US", "STICK_DEADZONE", "STICK_SENS",
+     "SWKBD_ANSWER",
+     "SWKBD_TEST", "TAA", "TEST_PAD", "TEST_PAD_AT", "TEST_PREPARE_SHADERS", "TEX_ALIAS", "TEX_MEMO", "TEX_VRAM_PRESSURE", "TIMER_1MS", "TRACE", "TXD_TRANSPOSE", "UBO_SNAPSHOT", "UPSCALER", "VK_DYN_A2C", "VK_DYN_VERTEX", "VK_NOOPT", "VK_NO_FLOAT64",
+diff --git a/runtime/gfx.h b/runtime/gfx.h
+index 15e55e2..cb67e01 100644
+--- a/runtime/gfx.h
++++ b/runtime/gfx.h
+@@ -89,6 +89,11 @@ size_t gfx_shader_warm_list(GfxWarmEnt **out);              // malloc'd; recorde
+ const GfxShader *gfx_shader_load_private(const uint8_t iid[32], int *owned);
+ void gfx_shader_release_private(const GfxShader *s);
+ const uint32_t *gfx_shader_spirv(const GfxShader *s, uint64_t *words);
++int gfx_shader_reload_start(void);                                     // NX2NAVI_SHADER_RELOAD (test)
++const GfxShader *gfx_shader_reload_next(uint32_t **spirv, uint64_t *words);
++void gfx_shader_set_spirv(const GfxShader *s, uint32_t *spirv, uint64_t words);
++void gfx_shader_name(const GfxShader *s, char out[17]);
++int gfx_shader_beside_cache(const char *name, char *out, size_t n);
+ // A shader of the runtime's own (SPIR-V and a .res.json text as the translator writes them), outside the cache and
+ // never freed; its key is the sha256 of both. NULL when the SPIR-V is malformed.
+ const GfxShader *gfx_shader_own(const uint32_t *spirv, uint64_t words, const char *res_json);
+diff --git a/runtime/gfx_shader.c b/runtime/gfx_shader.c
+index 879cb0a..8e81e39 100644
+--- a/runtime/gfx_shader.c
++++ b/runtime/gfx_shader.c
+@@ -1875,6 +1875,71 @@ const uint32_t *gfx_shader_spirv(const GfxShader *s, uint64_t *words) {
+     return s->spirv;
+ }
+ 
++// NX2NAVI_SHADER_RELOAD=1 (test): an inotify watch on the cache folder. gfx_shader_reload_next hands out a shader in
++// memory whose <key>.spv was rewritten (close after write, or a rename onto it), with the new SPIR-V read and checked
++// (malloc'd; vk_pipeline_reload_poll swaps it in). The interface (.res.json) is not read again: edits must keep it.
++#ifdef __linux__
++#include <sys/inotify.h>
++#include <unistd.h>
++static int reload_fd = -1;
++int gfx_shader_reload_start(void) {
++    paths();
++    if (!cache_dir[0] || (reload_fd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC)) < 0) return 0;
++    if (inotify_add_watch(reload_fd, cache_dir, IN_CLOSE_WRITE | IN_MOVED_TO) < 0) return close(reload_fd), reload_fd = -1, 0;
++    rt_log("gfx_shader: reload: watching %s for changed .spv files", cache_dir);
++    return 1;
++}
++const GfxShader *gfx_shader_reload_next(uint32_t **spirv, uint64_t *words) {
++    static char buf[16384] __attribute__((aligned(8)));
++    static ssize_t len, at;
++    for (;;) {
++        if (at >= len) {
++            at = 0, len = reload_fd < 0 ? -1 : read(reload_fd, buf, sizeof buf);
++            if (len <= 0) return len = 0, NULL;
++        }
++        const struct inotify_event *e = (const struct inotify_event *)(buf + at);
++        at += (ssize_t)(sizeof *e + e->len);
++        uint8_t key[32];
++        int ok = e->len >= 68 && !strcmp(e->name + 64, ".spv");
++        for (int i = 0; ok && i < 32; i++) ok = sscanf(e->name + 2 * i, "%2hhx", &key[i]) == 1;
++        GfxShader *s = ok ? mem_find(key) : NULL;
++        if (!s) continue;
++        char p[PATH_CAP + 80];
++        uint64_t size = 0;
++        snprintf(p, sizeof p, "%s/%s", cache_dir, e->name);
++        uint8_t *spv = read_file(p, &size);
++        uint32_t magic = 0;
++        if (spv && size >= 20) memcpy(&magic, spv, 4);
++        if (!spv || size % 4 || magic != 0x07230203 || !spirv_complete((const uint32_t *)spv, size / 4)) {
++            rt_log("gfx_shader: reload %.16s failed: malformed SPIR-V, the old one stays", e->name);
++            free(spv);
++            continue;
++        }
++        *spirv = (uint32_t *)spv, *words = size / 4;
++        if (s->stage == GFX_STAGE_FS) vk_hdr_shader_swap(spirv, words);
++        return s;
++    }
++}
++#else
++int gfx_shader_reload_start(void) { return 0; }
++const GfxShader *gfx_shader_reload_next(uint32_t **spirv, uint64_t *words) { return (void)spirv, (void)words, NULL; }
++#endif
++// out: <cache folder>/../<name> (shot.req and logs/ beside the cache); 0 without a cache folder
++int gfx_shader_beside_cache(const char *name, char *out, size_t n) {
++    paths();
++    return cache_dir[0] && snprintf(out, n, "%s/../%s", cache_dir, name) < (int)n;
++}
++void gfx_shader_name(const GfxShader *s, char out[17]) {   // the first 16 hex digits of its cache key
++    char hex[65];
++    key_hex(s->key, hex);
++    memcpy(out, hex, 16), out[16] = 0;
++}
++// Swaps a shader's SPIR-V (the reload); the old words stay allocated, the caller keeps or frees them.
++void gfx_shader_set_spirv(const GfxShader *s, uint32_t *spirv, uint64_t words) {
++    GfxShader *m = (GfxShader *)s;
++    m->spirv = spirv, m->words = words;
++}
++
+ int gfx_shader_stage(const GfxShader *s) { return s->stage; }
+ 
+ int gfx_shader_resources(const GfxShader *s, int kind, const GfxShaderRes **res) {
+diff --git a/runtime/vk.h b/runtime/vk.h
+index 205eb09..fe626e5 100644
+--- a/runtime/vk.h
++++ b/runtime/vk.h
+@@ -622,6 +622,8 @@ typedef struct { uint64_t graphics, compute, failures, hits, layouts, push_layou
+ void vk_pipeline_stats(VkPipeStats *s);
+ void vk_pipeline_save(void);               // writes the VkPipelineCache to pipeline-cache.bin next to nx2navi.exe
+ void vk_pipeline_autosave(void);           // vk_pipeline_save at most every 20 s, when pipelines were built since
++void vk_pipeline_reload_poll(void);         // NX2NAVI_SHADER_RELOAD=1 (test): swaps in rewritten cache .spv files
++extern volatile uint32_t vk_pipeline_epoch; // bumped when a reload drops pipelines: draw memos look again
+ void vk_pipeline_shutdown(void);           // waits for background builds, saves, destroys pipelines, layouts and the
+                                            // cache; before vk_shutdown
+ int vk_pipeline_selftest(void);            // one graphics and one compute pipeline from census shaders; 0 on success
+diff --git a/runtime/vk_backend.c b/runtime/vk_backend.c
+index b8f22ac..36e29d4 100644
+--- a/runtime/vk_backend.c
++++ b/runtime/vk_backend.c
+@@ -106,6 +106,7 @@ static void present_image(const tex_t *t, const int crop[4], uint64_t at_ns, uin
+     vk_mvprev_frame();
+     vk_mem_census(frame);
+     if (vk_dump_armed) vk_dump_present(frame);
++    vk_pipeline_reload_poll();
+     __atomic_store_n(&gfx_counters.validation_errors, (uint64_t)vk_validation_errors_total(), __ATOMIC_RELAXED);
+     const VkTexImage *img = vk_texture_get(t);
+     if (!img || !(img->aspect & VK_IMAGE_ASPECT_COLOR_BIT)) {
+diff --git a/runtime/vk_exec_draw.c b/runtime/vk_exec_draw.c
+index 21f3fb9..4618e6c 100644
+--- a/runtime/vk_exec_draw.c
++++ b/runtime/vk_exec_draw.c
+@@ -2811,7 +2811,7 @@ static int shader_memo_on(void) {
+     return SM.on;
+ }
+ 
+-static struct { int on, valid; VkPipeState s; const VkPipeInfo *info; } PM = {-1};
++static struct { int on, valid; uint32_t ep; VkPipeState s; const VkPipeInfo *info; } PM = {-1};
+ 
+ static int pipe_memo_on(void) {
+     if (PM.on < 0) PM.on = cfg_bool("NX2NAVI_PIPE_MEMO");
+@@ -2950,7 +2950,7 @@ static int prepare_draw_ex(VkExec *ex, int prim, int32_t count, int restart, int
+     VkPipeline p;
+     const char *why = NULL;
+     uint64_t w0 = 0;
+-    if (pipe_memo_on() && PM.valid && !memcmp(&PM.s, &s, sizeof s)) {
++    if (pipe_memo_on() && PM.valid && PM.ep == vk_pipeline_epoch && !memcmp(&PM.s, &s, sizeof s)) {
+         info = PM.info, pending = 0;
+         p = __atomic_load_n(&info->pipeline, __ATOMIC_ACQUIRE);
+     } else {
+@@ -2968,7 +2968,7 @@ static int prepare_draw_ex(VkExec *ex, int prim, int32_t count, int restart, int
+             p = vk_pipeline_graphics_async(&s, &info, &pending, ONESHOT_WAIT_MS);
+         }
+         PM.valid = !pending && p && info;
+-        if (PM.valid) PM.s = s, PM.info = info;
++        if (PM.valid) PM.s = s, PM.info = info, PM.ep = vk_pipeline_epoch;
+     }
+     uint64_t waited = w0 ? kern_now_ns() - w0 : 0;
+     static int wait_logs;
+@@ -3591,7 +3591,9 @@ static void mvobj_draw_(VkExec *ex, const p_draw_idx *d, VkBuffer ib, VkDeviceSi
+     ms.ds.dt = 1, ms.ds.dw = 0, ms.ds.df = (uint64_t)df, ms.ds.st = 0;
+     // the pipeline per state, kept: the lookup hashes and locks the whole state
+     static struct { VkPipeState st; VkPipeline p; const VkPipeInfo *info; int used; } pmemo[64];
++    static uint32_t pmemo_ep;   // vk_pipeline_epoch they were found at (a shader reload empties them)
+     static int plast = -1;   // the entry of the last draw: a model's parts in a row share the state, no hash then
++    if (pmemo_ep != vk_pipeline_epoch) memset(pmemo, 0, sizeof pmemo), plast = -1, pmemo_ep = vk_pipeline_epoch;
+     uint32_t pi;
+     if (plast >= 0 && pmemo[plast].used && !memcmp(&pmemo[plast].st, &ms, sizeof ms)) {
+         pi = (uint32_t)plast;
+diff --git a/runtime/vk_pipeline.c b/runtime/vk_pipeline.c
+index 2ddded8..9fd9c2e 100644
+--- a/runtime/vk_pipeline.c
++++ b/runtime/vk_pipeline.c
+@@ -3869,3 +3869,130 @@ int vk_pipeline_selftest(void) {
+     printf("vk_pipeline selftest: %s\n", ok ? "passed" : "FAILED");
+     return ok ? 0 : 1;
+ }
++
++// ---- NX2NAVI_SHADER_RELOAD=1 (test): a rewritten <key>.spv in the shader cache replaces that shader's SPIR-V in
++// memory. Its pipelines and stage libraries leave the tables (kept, not destroyed: recorded command buffers may still use
++// them) and the next draw builds them again; vk_pipeline_epoch tells the draw memos (vk_exec_draw.c) to look again. A
++// build of the new SPIR-V that fails puts the old SPIR-V and the old entries back. One log line per reload.
++volatile uint32_t vk_pipeline_epoch;
++typedef struct { const GfxShader *s; uint32_t *old; uint64_t old_words; Pipe *pipes; Lib *libs; int frames; } Reload;
++static Reload RL[32];
++static int n_rl;
++
++static int key_has(const uint8_t *key, size_t n, const GfxShader *s) {
++    for (size_t i = 0; i + sizeof s <= n; i++)
++        if (!memcmp(key + i, &s, sizeof s)) return 1;
++    return 0;
++}
++
++// Unlinks s's entries onto *ps / *ls (NULL: dropped for good). -1 while one of them builds. Caller holds P.lock.
++static int reload_unlink(const GfxShader *s, Pipe **ps, Lib **ls) {
++    if (cs_flight_has(s)) return -1;
++    for (int i = 0; i < PIPE_BUCKETS; i++)
++        for (Pipe *p = pipes[i]; p; p = p->next)
++            if (key_has(p->key, p->key_size, s) && (p->building || p->link_queued)) return -1;
++    for (int i = 0; i < LIB_BUCKETS; i++)
++        for (Lib *b = libs[i]; b; b = b->next)
++            if (key_has(b->key, b->size, s) && b->building) return -1;
++    int n = 0;
++    for (int i = 0; i < PIPE_BUCKETS; i++)
++        for (Pipe **pp = &pipes[i]; *pp;) {
++            Pipe *p = *pp;
++            if (!key_has(p->key, p->key_size, s)) { pp = &p->next; continue; }
++            *pp = p->next, n++;
++            if (ps) p->next = *ps, *ps = p;
++        }
++    for (int i = 0; i < LIB_BUCKETS; i++)
++        for (Lib **bp = &libs[i]; *bp;) {
++            Lib *b = *bp;
++            if (!key_has(b->key, b->size, s)) { bp = &b->next; continue; }
++            *bp = b->next;
++            if (ls) b->next = *ls, *ls = b;
++        }
++    __atomic_add_fetch(&vk_pipeline_epoch, 1, __ATOMIC_RELEASE);
++    return n;
++}
++
++static void reload_relink(Reload *r) {
++    for (Pipe *p = r->pipes, *n; p; p = n) n = p->next, p->next = pipes[p->hash % PIPE_BUCKETS], pipes[p->hash % PIPE_BUCKETS] = p;
++    for (Lib *b = r->libs, *n; b; b = n) n = b->next, b->next = libs[b->hash % LIB_BUCKETS], libs[b->hash % LIB_BUCKETS] = b;
++    r->pipes = NULL, r->libs = NULL;
++}
++
++static void reload_hex(const GfxShader *s, char out[17]) { gfx_shader_name(s, out); }
++
++// Once per present: the outcome of pending reloads, then new changes.
++void vk_pipeline_reload_poll(void) {
++    static int on = -1;
++    if (on < 0) {
++        const char *e = cfg_get("NX2NAVI_SHADER_RELOAD");
++        on = e && atoi(e) == 1 && gfx_shader_reload_start();
++    }
++    if (!on || !P.ready) return;
++    plat_mutex_lock(&P.lock);
++    for (int k = 0; k < n_rl; k++) {
++        Reload *r = &RL[k];
++        int built = 0, failed = 0, busy = 0;
++        r->frames++;
++        for (int i = 0; i < PIPE_BUCKETS; i++)
++            for (Pipe *p = pipes[i]; p; p = p->next)
++                if (key_has(p->key, p->key_size, r->s)) {
++                    if (p->building || p->link_queued) busy++;
++                    else if (p->info.pipeline || p->fast) built++;
++                    else failed++;
++                }
++        char hex[17];
++        reload_hex(r->s, hex);
++        if (failed && reload_unlink(r->s, NULL, NULL) >= 0) {
++            uint32_t *bad = (uint32_t *)gfx_shader_spirv(r->s, NULL);
++            gfx_shader_set_spirv(r->s, r->old, r->old_words);
++            free(bad);
++            reload_relink(r);
++            rt_log("vk_pipeline: reload %s failed: %d pipelines did not build, the old shader is back", hex, failed);
++        } else if (failed || busy || (!built && r->frames < 600)) {
++            continue;
++        } else {
++            rt_log("vk_pipeline: reload %s ok: %d pipelines rebuilt after %d frames", hex, built, r->frames);
++        }
++        RL[k--] = RL[--n_rl];
++    }
++    uint32_t *w;
++    uint64_t n;
++    const GfxShader *s;
++    while ((s = gfx_shader_reload_next(&w, &n))) {
++        char hex[17];
++        reload_hex(s, hex);
++        Reload *r = NULL;
++        for (int k = 0; k < n_rl; k++)
++            if (RL[k].s == s) r = &RL[k];
++        if (!r && n_rl == (int)(sizeof RL / sizeof *RL)) {
++            rt_log("vk_pipeline: reload %s failed: too many reloads pending", hex);
++            free(w);
++            continue;
++        }
++        // a build in flight: wait for it (a few frames at most) instead of racing it
++        int tries = 0, got;
++        if (!r) RL[n_rl].pipes = NULL, RL[n_rl].libs = NULL;
++        while ((got = r ? reload_unlink(s, NULL, NULL) : reload_unlink(s, &RL[n_rl].pipes, &RL[n_rl].libs)) < 0 && tries++ < 2000) {
++            plat_mutex_unlock(&P.lock);
++            plat_sleep_ms(1);
++            plat_mutex_lock(&P.lock);
++        }
++        if (got < 0) {
++            rt_log("vk_pipeline: reload %s failed: its pipelines kept building", hex);
++            free(w);
++            continue;
++        }
++        uint64_t ow;
++        uint32_t *old = (uint32_t *)gfx_shader_spirv(s, &ow);
++        if (r) {
++            free(old);   // the previous reload's SPIR-V; r keeps the original
++        } else {
++            r = &RL[n_rl++];
++            r->s = s, r->old = old, r->old_words = ow;
++        }
++        r->frames = 0;
++        gfx_shader_set_spirv(s, w, n);
++    }
++    plat_mutex_unlock(&P.lock);
++}
+-- 
+2.56.0
+
