@@ -139,3 +139,5 @@ distribution). After `just update`, `build` may need a rebase onto the new upstr
 - `0005-watch-range-log.patch`: `NX2NAVI_WATCH=<addr>:<size>` logs what touches a guest range (debug).
 - `0006-vk_exec_draw-clamp-the-mesh-stage-s-c0-storage-table.patch`: the mesh stage's c0 storage table stops at the
   2 KiB bank (upstream-issue-c0-mesh.md), so `vk_exec_draw.c` builds at the normal `-O2` again instead of `-O0`.
+- `0007-Screenshots-take-the-window-crop-the-present-shows-no.patch`: shot.req and NX2NAVI_SHOTS read the window
+  crop, so a 1920x1080 crop in a 2560x1440 texture is no longer saved into the top-left of a black picture.

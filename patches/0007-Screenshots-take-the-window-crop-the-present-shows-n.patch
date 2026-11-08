@@ -1,0 +1,85 @@
+From cfda1f65a68970cb29d8b2d4265f60f09f4c39d9 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Sun, 8 Nov 2026 15:37:36 -0500
+Subject: [PATCH] Screenshots take the window crop the present shows, not the
+ whole swapchain texture
+
+---
+ runtime/boot.c        | 16 +++++++++++-----
+ runtime/gfx.h         |  2 +-
+ runtime/nvn_api_obj.c |  2 +-
+ 3 files changed, 13 insertions(+), 7 deletions(-)
+
+diff --git a/runtime/boot.c b/runtime/boot.c
+index f510cea..29849a1 100644
+--- a/runtime/boot.c
++++ b/runtime/boot.c
+@@ -244,7 +244,9 @@ static void save_shot(const tex_t *t, const char *path) {
+ // present), box-filtered to 480x270; NX2NAVI_SHOTS=w<lo>-<hi>:<step> takes them by world-clock seconds instead, the first
+ // present at or after each step (full size with NX2NAVI_SHOTS_FULL=1), for finding short glitches. Pipeline builds stay asynchronous, so the
+ // pictures show what a player sees.
+-static void series_shot(const tex_t *t, uint64_t n) {
++// crop: the window crop the present shows (x, y, w, h; zero size for the whole image), so the picture is what a player
++// sees and not the whole swapchain texture the game renders a smaller frame into.
++static void series_shot(const tex_t *t, const int crop[4], uint64_t n) {
+     static int parsed;
+     static unsigned long long lo, hi, step, next;
+     static const char *dir;
+@@ -280,12 +282,16 @@ static void series_shot(const tex_t *t, uint64_t n) {
+     int fmt = t->d.format;
+     int bgra = fmt == NVN_FORMAT_BGRA8 || fmt == NVN_FORMAT_BGRA8_SRGB;
+     if (!bgra && fmt != NVN_FORMAT_RGBA8 && fmt != NVN_FORMAT_RGBA8_SRGB) return;
+-    uint32_t w = t->d.width, h = t->d.height, ow = full || req ? w : 480, oh = full || req ? h : 270;
++    int cx = 0, cy = 0;
++    uint32_t w = t->d.width, h = t->d.height;
++    if (crop && crop[2] > 0 && crop[3] > 0 && (uint32_t)(crop[0] + crop[2]) <= w && (uint32_t)(crop[1] + crop[3]) <= h)
++        cx = crop[0], cy = crop[1], w = (uint32_t)crop[2], h = (uint32_t)crop[3];
++    uint32_t ow = full || req ? w : 480, oh = full || req ? h : 270;
+     uint8_t *px = malloc(4ull * w * h), *out = malloc(4ull * ow * oh);
+     if (!px || !out) rt_fatal("boot: out of memory for a NX2NAVI_SHOTS frame");
+     view_t view;
+     memset(&view, 0, sizeof view);
+-    NVNcopyRegion r = {.width = (int)w, .height = (int)h, .depth = 1};
++    NVNcopyRegion r = {.xoffset = cx, .yoffset = cy, .width = (int)w, .height = (int)h, .depth = 1};
+     if (gfx_replay_async()) gfx_backend()->finish();   // the presented frame may still be queued for the replay
+     gfx_backend()->read_texels(t, &view, &r, px, 4ull * w, 4ull * w * h);
+     for (uint32_t y = 0; y < oh; y++)
+@@ -317,9 +323,9 @@ static void series_shot(const tex_t *t, uint64_t n) {
+ // A --seconds run ends at the first present after the world clock (game time since the save's first frame,
+ // frame_step_world_us) passed S seconds, so a run covers the same game time at any frame rate; any other frame is
+ // counted by the back end only.
+-void rt_frame_presented(const tex_t *t, uint64_t n) {
++void rt_frame_presented(const tex_t *t, const int crop[4], uint64_t n) {
+     const RtConfig *cfg = rt_config();
+-    series_shot(t, n);
++    series_shot(t, crop, n);
+     int64_t w = cfg->seconds ? frame_step_world_us() : -1;
+     if (w < 0 || (double)w < cfg->seconds * 1e6) return;
+     if (cfg->shot) save_shot(t, cfg->shot);
+diff --git a/runtime/gfx.h b/runtime/gfx.h
+index cb67e01..8c2b609 100644
+--- a/runtime/gfx.h
++++ b/runtime/gfx.h
+@@ -165,7 +165,7 @@ uint64_t nvn_proc_address(const char *name);               // synthetic host add
+ typedef struct { uint64_t frames, nvn_calls, nvn_distinct, unimplemented, validation_errors, shader_failures,
+                  draws_skipped; } GfxStats;
+ GfxStats gfx_stats(void);
+-void rt_frame_presented(const tex_t *t, uint64_t n);       // boot.c: --frames N ends the run after the Nth present
++void rt_frame_presented(const tex_t *t, const int crop[4], uint64_t n);       // boot.c: --frames N ends the run after the Nth present
+                                                            // (saves --shot first through read_texels)
+ 
+ // Movie overlay (ov_movie2.c -> gfx_present.c): the latest decoded movie frame, RGBA8, shown over the game image
+diff --git a/runtime/nvn_api_obj.c b/runtime/nvn_api_obj.c
+index bb2e354..ebebb5e 100644
+--- a/runtime/nvn_api_obj.c
++++ b/runtime/nvn_api_obj.c
+@@ -850,5 +850,5 @@ NVN_API(nvnQueuePresentTexture) {
+     if (fe) *fe = nvn_fence_last();   // the frame drawn into it (nvnWindowAcquireTexture waits for it)
+     last_present_fence = nvn_fence_last();
+     frame_step_present(slot, o->interval);   // frame_rate.c: the real-time step follows the display times
+-    rt_frame_presented(t, o->presents);
++    rt_frame_presented(t, o->crop, o->presents);
+ }
+-- 
+2.56.0
+
