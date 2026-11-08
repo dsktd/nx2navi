@@ -1,0 +1,90 @@
+From a95dcb27c49e5048e5416b8755329c743131f514 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Sun, 8 Nov 2026 17:03:20 -0500
+Subject: [PATCH] vk_memory: the shadow sync queries neighbouring pools
+ together
+
+---
+ runtime/vk_memory.c | 45 +++++++++++++++++++++++++++++++++++++++------
+ 1 file changed, 39 insertions(+), 6 deletions(-)
+
+diff --git a/runtime/vk_memory.c b/runtime/vk_memory.c
+index 6d6efc1..84e323d 100644
+--- a/runtime/vk_memory.c
++++ b/runtime/vk_memory.c
+@@ -1011,12 +1011,11 @@ static void shadow_copy(PoolRec *r, uint64_t a, uint64_t b, int i) {
+     s_copied += b - a;
+ }
+ 
+-// shadow_lock and gen_lock held: stamps the pool's written pages and copies those newer than its shadow.
+-static void shadow_sync_pool(PoolRec *r) {
+-    uint64_t lo = r->import_lo, hi = r->import_hi;
+-    uint32_t g = ++gen_now;
++// gen_lock held: stamps the written pages of [lo, hi) with g, one query per run of regions that are not frozen. 0: some
++// of it is not write-watched.
++static int shadow_query(uint64_t lo, uint64_t hi, uint32_t g) {
+     int tracked = 1;
+-    for (uint64_t a = lo; a < hi;) {   // one query per run of regions that are not frozen
++    for (uint64_t a = lo; a < hi;) {
+         uint64_t b = (a | ((1ull << REG_SHIFT) - 1)) + 1;
+         if (b > hi) b = hi;
+         if (mem_frozen(a)) { a = b; continue; }
+@@ -1025,6 +1024,12 @@ static void shadow_sync_pool(PoolRec *r) {
+         if (!query_stamp(a, b, g)) tracked = 0;
+         a = b;
+     }
++    return tracked;
++}
++
++// shadow_lock and gen_lock held, the pool's pages stamped (shadow_query): copies those newer than its shadow.
++static void shadow_sync_pool(PoolRec *r, int tracked) {
++    uint64_t lo = r->import_lo, hi = r->import_hi;
+     uint32_t since = r->sgen;
+     r->sgen = gen_now;
+     if (!tracked) {   // nothing tells which pages changed: all of them
+@@ -1051,13 +1056,41 @@ static void shadow_sync_pool(PoolRec *r) {
+     if (run) shadow_copy(r, run, hi, 0);
+ }
+ 
++static int pool_by_lo(const void *a, const void *b) {
++    uint64_t x = (*(PoolRec *const *)a)->import_lo, y = (*(PoolRec *const *)b)->import_lo;
++    return x < y ? -1 : x > y;
++}
++
++// The touched pools are queried together, by address, under one generation: neighbouring pools (NVN pools are small,
++// often a few pages apart) share one write-watch query instead of one each, about 300 queries per frame in the haze
++// before. A gap of up to SHADOW_GAP between them is queried too: what it finds is stamped like any other write.
++#define SHADOW_GAP (64u << 10)
++static uint8_t *stracked;
++static int cstracked;
++
+ void vk_mem_shadow_sync(void) {
+     if (!shadow_on) return;
+     uint64_t t0 = qpc();
+     plat_mutex_lock(&shadow_lock);
+     if (nstouch) {
+         plat_mutex_lock(&gen_lock);
+-        for (int i = 0; i < nstouch; i++) shadow_sync_pool(stouch[i]), stouch[i]->stouched = 0;
++        qsort(stouch, (size_t)nstouch, sizeof *stouch, pool_by_lo);
++        if (cstracked < nstouch) {
++            cstracked = nstouch * 2;
++            stracked = realloc(stracked, (size_t)cstracked);
++            if (!stracked) rt_fatal("vk: out of memory (shadow sync)");
++        }
++        uint32_t g = ++gen_now;
++        for (int i = 0; i < nstouch;) {   // runs of pools no more than SHADOW_GAP apart
++            uint64_t lo = stouch[i]->import_lo, hi = stouch[i]->import_hi;
++            int j = i + 1;
++            for (; j < nstouch && stouch[j]->import_lo <= hi + SHADOW_GAP; j++)
++                if (stouch[j]->import_hi > hi) hi = stouch[j]->import_hi;
++            int tracked = shadow_query(lo, hi, g);
++            for (; i < j; i++)   // a run that failed (a gap not write-watched): its pools on their own
++                stracked[i] = (uint8_t)(tracked || shadow_query(stouch[i]->import_lo, stouch[i]->import_hi, g));
++        }
++        for (int i = 0; i < nstouch; i++) shadow_sync_pool(stouch[i], stracked[i]), stouch[i]->stouched = 0;
+         plat_mutex_unlock(&gen_lock);
+         s_syncs += (uint64_t)nstouch;
+         nstouch = 0;
+-- 
+2.56.0
+
