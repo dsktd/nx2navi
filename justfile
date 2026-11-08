@@ -27,9 +27,9 @@ wrapper := if gpu == "nvidia" { "nixVulkanNvidia" } else { "nixVulkanIntel" }
 # SDL otherwise picks X11 (XWayland) on the desktop; the game is a plain Wayland client
 # SDL_JOYSTICK_HIDAPI_STEAM=0: SDL must not drive the Steam Controller itself (its hidraw nodes are open on the desktop);
 # yakin owns it and presents the pad SDL sees
-# NX2NAVI_FIX_C0=0: upstream's mesh-stage c0 table overruns its 2 KiB bank onto the stack (upstream-issue-c0-mesh.md);
-# with the bank fill off the game passes the first mesh-shader scene. Interim until upstream fixes it.
-radv := "SDL_VIDEODRIVER=wayland SDL_JOYSTICK_HIDAPI_STEAM=0 NX2NAVI_FIX_C0=0 " + (if mesa == "stable" { "" } else { "RADV_DEBUG=nogpl " }) + "NX2NAVI_PIPE_SKIP=" + pipeskip
+# (NX2NAVI_FIX_C0=0 avoids the mesh-stage c0 overflow crash, upstream-issue-c0-mesh.md, but the picture goes black:
+# the shaders read zeros for their driver constants. Not usable; the fix has to land upstream.)
+radv := "SDL_VIDEODRIVER=wayland SDL_JOYSTICK_HIDAPI_STEAM=0 " + (if mesa == "stable" { "" } else { "RADV_DEBUG=nogpl " }) + "NX2NAVI_PIPE_SKIP=" + pipeskip
 dev := "NX2NAVI_NVIDIA=" + (if gpu == "nvidia" { "1" } else { "0" }) + " nix develop " + impure + " " + flake + shellname + " --command"
 py := ".venv/bin/python"
 py314 := ".venv-py314/bin/python"

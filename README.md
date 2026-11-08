@@ -83,9 +83,9 @@ beside the runtime and renames upstream's versions with per-file `-D` flags, so 
 
 `runtime/vk_exec_draw.c` writes the mesh stage's 16-entry storage table at 0x770 of a 0x800-byte stack bank, 112
 bytes past its end, which in this build zeroes the caller's exec pointer: a deterministic crash at the first
-mesh-shader scene (`upstream-issue-c0-mesh.md`, with the gdb backtrace and disassembly). The justfile runs with
-`NX2NAVI_FIX_C0=0` (the bank is left zero) until upstream clamps the table; `tools/run_game`-style replays of the
-recording in `build/v111/logs/input-20261108-032149.txt` pass the spot with it.
+mesh-shader scene (`upstream-issue-c0-mesh.md`, with the gdb backtrace and disassembly). `NX2NAVI_FIX_C0=0` (the
+bank left zero) passes the spot, replaying `build/v111/logs/input-20261108-032149.txt`, but the game picture is black
+with it: the shaders need those constants. So the game stops at that scene until upstream clamps the table.
 
 ## Status
 
