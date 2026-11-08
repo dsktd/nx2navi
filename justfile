@@ -24,7 +24,8 @@ impure := if gpu == "nvidia" { "--impure" } else { "" }
 wrapper := if gpu == "nvidia" { "nixVulkanNvidia" } else { "nixVulkanIntel" }
 # RADV (Mesa 26.2.6) segfaults in its graphics pipeline library path while this game builds pipelines
 # (libvulkan_radeon.so+0x19be92, found 2026-11-08 on an RX 6900 XT); without it the runtime builds whole pipelines
-radv := (if mesa == "stable" { "" } else { "RADV_DEBUG=nogpl " }) + "NX2NAVI_PIPE_SKIP=" + pipeskip
+# SDL otherwise picks X11 (XWayland) on the desktop; the game is a plain Wayland client
+radv := "SDL_VIDEODRIVER=wayland " + (if mesa == "stable" { "" } else { "RADV_DEBUG=nogpl " }) + "NX2NAVI_PIPE_SKIP=" + pipeskip
 dev := "NX2NAVI_NVIDIA=" + (if gpu == "nvidia" { "1" } else { "0" }) + " nix develop " + impure + " " + flake + shellname + " --command"
 py := ".venv/bin/python"
 py314 := ".venv-py314/bin/python"

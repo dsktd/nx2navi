@@ -64,8 +64,10 @@ from the shell (a desktop entry can call `nix develop ~/claude/nx2navi --command
 Mesa 26.2.6's RADV crashes (`libvulkan_radeon.so+0x19be92`, writing address 0x40) while the game builds pipelines
 through `VK_EXT_graphics_pipeline_library`, on the RX 6900 XT, inside the container and on the host alike. The
 justfile runs the shader preparation and the game with `RADV_DEBUG=nogpl`; the runtime then builds whole pipelines,
-and the vertex and fragment variants compile at their first draw (stutter on the first visit to an area). Retest
-without it on a newer Mesa.
+and the vertex and fragment variants compile at their first draw (stutter on the first visit to an area). Mesa 25.2.6
+(`just mesa=stable ...`, nixpkgs stable through a second nixGL) crashes the same way, so it is not one release.
+Because whole pipelines build slowly, the justfile also sets `NX2NAVI_PIPE_SKIP=strict`: full-screen draws wait for
+their pipeline instead of being skipped, which otherwise shows as a black game picture under a working overlay.
 
 ## Linux fixes outside the checkout (runtime-linux/)
 
