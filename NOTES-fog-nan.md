@@ -151,3 +151,18 @@ Proper fix: a translator patch in the justfile's patch series honouring Fmz in F
 - Next: proper translator fix (honour Fmz in FMUL/FFMA/FMUL32I/FFMA32I emitters, patch series). The blanket pass is a
   diagnostic superset: it also changes multiplies that had no .FMZ (only matters for 0*inf/NaN, so low risk).
   Then re-check the fog density with the fix applied everywhere.
+
+## Translator FMZ patch (2026-11-08): a no-op on this game
+
+- patches/0002-xlate-honour-fmz.patch makes FMUL/FFMA/FMUL32I/FFMA32I with Fmz == Fmz emit (a==0||b==0) ? 0 : a*b
+  (FFMA: ? c : fma). tools/build-xlate-private.py runs build_xlate.py with it applied. Not hooked into `just xlate`.
+- It changes nothing: the shaders are sm86, and AmpereLowering.cs (Fmul/Ffma) throws on bit 81 (the FMZ half of the
+  80-81 field) and copies only bit 80 (FTZ). 0 lowering failures over 44,156 shaders, so no game shader uses FMZ
+  (docs/maxwell.md check 13 agrees: FMZ in 1 instruction). All 289 SPIR-V of frame 820 are byte-identical with and without.
+- So the hardware's pow(0,0) and the fmz-all lighting win do not come from FMZ. The fmz-pow / fmz-all effect still has
+  to be explained (candidates: MUFU.LG2/EX2 semantics on sm86, or a lowering detail). fmz-pow.py stays needed.
+- A fresh cache (any translator, NX2NAVI_SHADER_CACHE empty or with a copy of in/) renders the world black at frames
+  700/820/1100: the fog composite (fs 3bdeddef, pass ~169) writes 0, i.e. the raw pow NaN that fmz-pow fixes.
+- Private full re-translate: copy the live in/ (44,156 stored inputs, 629 MB) into an empty cache; prewarm translates
+  43,453 in 145 s with 16 translators, 0 failed.
+- spirv-val: 8 of 289 frame shaders fail in base and fix alike (StorageImageReadWithoutFormat missing), pre-existing.
