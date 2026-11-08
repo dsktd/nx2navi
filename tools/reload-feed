@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# reload-feed: every 10 s, sum the running game's shader hot-reloads into the screensaver feed.
+# One line per busy interval: "reload: 37 shaders (2 drawn, 35 unused), 1 failed".
+FEED=$HOME/claude/.services/screensavers/feeds/nx2navi-lab.log
+LOGS=$HOME/claude/nx2navi/NX2navi/build/v111/logs
+while :; do
+  L=$(ls -t "$LOGS"/play-*.log 2>/dev/null | head -1)
+  [ -n "$L" ] || { sleep 10; continue; }
+  timeout 10 tail -n 0 -f "$L" | grep -a --line-buffered 'vk_pipeline: reload' >"$LOGS/.reload-tick" || true
+  n=$(wc -l <"$LOGS/.reload-tick"); [ "$n" -gt 0 ] || continue
+  drawn=$(grep -vc ' 0 pipelines\|not in use' "$LOGS/.reload-tick")
+  bad=$(grep -c 'fail' "$LOGS/.reload-tick")
+  echo "$(date +%H:%M) reload: $n shaders ($drawn drawn, $((n-drawn)) unused)${bad:+, $bad failed}" | sed 's/, 0 failed//' >>"$FEED"
+done
