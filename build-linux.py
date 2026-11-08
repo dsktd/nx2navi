@@ -81,6 +81,16 @@ def step_glue(src, py, extracted, out, lift):
     return gen
 
 
+HERE = Path(__file__).resolve().parent
+# Our Linux additions (runtime-linux/), compiled beside upstream's runtime, and the per-file defines that wire them in
+# without editing the checkout: see runtime-linux/frames.c
+EXTRA_SOURCES = [HERE / 'runtime-linux' / 'frames.c']
+PER_FILE_DEFINES = {
+    'platform/linux.c': '-Dplat_frame_capture=plat_frame_capture_stub',
+    'guest_setjmp.c': '-Dplat_frame_capture=nx_frame_capture -Dlongjmp=nx_frame_resume',
+}
+
+
 def write_ninja(src, out, lift, gen, cpu):
     runtime = src / 'runtime'
     march = f'-march=x86-64-{cpu}'
@@ -118,11 +128,14 @@ def write_ninja(src, out, lift, gen, cpu):
             o = out / 'obj' / mod / (f.stem + '.o')
             lines.append(f'build {npath(o)}: cc_gen {npath(f)}')
             objs.append(o)
-    sources = runtime_sources(runtime) + [gen / 'modules.c']
+    sources = runtime_sources(runtime) + [gen / 'modules.c'] + EXTRA_SOURCES
     for s in sources:
         rel = s.relative_to(runtime) if s.is_relative_to(runtime) else Path(s.name)
         o = out / 'obj' / 'runtime' / rel.with_suffix('.o')
         lines.append(f'build {npath(o)}: cc_rt {npath(s)}')
+        extra = PER_FILE_DEFINES.get(rel.as_posix())
+        if extra:
+            lines.append(f'  rtflags = $rtflags {extra}')
         objs.append(o)
     exe = out / 'nx2navi'
     lines += [f'build {npath(exe)}: link ' + ' '.join(npath(o) for o in objs), f'default {npath(exe)}', '']
