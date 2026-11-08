@@ -25,7 +25,8 @@ import sys
 from pathlib import Path
 
 GEN_FLAGS = ['-O1', '-fno-strict-aliasing', '-Wno-return-type', '-Wno-unused-label', '-fvisibility=hidden']
-RT_FLAGS = ['-O2', '-g', '-Wall', '-fno-strict-aliasing']
+# -fdeclspec: third_party/ffx_api/ffx_api.h declares its entry points __declspec(dllexport) on every OS
+RT_FLAGS = ['-O2', '-g', '-Wall', '-fno-strict-aliasing', '-fdeclspec']
 LINK_FLAGS = ['-fuse-ld=lld', '-no-pie', '-Wl,-z,noexecstack', '-Wl,-rpath,$$ORIGIN']
 # build_game.py's Linux libraries, plus dav1d (runtime/ov_movie2.c, the Switch 2 movies) and libatomic as the kit links
 LINK_LIBS = ['-lvulkan', '-lSDL3', '-lopus', '-lvpx', '-ldav1d', '-lzstd', '-latomic', '-l:libstdc++.a', '-lm',
