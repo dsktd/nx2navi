@@ -126,6 +126,7 @@ debug *args:
 # Play casually with everything Tally needs if something goes wrong, at no measurable cost: no debugger, the log
 # teed to NX2navi/build/{{ver}}/logs/play-<time>.log, every input recorded beside it (replayable with `just replay`),
 # core dumps on, and the run registered as a job so the error watch and the screensaver see it.
+# Defaults (#132): async replay and the Vulkan recorder thread on, about 5% more fps on the haze scene; set either to 0 to override.
 play *args:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -138,7 +139,7 @@ play *args:
     printf '{"name":"nx2navi","log":"%s","since":%s,"progress":{"regex":"frame (?P<done>[0-9]+):"},"pid":%s}\n' "$PWD/$log" "$(date +%s)" "$$" > "$job"
     trap 'rm -f "$job"' EXIT
     ulimit -c unlimited || true
-    {{dev}} env {{radv}} NX2NAVI_INPUT_RECORD="build/{{ver}}/logs/input-$ts.txt" {{wrapper}} "build/{{ver}}/nx2navi" {{args}} 2>&1 | tee "$log" | grep -a -v -E "no such proc|preparation progress|PushComputeConstants"
+    {{dev}} env {{radv}} NX2NAVI_REPLAY_ASYNC=${NX2NAVI_REPLAY_ASYNC:-1} NX2NAVI_VK_RECORDER=${NX2NAVI_VK_RECORDER:-1} NX2NAVI_INPUT_RECORD="build/{{ver}}/logs/input-$ts.txt" {{wrapper}} "build/{{ver}}/nx2navi" {{args}} 2>&1 | tee "$log" | grep -a -v -E "no such proc|preparation progress|PushComputeConstants"
 
 # Play under gdb like `debug`, and record every input to NX2navi/build/{{ver}}/logs/input-<time>.txt: the recording
 # replays with `just replay <file>` (Tally runs it from the container to reproduce a crash)
