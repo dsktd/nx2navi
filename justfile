@@ -88,7 +88,7 @@ game cpu="v3":
     cd "{{src}}" && {{dev}} python3 -I "{{flake}}/build-linux.py" --src "{{src}}" --extracted "{{work}}/extracted/{{ver}}" --out "build/{{ver}}" --cpu {{cpu}}
 
 # Prepare every shader of the game files and warm the GPU driver's cache (opens a window: run from the desktop session)
-shaders: && nanguard
+shaders: && fmzpow
     cd "{{src}}" && {{dev}} env {{radv}} {{wrapper}} {{py314}} tools/prepare_shaders.py build/{{ver}} --romfs "{{work}}/extracted/{{ver}}/romfs" --exefs "{{work}}/extracted/{{ver}}/exefs" --no-list
 
 # The real fix (NOTES-fog-nan.md): NVIDIA's pow is LG2, FMUL.FMZ, EX2, and the translator drops FMZ, so pow(0, 0) is
