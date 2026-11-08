@@ -25,7 +25,9 @@ wrapper := if gpu == "nvidia" { "nixVulkanNvidia" } else { "nixVulkanIntel" }
 # RADV (Mesa 26.2.6) segfaults in its graphics pipeline library path while this game builds pipelines
 # (libvulkan_radeon.so+0x19be92, found 2026-11-08 on an RX 6900 XT); without it the runtime builds whole pipelines
 # SDL otherwise picks X11 (XWayland) on the desktop; the game is a plain Wayland client
-radv := "SDL_VIDEODRIVER=wayland " + (if mesa == "stable" { "" } else { "RADV_DEBUG=nogpl " }) + "NX2NAVI_PIPE_SKIP=" + pipeskip
+# SDL_JOYSTICK_HIDAPI_STEAM=0: SDL must not drive the Steam Controller itself (its hidraw nodes are open on the desktop);
+# yakin owns it and presents the pad SDL sees
+radv := "SDL_VIDEODRIVER=wayland SDL_JOYSTICK_HIDAPI_STEAM=0 " + (if mesa == "stable" { "" } else { "RADV_DEBUG=nogpl " }) + "NX2NAVI_PIPE_SKIP=" + pipeskip
 dev := "NX2NAVI_NVIDIA=" + (if gpu == "nvidia" { "1" } else { "0" }) + " nix develop " + impure + " " + flake + shellname + " --command"
 py := ".venv/bin/python"
 py314 := ".venv-py314/bin/python"
@@ -96,8 +98,8 @@ debug *args:
     mkdir -p "build/{{ver}}/logs"
     log="build/{{ver}}/logs/run-$(date +%Y%m%d-%H%M%S).log"
     echo "log: $log"
-    # TERM=dumb and no stdin: gdb otherwise redraws a terminal "Output/messages" pane into the log
-    {{dev}} env TERM=dumb {{radv}} {{wrapper}} nix shell nixpkgs#gdb -c gdb -batch -q -x "{{flake}}/tools/crash.gdb" --args "build/{{ver}}/nx2navi" {{args}} < /dev/null 2>&1 | tee "$log" | grep -a -v -E "no such proc|preparation progress|PushComputeConstants"
+    # -nx: the user's ~/.gdbinit (a dashboard) would draw terminal panes into the log; no stdin: nothing to prompt
+    {{dev}} env TERM=dumb {{radv}} {{wrapper}} nix shell nixpkgs#gdb -c gdb -nx -batch -q -x "{{flake}}/tools/crash.gdb" --args "build/{{ver}}/nx2navi" {{args}} < /dev/null 2>&1 | tee "$log" | grep -a -v -E "no such proc|preparation progress|PushComputeConstants"
 
 # Selftest and Vulkan check without game files on the GPU
 selftest:
