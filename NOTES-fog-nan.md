@@ -63,3 +63,91 @@ OpVariable; site 1 NaN 1.0 / finite 0.25; img1 guarded). Runs via scratchpad ab.
 Fix: tools/fmz-pow.py rewrites OpFMul(Log2 result, y) feeding Exp2 into (a==0||b==0) ? 0 : a*b. It must be rerun
 after `just shaders` re-translates (cache-wide scan is slow: 391k files; frame-scoped list in scratchpad powcache.txt).
 Proper fix: a translator patch in the justfile's patch series honouring Fmz in FMUL/FFMA (and FMUL32I/FFMA32I).
+
+## Regression: whiter picture, ~22 fps, write-back storm (2026-11-08, iteration log)
+
+- Not the pow fix (hypothesis e): run-20261108-095800 (09:58, before fmz-pow existed) already shows the storm at frame
+  1800 (334k syncs, 44.9 GB written back); Cal's play-112851 with the cache reverted too. Lab replay of
+  input-20261108-112851.txt on shader-cache-lab (originals + nan-guard): frame 1800 256,630 syncs, 23.8 GB in, 25.3 GB
+  written back, 25.6 fps. Replays of 112339 / 032149 diverge (stay at ~2495 pools) and show no storm.
+- Cause (dump frame 2400, scratchpad passes-r851.txt): small compute dispatches (cs 147269d4b8cb3e70, 081e7b805f2a375d,
+  ab89f96dc8e280e9, d72e565fd8fd8ab0, 5889b6908d68deaa: 1-2 workgroups, likely particle sims) write a storage buffer
+  reached through a push pointer ("push pointer 0+0"). vk_exec_draw.c:1281 binds such a pointer with size 0 = "up to
+  the end of the backing", so note_written records ~80 MiB (pool tail, e.g. 0x15b3de600 span 0x5351a00 although the
+  table entry is +0x8800) per distinct start address. ~20 distinct tails per frame. vk_gpu_written then memcpy's the
+  whole tail back into guest memory (> MERGE_MAX 4 MiB, so plain copy, no WB merge), which dirties the pages, which
+  shadow_sync_pool copies in again, and the mirror re-uploads (55 MiB/frame): copied-in ~= written-back.
+- The plain copy of a stale tail also puts old GPU bytes over whatever the CPU wrote there (the exact hazard the WB
+  merge comment names for particle emitters): likely the brightening (particles/mist never cleared). Not verified.
+- NX2NAVI_SHADOW=0: device lost (vkQueueSubmit2 -4) before frame ~300. Not usable. No other knob bounds the span.
+- Fix needs the runtime (checkout): clamp a written pointer-SSBO's noted range to the shader's accessed size (or the
+  pointer table entry's size, here +0x8800), or skip write-back for pointer-bound ranges. Upstream issue material.
+
+## Wrong lighting at frame 2300 (Saria dialogue), dump-live walk (2026-11-08)
+
+- Rectangle: absent from the lit scene up to pass 196 (ground ~0 outside the direct light). First seen in the half-res
+  translucent target 12455 (rgba16f 720x405), written by pass 181 (prog 11469: vs cfe721e49a065f76, fs 3a6b76e478ecb654,
+  2 draws, a large soft mist/fog card). Pass 198 (fs 3bdeddefe0d8de4b, the fog/translucent composite: froxels 878/880/882
+  plus 12455/9212) adds it to the scene. The fs's alpha is _72.w * tex(slot 4).w * saturate(|depth diff|*0.2) * vs fade.
+  Slot 4 is tex 665, NVN 0x4B RGTC2 (BC5), so .w is always 1: no texture edge fade, and only the vertex/depth terms remain.
+  Whether hardware is the same (NVN RG swizzle gives .w = 1) is still open. The dump shows identity swizzle (2345).
+  Shader files: shader-cache/ba68487f...spv and f1e9319f...spv (fs), 62b7b818...spv and 7bda918b...spv (vs).
+- Glow/haze: pass 228 (fs 13253fa8bc1dcf47) = scene*M*c3[3].z + pow(bloom 240x135, c3[3].y), then ACES. The bloom is
+  added at full weight, so the glow is that pow term plus HDR fairies at 62. Next: NX2NAVI_DUMP_UBO to read c3[3].
+  Pass 231's lifted floor (0.15) is the sqrt encoding the upscaler stand-in squares, not haze.
+- CS fallback: in this frame the only untranslated dispatch is the tensor upscaler (vk_tonemap stand-in, post-tonemap).
+  It cannot add the rectangle or the bloom. Prewarm: 0 failed translations.
+- A/B blocked: recording input-20261108-122846.txt now diverges into the pause menu at frame 2300 (129 passes, both
+  lab-run and ab-live.sh, with NX2NAVI_SKIP_SHADERS=3a6b76e478ecb654). dump-live (12:31) did not diverge. Needs a fresh
+  recording, or a dump frame before the divergence, before the skip test means anything.
+- Retry alone (lab-run, flock, no other game): frame 2300 and frame 1900 both land in the pause menu (129 passes).
+  So the divergence is not caused by overlapping runs. Most likely the replay starts from game state that has changed
+  since 12:31 (save data or settings written by later runs). Needs a fresh recording from Cal's current save.
+- Fresh recording input-20261108-125206.txt: replays are not deterministic. At frame 1900 three runs landed in three
+  places (dense mist outdoors, a different camera, inside the Deku Tree). At frame 1400 every run is at the Saria dialogue
+  (the dump-live scene) and is usable for A/B.
+- Frame 1400 A/B: skipping 3a6b76e478ecb654 (mist card) leaves the rectangle, and so does skipping bc280fb2a7cc7e22
+  (pass 179). Making the card's alpha read the BC5 G channel (private cache copy) changes nothing. So the rectangle is not
+  the mist card. It is most likely floor geometry that only pass 198 (fog composite, fs 3bdeddefe0d8de4b) lights.
+- Frame 1900 (mist scene) skip run: much less haze, but the camera differed, so this is not proof.
+- Tonemap UBO (frame 1900, prog 39335, fs f450014def48f713): c4 colour matrix close to identity, pow 1.11, exposure 1,
+  3D grading LUT. The values look like normal game settings; there is no sign of a broken exposure input.
+- Note: ssbo 3 (0x25a4c7f00) guest bytes hold 0xFFFFFFFF (-nan) in words 12-27. These are guest bytes, not the GPU
+  copy (the frame has no NaN), so this is probably an uninitialised fill that is never written back.
+
+## Haze + slab, recording input-20261108-131323 (2026-11-08)
+
+- Frame 1100 (presents) is in the hazy Kokiri area (219 passes); frame 300 is still the load menu. No NaN anywhere.
+- Froxel chain: pass 76 (cs 758cfce40008b5f0, 9x5x7) injects density into tex 8088/r16f (max exactly 1.0, mean 0.27;
+  the near slices are saturated at 1, the far ones are noise-shaped) plus two r11g11b10f in-scatter volumes. Pass 77
+  (cs 1673eb18f482ce7c, 9x5x1) integrates along the depth into tex 881 (r16f, max 20.8, which reads as optical depth) and 878/880. No inf
+  and no NaN, so nothing is clearly outsized apart from the saturated near density.
+- A/B at frame 1100: skip mist card 3a6b76e4 -> haze and slab unchanged (cleared). Skip injection 758cfce4 -> haze
+  gone, scene near black. Skip fog composite 3bdeddef -> haze gone, ground and slab black: only Link, fairies and roots
+  stay lit.
+- Reading: the haze is the fog in-scatter itself, layered on geometry that gets almost no ambient light of its own (same as the
+  frame 2300 finding: ground ~0 outside the direct light). The slab is the rock face, which only the fog
+  composite lights. Most likely the bug is missing ambient/probe lighting in the deferred lighting pass, not the fog shaders.
+- FMZ: running fmz-pow-scan on the dump's sh_*.spv flags many shaders (fog composite 10 sites, integrator 2). The dump
+  SPIR-V is the raw translator output, not the patched cache file (the cache names are not the SPIR-V's sha256), so
+  this does not show that the fix is missing. Live cache has 23,649 .orig files, so fmz-pow is applied there.
+  No new FMZ candidate was tested.
+- Next: find the deferred ambient/SH-apply pass (readers of ssbo 0x25a4c7f00 at frame 1100) and check its ambient term.
+  Also check FFMA.FMZ (the dot-product or SH-evaluation form, not only pow), since the translator ignores Fmz everywhere.
+
+## Ambient: FMZ on ordinary multiplies (2026-11-08, frame 1100, input-20261108-131323)
+
+- No deferred ambient pass: lighting is forward. Passes 169/171 (1440x810 r11g11b10f, 37 + 146 draws) shade the
+  world; their fs bind the sky SH (ssbo slot 2 = 0x25a4c7f00+0xc0) plus cube 751, LUT 850, tex 7138/7169/7170. After
+  pass 171 the ground is already 0 (min 0, 93k distinct values), before any fog. The fs use NClamp/NMax heavily, so a
+  NaN from inf*0 is silently clamped to 0 = black, which is why the frame shows "no NaN".
+- tools/fmz-all.py (new, sibling of fmz-pow.py): every scalar OpFMul and GLSL Fma gets FMZ semantics (0*x = 0, fma ->
+  c). Writes via temp + rename, so it is safe in a hard-linked cache copy (cp -al shader-cache shader-cache-amb, 9 s).
+- A/B, the 93 fs/vs of passes 169/171/181/182 only (265 cache files): opaque target min 0 -> 1.7e-4, distinct 93k ->
+  760k; ground, rocks and moss are lit (yellow-green, sunlit). Final frame: the world shows through, fog still dense.
+  CULPRIT: Fmz ignored on FMUL/FFMA in general, not only in pow.
+- Same pass over all 298 frame shaders: unclear. One shader failed spirv-val (script aborted mid-list; skip-on-error
+  needed) and the replay diverged indoors (204 passes). Not usable.
+- Next: proper translator fix (honour Fmz in FMUL/FFMA/FMUL32I/FFMA32I emitters, patch series). The blanket pass is a
+  diagnostic superset: it also changes multiplies that had no .FMZ (only matters for 0*inf/NaN, so low risk).
+  Then re-check the fog density with the fix applied everywhere.

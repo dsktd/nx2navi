@@ -80,8 +80,9 @@ extract:
     {{dev}} {{py}} -I tools/make_game.py --nup "{{nup}}" --out "{{work}}/extracted/{{ver}}" --until romfs --msys "{{msys}}"
 
 # The shader translator (.NET)
+# (the checkout's build_xlate.py plus our private patches/*-xlate-*.patch, see tools/build-xlate-private.py)
 xlate:
-    cd "{{src}}" && {{dev}} env GIT_CEILING_DIRECTORIES="{{src}}" {{py}} tools/build_xlate.py
+    cd "{{src}}" && {{dev}} env GIT_CEILING_DIRECTORIES="{{src}}" {{py}} -I "{{flake}}/tools/build-xlate-private.py" "{{src}}"
 
 # Lift (the kit, with its bring-up fixes), glue, compile and link build/{{ver}}/nx2navi (a CPU without AVX2: just game v2)
 game cpu="v3":
