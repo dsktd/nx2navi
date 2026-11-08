@@ -27,7 +27,7 @@ FEED=$HOME/claude/.services/screensavers/feeds/nx2navi-lab.log
 echo "$(date +%H:%M) run $label: replay to frame $frame ${envs[*]}" >>"$FEED"
 setsid nice -n 19 env WAYLAND_DISPLAY=${LAB_DISPLAY:-gpu-display} XDG_RUNTIME_DIR=${LAB_RUNTIME:-$HOME/claude/.services/gpu-display/runtime} \
   nix develop $ROOT --command env TERM=dumb SDL_VIDEODRIVER=wayland SDL_JOYSTICK_HIDAPI_STEAM=0 RADV_DEBUG=nogpl \
-  NX2NAVI_PIPE_SKIP=strict NX2NAVI_INPUT_SCRIPT="$rec" NX2NAVI_DUMP=$frame NX2NAVI_DUMP_DIR=$OUT/dump "${envs[@]}" \
+  ${LAB_AUDIO:+PULSE_SERVER=unix:/run/user/1000/pulse/native} NX2NAVI_PIPE_SKIP=strict NX2NAVI_INPUT_SCRIPT="$rec" NX2NAVI_DUMP=$frame NX2NAVI_DUMP_DIR=$OUT/dump "${envs[@]}" \
   bash -c 'cd "$0" && exec nixVulkanIntel ./nx2navi' "$BIN" </dev/null >"$log" 2>&1 &
 pgid=$!
 trap 'kill -- -$pgid 2>/dev/null' EXIT
