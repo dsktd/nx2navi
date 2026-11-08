@@ -85,7 +85,14 @@ beside the runtime and renames upstream's versions with per-file `-D` flags, so 
 bytes past its end, which in this build zeroes the caller's exec pointer: a deterministic crash at the first
 mesh-shader scene (`upstream-issue-c0-mesh.md`, with the gdb backtrace and disassembly). `NX2NAVI_FIX_C0=0` (the
 bank left zero) passes the spot, replaying `build/v111/logs/input-20261108-032149.txt`, but the game picture is black
-with it: the shaders need those constants. So the game stops at that scene until upstream clamps the table.
+with it: the shaders need those constants. What does work without a source change: `build-linux.py` compiles
+`vk_exec_draw.c` at `-O0` (PER_FILE_FLAGS), which lays the function's locals out so that the 112 bytes land on a
+dead structure; the recording replays past the spot. Cost: that file is the draw recorder, so some CPU per frame.
+
+Container replays are not representative past that point: Podman's default seccomp profile denies `userfaultfd`, the
+runtime logs "no asynchronous userfaultfd write protection" and copies whole pools to the GPU every frame (1.4 fps,
+black picture, an ASTC decode storm). `tally gpu on` now adds `--cap-add SYS_PTRACE`, which lets it through; on the
+host the write watch works ("0 untracked" in the logs).
 
 ## Status
 
