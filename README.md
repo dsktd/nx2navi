@@ -91,8 +91,8 @@ dead structure; the recording replays past the spot. Cost: that file is the draw
 
 Container replays are not representative past that point: Podman's default seccomp profile denies `userfaultfd`, the
 runtime logs "no asynchronous userfaultfd write protection" and copies whole pools to the GPU every frame (1.4 fps,
-black picture, an ASTC decode storm). `tally gpu on` now adds `--cap-add SYS_PTRACE`, which lets it through; on the
-host the write watch works ("0 untracked" in the logs).
+black picture, an ASTC decode storm). `--cap-add SYS_PTRACE` on the container would let it through (not added yet:
+Cal's decision, it widens the sandbox); on the host the write watch works ("0 untracked" in the logs).
 
 ## Status
 
