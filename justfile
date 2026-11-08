@@ -98,7 +98,7 @@ shaders: && fmzpow
 fmzpow:
     cd "{{src}}" && {{dev}} bash -c 'find build/{{ver}}/shader-cache -name "*.spv" -print0 | xargs -0 -P"$(nproc)" -n 500 python3 "{{flake}}/tools/fmz-pow-scan.py" | cut -d" " -f1 | xargs -r -n 200 python3 "{{flake}}/tools/fmz-pow.py"'
 
-# Stopgap, superseded by fmzpow: NaN guard on the volumetric fog light-injection shader (its NaN blacks the picture; NOTES-fog-nan.md).
+# OBSOLETE (root cause fixed by private patch 0004 / build f33ed65; kept only for `nanguard restore`): NaN guard on the volumetric fog light-injection shader (its NaN blacks the picture; NOTES-fog-nan.md).
 # Runs after `shaders`; `just nanguard restore` puts the original SPIR-V back.
 fog_spv := "1201517696dd2e1d9ad6735249bb9160bf2fd71a5e45b176400585a8371a5083"
 nanguard *mode:

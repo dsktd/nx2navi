@@ -104,6 +104,12 @@ runtime logs "no asynchronous userfaultfd write protection" and copies whole poo
 black picture, an ASTC decode storm). `--cap-add SYS_PTRACE` on the container would let it through (not added yet:
 Cal's decision, it widens the sandbox); on the host the write watch works ("0 untracked" in the logs).
 
+## Obsolete stopgaps
+
+The sky-SH NaN root cause is fixed by patch 0004 (build f33ed65). These stopgaps are obsolete and should not be run on
+a new cache: `just nanguard` with `tools/nan-guard.py`, `tools/cas-nan-guard.py` and `tools/cas-reset.py`. They stay
+only so `just nanguard restore` (and each tool's `.orig` restore) can undo what they wrote into the current cache.
+
 ## Status
 
 2026-11-08: built in the Manager's container (lift 297,414 functions, 680 objects, 318 MB `build/v111/nx2navi`),
