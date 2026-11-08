@@ -5,3 +5,4 @@ latest-frame.png
 .lab-bin-*/
 .lab-profile-*/
 perf*.data
+!.claude/
