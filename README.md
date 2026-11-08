@@ -67,12 +67,23 @@ justfile runs the shader preparation and the game with `RADV_DEBUG=nogpl`; the r
 and the vertex and fragment variants compile at their first draw (stutter on the first visit to an area). Retest
 without it on a newer Mesa.
 
+## Linux fixes outside the checkout (runtime-linux/)
+
+Two gaps in upstream's Linux platform layer stop Ocarina at boot; `build-linux.py` compiles `runtime-linux/frames.c`
+beside the runtime and renames upstream's versions with per-file `-D` flags, so the checkout stays untouched:
+
+- `plat_frame_capture` is a stub on Linux, so the guest's first `setjmp` was fatal. `frames.c` walks the host
+  stack with the C unwinder and resumes the lifted caller's frame (`-Dlongjmp=nx_frame_resume` in guest_setjmp.c).
+- `plat_fiber_new` starts a fiber's function with the stack misaligned by 8 bytes; glibc's `pthread_create` then
+  faults on an aligned SSE store. `frames.c` wraps upstream's constructor and shifts the first frame by one word.
+
 ## Status
 
-2026-11-08: the lift (297,414 functions, 1.2 GB of C), compile (680 objects) and link ran in the Manager's container
-against Cal's extracted files, giving a 318 MB `build/v111/nx2navi`. `--selftest` passes except one check that assumes
-the other game's 3.3 GB pool (a 4 GiB map is expected to fail; Ocarina's 9.8 GB pool allows it). Not yet verified:
-shaders and play on the GPU.
+2026-11-08: built in the Manager's container (lift 297,414 functions, 680 objects, 318 MB `build/v111/nx2navi`),
+then run from the container on the RX 6900 XT through `/dev/dri` and the host's Wayland socket: intro movies, title
+loop and the in-game menu for 12,600 frames without a fault. `--selftest` passes except one check that assumes the
+other game's 3.3 GB pool. Open: the menu finds no system fonts in the container; Cal saw a rendering band on the
+"Fullscreen" row; play with a pad is tested on the host (`just run`, yakin's pad).
 
 ## What was verified
 
