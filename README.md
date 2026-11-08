@@ -1,0 +1,60 @@
+# NX2navi on Arch, through Nix
+
+A dev shell with NX2navi's whole Linux toolchain from nixpkgs, so nothing is installed with pacman, and nixGL so the
+game gets a Vulkan driver built against the shell's own glibc. The game itself is built the way upstream documents
+(`docs/building.md`, "Linux (in progress)"), only from inside this shell. Nix never sees the game files.
+
+The flake lives here and is read directly: `nix develop ~/claude/nx2navi`, or through the `justfile` beside it
+(`just --list`). Nothing is modified in the NX2navi checkout.
+
+## GPU
+
+- AMD or Intel (Mesa): the default. `nixVulkanIntel` wraps the game; despite the name it carries every Mesa Vulkan
+  driver, RADV included. All of it comes from cache.nixos.org.
+- NVIDIA: `NX2NAVI_NVIDIA=1 nix develop --impure ~/claude/nx2navi`. nixGL fetches the driver of the host's exact version
+  and repackages it (a one-time build, redone after a driver update); then wrap the game with `nixVulkanNvidia`.
+
+## Game files
+
+A `.nup` dump is unencrypted and needs no keys: `NX2NAVI_NUP=/path/game.nup just extract` unpacks it with
+`tools/make_game.py` (its exefs and romfs steps, stopped before the Windows compile) into the same
+`build/extracted/<ver>` tree `tools/extract.py` would write from an NSP/XCI and prod.keys. Every later step is the same.
+
+## Build
+
+Game version code: `v111` for the 1.1.1 update (`v121`, `v143` exist too). Allow 60 GB in the checkout.
+
+```nu
+cd ~/claude/nx2navi/NX2navi   # worktree of ~/claude/.bare/NX2navi.git (just worktree)
+nix develop ~/claude/nx2navi
+
+uv venv --python 3.12 .venv
+uv pip install --python .venv/bin/python -r tools/requirements.txt
+uv venv --python 3.14 .venv-py314
+uv pip install --python .venv-py314/bin/python -r tools/requirements-py314.txt
+
+cp config.example.toml config.local.toml
+# edit: base, updates, keys with POSIX paths to your own files
+
+.venv/bin/python tools/build_hactool.py
+.venv/bin/python -I tools/make_game.py --nup /path/game.nup --out build/extracted/v111 --until romfs --msys ~/claude/nx2navi/.msys-stub
+.venv/bin/python tools/build_xlate.py
+.venv/bin/python recomp/gen.py --exefs build/extracted/v111/exefs --out generated/v111 --patches recomp/patches-v111.txt
+.venv-py314/bin/python tools/make_romfs_patches.py --version v111
+.venv/bin/python tools/build_game.py --version v111
+sh tools/fetch_refs.sh
+.venv-py314/bin/python tools/prepare_shaders.py build/v111 --version v111
+nixVulkanIntel build/v111/nx2navi
+```
+
+`--cpu v2` on `build_game.py` only for a CPU without AVX2. The shader preparation opens a window: run it in the desktop
+session. The game binary finds `libSDL3.so.0` and the Vulkan loader through the shell's `LD_LIBRARY_PATH`, so start it
+from the shell (a desktop entry can call `nix develop ~/claude/nx2navi --command nixVulkanIntel <path>/nx2navi`).
+
+## What was verified
+
+In the container (no GPU, no game files): the shell enters with clang 23.1.3, lld, ninja, make, dotnet 10.0.403,
+Python 3.12.15 and 3.14.8, uv 0.13.5, SDL3 3.4.18 and Vulkan 1.4.363; a test program links with upstream's Linux link
+line (`-lvulkan -lSDL3 -lopus -lvpx -lzstd -l:libstdc++.a`) and runs; `uv` resolves both requirement files as wheels
+for the Nix interpreters; `nixVulkanIntel` builds and points `VK_ICD_FILENAMES` at Mesa 26.2.6. Not verified: the real
+game build and play.
