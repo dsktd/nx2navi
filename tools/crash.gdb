@@ -8,7 +8,7 @@ handle SIGTRAP SIGINT stop print nopass
 break crash_handler
 commands
   silent
-  printf "=== crash: %s at host %#lx addr %#lx\n", x->what, x->rip, x->addr
+  printf "=== crash\n"
   bt 40
   info registers rip rsp rbp
   thread apply all bt 12
