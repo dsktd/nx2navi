@@ -129,3 +129,6 @@ distribution). After `just update`, `build` may need a rebase onto the new upstr
 
 - `0001-shadow-write-back-changed-pages.patch`: shadow write-back copies only pages the GPU changed
   (fixes the outdoor write-back storm, ~23 -> 30 fps).
+- `0004-shadow-sync-next-part-writes.patch`: the shadow sync copies the CPU's bytes under the next part's own GPU
+  writes (the game zeroes the sky-SH block on the CPU each frame; skipping that whitened the lighting outdoors).
+- `0005-watch-range-log.patch`: `NX2NAVI_WATCH=<addr>:<size>` logs what touches a guest range (debug).

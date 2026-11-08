@@ -195,3 +195,15 @@ Proper fix: a translator patch in the justfile's patch series honouring Fmz in F
   Next: log the GPU copy of 0x25a4c7f00..+0x100 per frame (vk_dump buffer snap) with and without the guard, and trace
   the guest writes to that page.
 - `just fmzpow` rewrites b51b2871 from its .orig and would drop the guard; run cas-nan-guard.py again after it.
+
+## Sky-SH block: root cause of the build-up (2026-11-08, NX2NAVI_WATCH, play-20261108-150423)
+
+- The game zeroes 0x25a4c7f00 on the CPU each frame (guest w13 drops to 0 between parts). The watch log shows
+  gpu-pending (record) -> cpu-dirty on the page -> cpu->shadow copies only 0x25a4c7fc0+0x40: the block itself is
+  skipped, because vk_mem_shadow_sync runs after the part was recorded and that part's own GPU writes were already in
+  the pending list. So the zero never reached the shadow, the atomics added to last frame's sums, and the fence
+  wrote the stale sums back over the CPU's zero. A NaN frame stuck for good; without NaN the sums grew (white-out).
+- ef1f5c1 is not involved (same skip without it).
+- Fix: patches/0004 (build f33ed65): skip only submitted parts' ranges that the next part does not write again.
+- Stopgap meanwhile: tools/cas-reset.py --abs 32,33,34,35 on a806b657 (live with cas-nan-guard; guarded copies in
+  build/v111/reload-bak/guarded). Remove both after the fix is verified: restore build/v111/reload-bak/*.spv.

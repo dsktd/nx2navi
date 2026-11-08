@@ -1,0 +1,93 @@
+From f33ed6540b28318d9b68bee72aceff6500f3183a Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Sun, 8 Nov 2026 15:05:54 -0500
+Subject: [PATCH 1/2] vk_memory: shadow sync copies the CPU's bytes under the
+ next part's own GPU writes
+
+vk_mem_shadow_sync runs after the part was recorded, so the GPU writes the
+part itself is about to make were already listed as pending and the CPU's
+bytes there were skipped. The game zeroes the sky-SH block (0x25a4c7f00)
+on the CPU each frame before its compute passes add into it with atomics;
+the zero never reached the shadow, the GPU kept adding to the last
+frame's sums (and to a NaN for good), and the outdoor lighting whitened.
+
+Skip only ranges of submitted parts that the next part does not write
+again, and drop the submitted entry at the fence, not a newer equal one.
+---
+ runtime/vk_memory.c | 28 +++++++++++++++++++++-------
+ 1 file changed, 21 insertions(+), 7 deletions(-)
+
+diff --git a/runtime/vk_memory.c b/runtime/vk_memory.c
+index 3953aca..55dd44d 100644
+--- a/runtime/vk_memory.c
++++ b/runtime/vk_memory.c
+@@ -898,9 +898,12 @@ static int query_stamp(uint64_t lo, uint64_t hi, uint32_t g) {
+ //   queried for written pages; pages stamped after a pool's sgen are copied in by the CPU.
+ // - GPU -> guest: the replay notes each GPU write into CPU-visible memory at record time (vk_mem_gpu_pending) and
+ //   reports it at the fence (vk_gpu_written), which copies those bytes back into guest memory. Until then the CPU
+-//   copies skip them: a page the CPU and the GPU both write keeps the GPU's bytes.
++//   copies skip them: a page the CPU and the GPU both write keeps the GPU's bytes. That holds only for writes already
++//   submitted: the sync runs after the part was recorded, so the part's own pending writes are listed too, and the
++//   CPU's bytes there (the sky-SH block the game zeroes on the CPU each frame before the GPU adds into it) must go in
++//   before it runs. Skipping them left the shadow with the last frame's sums, which the GPU kept adding to.
+ // NX2NAVI_SHADOW=1/0 forces the mode on or off; the default is on for Linux and Wine.
+-typedef struct { uint64_t lo, hi; } SRange;
++typedef struct { uint64_t lo, hi; int sub; } SRange;   // sub: its part was submitted (synced)
+ static PlatMutex shadow_lock = PLAT_MUTEX_INIT;   // after pool_lock; before gen_lock
+ static PoolRec **stouch;                          // shadow_lock: pools resolved since the last sync
+ static int nstouch, cstouch;
+@@ -958,11 +961,19 @@ static void shadow_forget(PoolRec *r) {
+     plat_mutex_unlock(&shadow_lock);
+ }
+ 
++// shadow_lock held: whether the part about to be submitted writes [lo, hi) again.
++static int spend_again(uint64_t lo, uint64_t hi) {
++    for (int i = 0; i < nspend; i++)
++        if (!spend[i].sub && spend[i].lo <= lo && spend[i].hi >= hi) return 1;
++    return 0;
++}
++
+ // shadow_lock held: copies guest [a, b) into the shadow, leaving out the bytes of GPU writes not copied back yet
+-// (spend from index i on).
++// (spend from index i on): submitted ones whose range the next part does not write again. When it does, the GPU
++// starts from what the CPU left there, as on hardware, where the earlier write landed long before.
+ static void shadow_copy(PoolRec *r, uint64_t a, uint64_t b, int i) {
+     for (; i < nspend; i++)
+-        if (spend[i].lo < b && spend[i].hi > a) {
++        if (spend[i].sub && spend[i].lo < b && spend[i].hi > a && !spend_again(spend[i].lo, spend[i].hi)) {
+             if (spend[i].lo > a) shadow_copy(r, a, spend[i].lo, i + 1);
+             if (spend[i].hi < b) shadow_copy(r, spend[i].hi, b, i + 1);
+             return;
+@@ -1022,6 +1033,7 @@ void vk_mem_shadow_sync(void) {
+         s_syncs += (uint64_t)nstouch;
+         nstouch = 0;
+     }
++    for (int i = 0; i < nspend; i++) spend[i].sub = 1;   // the part goes to the GPU now
+     s_ticks += qpc() - t0;
+     plat_mutex_unlock(&shadow_lock);
+ }
+@@ -1030,7 +1042,7 @@ void vk_mem_gpu_pending(uint64_t addr, uint64_t size) {
+     if (!shadow_on || !size) return;
+     plat_mutex_lock(&shadow_lock);
+     if (nspend == cspend) grow((void **)&spend, &cspend, sizeof *spend);
+-    spend[nspend++] = (SRange){addr, addr + size};
++    spend[nspend++] = (SRange){addr, addr + size, 0};
+     plat_mutex_unlock(&shadow_lock);
+ }
+ 
+@@ -1074,8 +1086,10 @@ void vk_gpu_written(uint64_t addr, uint64_t size) {
+         plat_mutex_lock(&shadow_lock);
+         int done = 0;
+         if (r && r->smap && addr >= r->import_lo && addr + size <= r->import_hi) shadow_write_back(r, addr, addr + size), done = 1;
+-        for (int i = 0; i < nspend; i++)
+-            if (spend[i].lo == addr && spend[i].hi == addr + size) { spend[i] = spend[--nspend]; break; }
++        int k = -1;   // the submitted entry, not a newer part's equal one
++        for (int i = 0; i < nspend && (k < 0 || !spend[k].sub); i++)
++            if (spend[i].lo == addr && spend[i].hi == addr + size) k = i;
++        if (k >= 0) spend[k] = spend[--nspend];
+         plat_mutex_unlock(&shadow_lock);
+         plat_mutex_unlock_shared(&pool_lock);
+         if (done) return;
+-- 
+2.56.0
+
