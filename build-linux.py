@@ -86,7 +86,7 @@ HERE = Path(__file__).resolve().parent
 # without editing the checkout: see runtime-linux/frames.c
 EXTRA_SOURCES = [HERE / 'runtime-linux' / 'frames.c']
 PER_FILE_DEFINES = {
-    'platform/linux.c': '-Dplat_frame_capture=plat_frame_capture_stub',
+    'platform/linux.c': '-Dplat_frame_capture=plat_frame_capture_stub -Dplat_fiber_new=plat_fiber_new_upstream',
     'guest_setjmp.c': '-Dplat_frame_capture=nx_frame_capture -Dlongjmp=nx_frame_resume',
 }
 

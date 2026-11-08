@@ -86,3 +86,26 @@ __asm__(".text\n"
         "    movl $1, %eax\n"
         "    jmp *%rdx\n"
         ".size nx_frame_resume, .-nx_frame_resume\n");
+
+// Fiber entry alignment. Upstream's plat_fiber_new (platform/linux.c) lays the first frame out so that
+// plat_fiber_swap's ret lands in plat_fiber_entry with rsp = top - 8, and its callq *%r12 then enters fn with
+// rsp = top - 16: 16-byte aligned, where the SysV ABI wants rsp + 8 aligned at a function's entry. Code that spills
+// an SSE register with an aligned store on such a stack faults (glibc's create_thread does, in pthread_create
+// called from a fiber). platform/linux.c is compiled with -Dplat_fiber_new=plat_fiber_new_upstream; this
+// plat_fiber_new calls it and moves the 10-word frame down one word, so fn starts with rsp = top - 24.
+#include <stddef.h>
+struct PlatFiber {   // as platform/linux.c
+    void *sp;
+    void *stack;
+    size_t size;
+};
+struct PlatFiber *plat_fiber_new_upstream(size_t stack, void (*fn)(void *arg), void *arg);
+
+struct PlatFiber *plat_fiber_new(size_t stack, void (*fn)(void *arg), void *arg) {
+    struct PlatFiber *f = plat_fiber_new_upstream(stack, fn, arg);
+    if (!f) return NULL;
+    uint64_t *sp = f->sp;
+    memmove(sp - 1, sp, 10 * sizeof *sp);
+    f->sp = sp - 1;
+    return f;
+}
