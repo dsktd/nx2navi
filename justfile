@@ -8,6 +8,12 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 src := env("NX2NAVI_SRC", justfile_directory() / "NX2navi")
 ver := env("NX2NAVI_VER", "v111")
 gpu := env("NX2NAVI_GPU", "mesa")
+# mesa=stable: Vulkan through nixpkgs stable's Mesa (25.2.6) instead of unstable's, see flake.nix
+mesa := env("NX2NAVI_MESA", "")
+shellname := if mesa == "stable" { "#mesa-stable" } else { "" }
+# Which draws are skipped while their pipeline builds (upstream default fullscreen): strict waits for full-screen
+# draws, which with the pipeline library off otherwise go black while they build
+pipeskip := env("NX2NAVI_PIPE_SKIP", "strict")
 nup := env("NX2NAVI_NUP", "")
 # the [work] dir of config.local.toml (where build_game.py looks for extracted/<ver>)
 work := env("NX2NAVI_WORK", "build")
@@ -18,8 +24,8 @@ impure := if gpu == "nvidia" { "--impure" } else { "" }
 wrapper := if gpu == "nvidia" { "nixVulkanNvidia" } else { "nixVulkanIntel" }
 # RADV (Mesa 26.2.6) segfaults in its graphics pipeline library path while this game builds pipelines
 # (libvulkan_radeon.so+0x19be92, found 2026-11-08 on an RX 6900 XT); without it the runtime builds whole pipelines
-radv := "RADV_DEBUG=nogpl"
-dev := "NX2NAVI_NVIDIA=" + (if gpu == "nvidia" { "1" } else { "0" }) + " nix develop " + impure + " " + flake + " --command"
+radv := (if mesa == "stable" { "" } else { "RADV_DEBUG=nogpl " }) + "NX2NAVI_PIPE_SKIP=" + pipeskip
+dev := "NX2NAVI_NVIDIA=" + (if gpu == "nvidia" { "1" } else { "0" }) + " nix develop " + impure + " " + flake + shellname + " --command"
 py := ".venv/bin/python"
 py314 := ".venv-py314/bin/python"
 

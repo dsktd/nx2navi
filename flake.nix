@@ -11,9 +11,16 @@
       url = "github:nix-community/nixGL";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    # A second Mesa to try when RADV of the day misbehaves: nixpkgs stable (25.11: Mesa 25.2.6) through its own nixGL,
+    # for the `mesa-stable` shell below
+    nixpkgs-stable.url = "github:NixOS/nixpkgs/nixos-25.11";
+    nixgl-stable = {
+      url = "github:nix-community/nixGL";
+      inputs.nixpkgs.follows = "nixpkgs-stable";
+    };
   };
 
-  outputs = { self, nixpkgs, nixgl }:
+  outputs = { self, nixpkgs, nixgl, nixpkgs-stable, nixgl-stable }:
     let
       system = "x86_64-linux";
       pkgs = import nixpkgs { inherit system; };
@@ -22,9 +29,7 @@
       # The Vulkan wrapper for the host's GPU. Mesa (AMD RADV, Intel) is pure; NVIDIA reads the host driver's version
       # and needs `nix develop --impure`.
       vulkan = if builtins.getEnv "NX2NAVI_NVIDIA" == "1" then gl.nixVulkanNvidia else gl.nixVulkanIntel;
-    in
-    {
-      devShells.${system}.default = pkgs.mkShell {
+      shell = vulkanWrapper: pkgs.mkShell {
         name = "nx2navi";
         # The nixpkgs compiler wrapper adds fortify, stack protector and PIE flags; the build sets its own.
         hardeningDisable = [ "all" ];
@@ -56,7 +61,7 @@
           uv
           python312
           python314
-          vulkan
+          vulkanWrapper
         ];
         env = {
           # uv uses the two interpreters above, never a downloaded python-build-standalone
@@ -74,8 +79,15 @@
         shellHook = ''
           # build_game.py links libstdc++ statically (-l:libstdc++.a); the static archive lives in gcc's own output
           export NIX_LDFLAGS="-L${pkgs.gcc.cc}/lib $NIX_LDFLAGS"
-          echo "nx2navi shell: clang $(clang --version | head -1 | cut -d' ' -f3), dotnet $(dotnet --version), run the game as: ${vulkan.name} build/<ver>/nx2navi"
+          echo "nx2navi shell: clang $(clang --version | head -1 | cut -d' ' -f3), dotnet $(dotnet --version), run the game as: ${vulkanWrapper.name} build/<ver>/nx2navi"
         '';
+      };
+    in
+    {
+      devShells.${system} = {
+        default = shell vulkan;
+        # the same shell, Vulkan through nixpkgs stable's Mesa (just mesa=stable ...)
+        mesa-stable = shell nixgl-stable.packages.${system}.nixVulkanIntel;
       };
     };
 }
