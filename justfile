@@ -88,10 +88,17 @@ game cpu="v3":
     cd "{{src}}" && {{dev}} python3 -I "{{flake}}/build-linux.py" --src "{{src}}" --extracted "{{work}}/extracted/{{ver}}" --out "build/{{ver}}" --cpu {{cpu}}
 
 # Prepare every shader of the game files and warm the GPU driver's cache (opens a window: run from the desktop session)
-shaders: && nanguard
+shaders: && fmzpow
     cd "{{src}}" && {{dev}} env {{radv}} {{wrapper}} {{py314}} tools/prepare_shaders.py build/{{ver}} --romfs "{{work}}/extracted/{{ver}}/romfs" --exefs "{{work}}/extracted/{{ver}}/exefs" --no-list
 
-# Stopgap: NaN guard on the volumetric fog light-injection shader (its NaN blacks the picture; NOTES-fog-nan.md).
+# The real fix (NOTES-fog-nan.md): NVIDIA's pow is LG2, FMUL.FMZ, EX2, and the translator drops FMZ, so pow(0, 0) is
+# NaN instead of 1; a NaN in the sky-ambient SH block then blacks fog and ambient for good. Scans the shader cache
+# (in parallel) for that pattern and rewrites those multiplies as (a == 0 || b == 0) ? 0 : a * b. Runs after
+# `shaders`; files already fixed have a .orig beside them and are rewritten from it (idempotent).
+fmzpow:
+    cd "{{src}}" && {{dev}} bash -c 'find build/{{ver}}/shader-cache -name "*.spv" -print0 | xargs -0 -P"$(nproc)" -n 500 python3 "{{flake}}/tools/fmz-pow-scan.py" | cut -d" " -f1 | xargs -r -n 200 python3 "{{flake}}/tools/fmz-pow.py"'
+
+# Stopgap, superseded by fmzpow: NaN guard on the volumetric fog light-injection shader (its NaN blacks the picture; NOTES-fog-nan.md).
 # Runs after `shaders`; `just nanguard restore` puts the original SPIR-V back.
 fog_spv := "1201517696dd2e1d9ad6735249bb9160bf2fd71a5e45b176400585a8371a5083"
 nanguard *mode:
@@ -115,6 +122,23 @@ debug *args:
     trap 'rm -f "$job"' EXIT
     # -nx: the user's ~/.gdbinit (a dashboard) would draw terminal panes into the log; no stdin: nothing to prompt
     {{dev}} env TERM=dumb {{radv}} {{wrapper}} nix shell nixpkgs#gdb -c gdb -nx -batch -q -x "{{flake}}/tools/crash.gdb" --args "build/{{ver}}/nx2navi" {{args}} < /dev/null 2>&1 | tee "$log" | grep -a -v -E "no such proc|preparation progress|PushComputeConstants"
+
+# Play casually with everything Tally needs if something goes wrong, at no measurable cost: no debugger, the log
+# teed to NX2navi/build/{{ver}}/logs/play-<time>.log, every input recorded beside it (replayable with `just replay`),
+# core dumps on, and the run registered as a job so the error watch and the screensaver see it.
+play *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd "{{src}}"
+    mkdir -p "build/{{ver}}/logs"
+    ts=$(date +%Y%m%d-%H%M%S)
+    log="build/{{ver}}/logs/play-$ts.log"
+    echo "log: $log"
+    mkdir -p "{{jobs_dir}}"; job="{{jobs_dir}}/nx2navi.json"
+    printf '{"name":"nx2navi","log":"%s","since":%s,"progress":{"regex":"frame (?P<done>[0-9]+):"},"pid":%s}\n' "$PWD/$log" "$(date +%s)" "$$" > "$job"
+    trap 'rm -f "$job"' EXIT
+    ulimit -c unlimited || true
+    {{dev}} env {{radv}} NX2NAVI_INPUT_RECORD="build/{{ver}}/logs/input-$ts.txt" {{wrapper}} "build/{{ver}}/nx2navi" {{args}} 2>&1 | tee "$log" | grep -a -v -E "no such proc|preparation progress|PushComputeConstants"
 
 # Play under gdb like `debug`, and record every input to NX2navi/build/{{ver}}/logs/input-<time>.txt: the recording
 # replays with `just replay <file>` (Tally runs it from the container to reproduce a crash)

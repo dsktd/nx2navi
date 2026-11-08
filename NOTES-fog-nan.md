@@ -42,3 +42,24 @@ so there is no volumetric fog, and everything outside direct light is near black
 seems to be missing as well, which points at the same defect in other shaders that read the probe data, not only
 this one. The guard proves the cause; the real fix is the instruction the bisect will find (translator or RADV).
 `just nanguard restore` puts the original SPIR-V back.
+
+## Root cause found: FMZ ignored in pow (2026-11-08, iteration log)
+
+Tool: tools/nan-probe.py (img0 store of the injection shader = NaN flags of up to 3 GLSL temps, temp_N = Nth Function
+OpVariable; site 1 NaN 1.0 / finite 0.25; img1 guarded). Runs via scratchpad ab.sh, frame 1500.
+- it1 ACO_DEBUG=noopt,novn,nosched,validateir: NaN unchanged (not an ACO optimisation).
+- it3 probes temp_347 (1/weight sum) finite, temp_348 finite, temp_363 NaN.
+- it4 temp_328 / temp_334 NaN = uintBitsToFloat(cp_s7.data[16] / [12]); s7 = NVN ssbo slot 0 @0x25a4c7f00 (+0xc0):
+  the sky-ambient SH block, not the probe data. Guest bytes there are 0 (GPU results are never written back).
+- it6 RADV_PERFTEST=cswave32: no change (the runtime already pins subgroups to 32). it7 NX2NAVI_MEMORY=import: no change.
+- Writers of 0x25a4c7f00 (passes.txt "written"): pass 33 (4x4x6, words 32-35) and pass 93 (cs a806b657c39684bd,
+  32x32x1, float atomic-add SH projection at c1[0]+...). Pass 93 does pow(clamp(x), c3[2].y) as
+  %1856 = Log2; %1859 = OpFMul %1856 %1858 (c3[2].y); %1860 = Exp2. Maxwell compiles pow with FMUL.FMZ (0*inf = 0 so
+  pow(0,0) = 1); Ryujinx decodes Fmz (InstDecoders.cs) but no emitter uses it, so SPIR-V gives -inf*0 = NaN. One NaN
+  frame poisons the accumulated SH for good; the fog injection and every ambient-SH reader then go NaN/black.
+- it8 tools/fmz-pow.py on pass 93's 3 cache files only (fog shader unguarded original): NaN 0 in the whole frame,
+  injection max ~1200-2700, picture lit with fog and ambient.
+- it9 fmz-pow on all 105 frame shaders with a variable-exponent pow (350 cache files, .orig kept): NaN 0, same picture.
+Fix: tools/fmz-pow.py rewrites OpFMul(Log2 result, y) feeding Exp2 into (a==0||b==0) ? 0 : a*b. It must be rerun
+after `just shaders` re-translates (cache-wide scan is slow: 391k files; frame-scoped list in scratchpad powcache.txt).
+Proper fix: a translator patch in the justfile's patch series honouring Fmz in FMUL/FFMA (and FMUL32I/FFMA32I).
