@@ -2,3 +2,6 @@ NX2navi/
 .msys-stub/
 latest-frame.png
 .lab/
+.lab-bin-*/
+.lab-profile-*/
+perf*.data
