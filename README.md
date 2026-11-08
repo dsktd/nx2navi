@@ -66,7 +66,7 @@ through `VK_EXT_graphics_pipeline_library`, on the RX 6900 XT, inside the contai
 justfile runs the shader preparation and the game with `RADV_DEBUG=nogpl`; the runtime then builds whole pipelines,
 and the vertex and fragment variants compile at their first draw (stutter on the first visit to an area). Mesa 25.2.6
 (`just mesa=stable ...`, nixpkgs stable through a second nixGL) crashes the same way, so it is not one release.
-Because whole pipelines build slowly, the justfile also sets `NX2NAVI_PIPE_SKIP=strict`: full-screen draws wait for
+Because whole pipelines build slowly, the justfile sets `NX2NAVI_PIPE_SKIP=any` (was `strict`; Cal found `any` smoother, 2026-11-08): full-screen draws wait for
 their pipeline instead of being skipped, which otherwise shows as a black game picture under a working overlay.
 
 ## Linux fixes outside the checkout (runtime-linux/)

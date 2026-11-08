@@ -13,7 +13,7 @@ mesa := env("NX2NAVI_MESA", "")
 shellname := if mesa == "stable" { "#mesa-stable" } else { "" }
 # Which draws are skipped while their pipeline builds (upstream default fullscreen): strict waits for full-screen
 # draws, which with the pipeline library off otherwise go black while they build
-pipeskip := env("NX2NAVI_PIPE_SKIP", "strict")
+pipeskip := env("NX2NAVI_PIPE_SKIP", "any")
 nup := env("NX2NAVI_NUP", "")
 
 # The live screensaver's job registry (claude-job in the container): a run registers itself so the Director's
