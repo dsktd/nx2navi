@@ -89,6 +89,13 @@ PER_FILE_DEFINES = {
     'platform/linux.c': '-Dplat_frame_capture=plat_frame_capture_stub -Dplat_fiber_new=plat_fiber_new_upstream',
     'guest_setjmp.c': '-Dplat_frame_capture=nx_frame_capture -Dlongjmp=nx_frame_resume',
 }
+# Per-file flag replacements: the whole rtflags line for that file (see write_ninja)
+PER_FILE_FLAGS = {
+    # The kit's flags for this file (no -g, no -march, warnings off): upstream's mesh-stage c0 table overruns its
+    # 2 KiB stack bank by 112 bytes (upstream-issue-c0-mesh.md); under our flags clang parks the caller's exec pointer
+    # in that range and the game faults, under the kit's layout the Windows build gets away with it. Try the same.
+    'vk_exec_draw.c': ['-O2', '-fno-strict-aliasing', '-fdeclspec', '-w'],
+}
 
 
 def write_ninja(src, out, lift, gen, cpu):
@@ -136,6 +143,9 @@ def write_ninja(src, out, lift, gen, cpu):
         extra = PER_FILE_DEFINES.get(rel.as_posix())
         if extra:
             lines.append(f'  rtflags = $rtflags {extra}')
+        flags = PER_FILE_FLAGS.get(rel.as_posix())
+        if flags:
+            lines.append(f'  rtflags = {" ".join(flags)} -DRT_CPU_LEVEL={3 if cpu == "v3" else 2} {rt_inc}')
         objs.append(o)
     exe = out / 'nx2navi'
     lines += [f'build {npath(exe)}: link ' + ' '.join(npath(o) for o in objs), f'default {npath(exe)}', '']
