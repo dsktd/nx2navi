@@ -15,6 +15,10 @@ shellname := if mesa == "stable" { "#mesa-stable" } else { "" }
 # draws, which with the pipeline library off otherwise go black while they build
 pipeskip := env("NX2NAVI_PIPE_SKIP", "strict")
 nup := env("NX2NAVI_NUP", "")
+
+# The live screensaver's job registry (claude-job in the container): a run registers itself so the Director's
+# jobwatch scene shows its log and frame count; removed when the run ends
+jobs_dir := env("HOME") / "claude/.services/screensavers/jobs"
 # the [work] dir of config.local.toml (where build_game.py looks for extracted/<ver>)
 work := env("NX2NAVI_WORK", "build")
 # make_game.py insists on an MSYS2 folder before it starts, although the extraction never uses it: an empty stand-in
@@ -100,6 +104,9 @@ debug *args:
     mkdir -p "build/{{ver}}/logs"
     log="build/{{ver}}/logs/run-$(date +%Y%m%d-%H%M%S).log"
     echo "log: $log"
+    mkdir -p "{{jobs_dir}}"; job="{{jobs_dir}}/nx2navi.json"
+    printf '{"name":"nx2navi","log":"%s","since":%s,"progress":{"regex":"frame (?P<done>[0-9]+):"},"pid":%s}\n' "$PWD/$log" "$(date +%s)" "$$" > "$job"
+    trap 'rm -f "$job"' EXIT
     # -nx: the user's ~/.gdbinit (a dashboard) would draw terminal panes into the log; no stdin: nothing to prompt
     {{dev}} env TERM=dumb {{radv}} {{wrapper}} nix shell nixpkgs#gdb -c gdb -nx -batch -q -x "{{flake}}/tools/crash.gdb" --args "build/{{ver}}/nx2navi" {{args}} < /dev/null 2>&1 | tee "$log" | grep -a -v -E "no such proc|preparation progress|PushComputeConstants"
 
@@ -112,6 +119,9 @@ record *args:
     mkdir -p "build/{{ver}}/logs"
     t=$(date +%Y%m%d-%H%M%S); log="build/{{ver}}/logs/run-$t.log"; rec="build/{{ver}}/logs/input-$t.txt"
     echo "log: $log"; echo "recording: $rec"
+    mkdir -p "{{jobs_dir}}"; job="{{jobs_dir}}/nx2navi.json"
+    printf '{"name":"nx2navi","log":"%s","since":%s,"progress":{"regex":"frame (?P<done>[0-9]+):"},"pid":%s}\n' "$PWD/$log" "$(date +%s)" "$$" > "$job"
+    trap 'rm -f "$job"' EXIT
     {{dev}} env TERM=dumb {{radv}} NX2NAVI_INPUT_RECORD="$rec" {{wrapper}} nix shell nixpkgs#gdb -c gdb -nx -batch -q -x "{{flake}}/tools/crash.gdb" --args "build/{{ver}}/nx2navi" {{args}} < /dev/null 2>&1 | tee "$log" | grep -a -v -E "no such proc|preparation progress|PushComputeConstants"
 
 # Replay a recording under gdb (NX2NAVI_INPUT_SCRIPT), log as `debug`; extra env after the file: just replay in.txt NX2NAVI_X=1
@@ -122,6 +132,9 @@ replay file *env:
     mkdir -p "build/{{ver}}/logs"
     log="build/{{ver}}/logs/run-$(date +%Y%m%d-%H%M%S)-replay.log"
     echo "log: $log"
+    mkdir -p "{{jobs_dir}}"; job="{{jobs_dir}}/nx2navi.json"
+    printf '{"name":"nx2navi","log":"%s","since":%s,"progress":{"regex":"frame (?P<done>[0-9]+):"},"pid":%s}\n' "$PWD/$log" "$(date +%s)" "$$" > "$job"
+    trap 'rm -f "$job"' EXIT
     {{dev}} env TERM=dumb {{radv}} NX2NAVI_INPUT_SCRIPT="{{file}}" {{env}} {{wrapper}} nix shell nixpkgs#gdb -c gdb -nx -batch -q -x "{{flake}}/tools/crash.gdb" --args "build/{{ver}}/nx2navi" < /dev/null 2>&1 | tee "$log" | grep -a -v -E "no such proc|preparation progress|PushComputeConstants"
 
 # Selftest and Vulkan check without game files on the GPU
