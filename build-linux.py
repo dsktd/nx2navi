@@ -145,7 +145,7 @@ def main():
     src = a.src.resolve()
     extracted = (a.extracted or src / 'build' / 'extracted' / 'v111').resolve()
     out = (a.out or src / 'build' / 'v111').resolve()
-    py = (a.python or src / '.venv' / 'bin' / 'python').resolve()
+    py = (a.python or src / '.venv' / 'bin' / 'python').absolute()   # not resolve(): a venv's python is a symlink
     lift = extracted / 'build-cache' / 'lift'
     step_lift(src, py, extracted)
     gen = step_glue(src, py, extracted, out, lift)
