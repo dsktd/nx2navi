@@ -69,7 +69,8 @@ def step_lift(src, py, extracted):
 
 
 def step_glue(src, py, extracted, out, lift):
-    run([py, '-I', src / 'tools' / 'romfs_index.py', '--romfs', extracted / 'romfs', '--out', out], cwd=src)
+    # no -I: the script imports a sibling (check_content) from its own directory
+    run([py, src / 'tools' / 'romfs_index.py', '--romfs', extracted / 'romfs', '--out', out], cwd=src)
     gen = out / 'gen'
     gen.mkdir(parents=True, exist_ok=True)
     # the kit's own glue writer, so the constants stay its
