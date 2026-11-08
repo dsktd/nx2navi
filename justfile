@@ -101,6 +101,27 @@ debug *args:
     # -nx: the user's ~/.gdbinit (a dashboard) would draw terminal panes into the log; no stdin: nothing to prompt
     {{dev}} env TERM=dumb {{radv}} {{wrapper}} nix shell nixpkgs#gdb -c gdb -nx -batch -q -x "{{flake}}/tools/crash.gdb" --args "build/{{ver}}/nx2navi" {{args}} < /dev/null 2>&1 | tee "$log" | grep -a -v -E "no such proc|preparation progress|PushComputeConstants"
 
+# Play under gdb like `debug`, and record every input to NX2navi/build/{{ver}}/logs/input-<time>.txt: the recording
+# replays with `just replay <file>` (Tally runs it from the container to reproduce a crash)
+record *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd "{{src}}"
+    mkdir -p "build/{{ver}}/logs"
+    t=$(date +%Y%m%d-%H%M%S); log="build/{{ver}}/logs/run-$t.log"; rec="build/{{ver}}/logs/input-$t.txt"
+    echo "log: $log"; echo "recording: $rec"
+    {{dev}} env TERM=dumb {{radv}} NX2NAVI_INPUT_RECORD="$rec" {{wrapper}} nix shell nixpkgs#gdb -c gdb -nx -batch -q -x "{{flake}}/tools/crash.gdb" --args "build/{{ver}}/nx2navi" {{args}} < /dev/null 2>&1 | tee "$log" | grep -a -v -E "no such proc|preparation progress|PushComputeConstants"
+
+# Replay a recording under gdb (NX2NAVI_INPUT_SCRIPT), log as `debug`; extra env after the file: just replay in.txt NX2NAVI_X=1
+replay file *env:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd "{{src}}"
+    mkdir -p "build/{{ver}}/logs"
+    log="build/{{ver}}/logs/run-$(date +%Y%m%d-%H%M%S)-replay.log"
+    echo "log: $log"
+    {{dev}} env TERM=dumb {{radv}} NX2NAVI_INPUT_SCRIPT="{{file}}" {{env}} {{wrapper}} nix shell nixpkgs#gdb -c gdb -nx -batch -q -x "{{flake}}/tools/crash.gdb" --args "build/{{ver}}/nx2navi" < /dev/null 2>&1 | tee "$log" | grep -a -v -E "no such proc|preparation progress|PushComputeConstants"
+
 # Selftest and Vulkan check without game files on the GPU
 selftest:
     cd "{{src}}" && {{dev}} env {{radv}} {{wrapper}} build/{{ver}}/nx2navi --selftest
