@@ -89,7 +89,8 @@ debug *args:
     mkdir -p "build/{{ver}}/logs"
     log="build/{{ver}}/logs/run-$(date +%Y%m%d-%H%M%S).log"
     echo "log: $log"
-    {{dev}} env {{radv}} {{wrapper}} nix shell nixpkgs#gdb -c gdb -batch -q -x "{{flake}}/tools/crash.gdb" --args "build/{{ver}}/nx2navi" {{args}} 2>&1 | tee "$log" | grep -v -E "no such proc|preparation progress|PushComputeConstants"
+    # TERM=dumb and no stdin: gdb otherwise redraws a terminal "Output/messages" pane into the log
+    {{dev}} env TERM=dumb {{radv}} {{wrapper}} nix shell nixpkgs#gdb -c gdb -batch -q -x "{{flake}}/tools/crash.gdb" --args "build/{{ver}}/nx2navi" {{args}} < /dev/null 2>&1 | tee "$log" | grep -a -v -E "no such proc|preparation progress|PushComputeConstants"
 
 # Selftest and Vulkan check without game files on the GPU
 selftest:
