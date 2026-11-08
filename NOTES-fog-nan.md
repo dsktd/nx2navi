@@ -26,3 +26,19 @@ Next steps:
 Tooling: dumps go to build/v111/dump (NX2NAVI_DUMP=<frame> NX2NAVI_DUMP_DIR=... [NX2NAVI_DUMP_UBO=n]
 [NX2NAVI_DUMP_BUF=addr:size, one range]); `just replay <recording> KEY=VALUE...` passes env. The shader's GLSL can be
 regenerated with build/xlate/nx2navi_xlate (glsl_out) for program hash ddc04154cb30aecc....
+
+## Fog NaN bisect (SPIR-V store probes, container, frame 1500)
+
+Tool: scratchpad probe.py rewrites the img1 store composites (%5876 site 1, %10388 site 2) of sh_67ebcf9b12b90fbe; install.sh copies it over the 4 identical cache entries (backed up as .spv.orig).
+
+baseline (originals) NaN 153108
+
+## Stopgap verified (2026-11-08)
+
+`tools/nan-guard.py` (wired as `just nanguard`, run after `just shaders`) wraps every vec4 image write of the fog
+light-injection shader in NMax(texel, 0). Container replay of Cal's save, frame 1500: no NaN anywhere in the frame
+(was ~153k channels), and the picture is back: Link, Navi, lanterns, HUD render. The whole injection output is now 0,
+so there is no volumetric fog, and everything outside direct light is near black. Ambient light from the probe grid
+seems to be missing as well, which points at the same defect in other shaders that read the probe data, not only
+this one. The guard proves the cause; the real fix is the instruction the bisect will find (translator or RADV).
+`just nanguard restore` puts the original SPIR-V back.

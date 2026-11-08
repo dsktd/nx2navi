@@ -88,8 +88,14 @@ game cpu="v3":
     cd "{{src}}" && {{dev}} python3 -I "{{flake}}/build-linux.py" --src "{{src}}" --extracted "{{work}}/extracted/{{ver}}" --out "build/{{ver}}" --cpu {{cpu}}
 
 # Prepare every shader of the game files and warm the GPU driver's cache (opens a window: run from the desktop session)
-shaders:
+shaders: && nanguard
     cd "{{src}}" && {{dev}} env {{radv}} {{wrapper}} {{py314}} tools/prepare_shaders.py build/{{ver}} --romfs "{{work}}/extracted/{{ver}}/romfs" --exefs "{{work}}/extracted/{{ver}}/exefs" --no-list
+
+# Stopgap: NaN guard on the volumetric fog light-injection shader (its NaN blacks the picture; NOTES-fog-nan.md).
+# Runs after `shaders`; `just nanguard restore` puts the original SPIR-V back.
+fog_spv := "1201517696dd2e1d9ad6735249bb9160bf2fd71a5e45b176400585a8371a5083"
+nanguard *mode:
+    cd "{{src}}" && {{dev}} python3 "{{flake}}/tools/nan-guard.py" build/{{ver}}/shader-cache --sha256 {{fog_spv}} {{ if mode == "restore" { "--restore" } else { "" } }}
 
 # Play
 run *args:
