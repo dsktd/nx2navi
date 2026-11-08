@@ -1,24 +1,25 @@
+# just debug: the game under gdb. Guest write-watch faults are the runtime's business (SIGSEGV passes through
+# silently); a real crash reaches the runtime's crash reporter, where we record every thread's host backtrace.
 set pagination off
-set disable-randomization off
 set print thread-events off
+set disable-randomization off
 handle all nostop noprint pass
-handle SIGSEGV SIGBUS SIGABRT SIGILL SIGFPE stop print pass
 handle SIGTRAP SIGINT stop print nopass
-set $n = 0
-catch signal SIGSEGV SIGBUS SIGABRT SIGILL SIGFPE
+break crash_handler
 commands
   silent
-  set $n = $n + 1
-  printf "=== signal stop %d\n", $n
-  p $_siginfo.si_signo
-  p $_siginfo._sifields._sigfault.si_addr
-  x/i $pc
+  printf "=== crash: %s at host %#lx addr %#lx\n", x->what, x->rip, x->addr
+  bt 40
+  info registers rip rsp rbp
+  thread apply all bt 12
+  continue
+end
+break rt_fatal
+commands
+  silent
+  printf "=== rt_fatal\n"
   bt 30
-  info registers rsp rbp
-  info threads
-  if $n < 40
-    continue
-  end
+  continue
 end
 run
-printf "=== end, %d stops\n", $n
+printf "=== end\n"
