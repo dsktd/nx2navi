@@ -1,0 +1,84 @@
+From ef1f5c1e75247a542c8a3f6f5a5ff7813eb7687e Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Sun, 8 Nov 2026 12:26:47 -0500
+Subject: [PATCH] vk_memory: write back only the shadow pages the GPU changed
+
+vk_gpu_written copied every GPU-writable range from the shadow back into
+guest memory and stamped all of it written. The replay binds writable
+storage ranges far larger than what the shaders write (pointer SSBOs to
+the end of their backing; 4-15 MiB storage table entries outdoors, about
+76 MiB per frame), so each frame dirtied tens of MiB of unchanged pages:
+the next shadow sync copied them in again and the mirror re-uploaded
+them, about 40 GB each way per 1200 frames and ~23 fps.
+
+Compare each 4 KiB page with the shadow first and copy and stamp only
+the pages that differ. Guest memory ends up byte for byte as the plain
+copy left it, so the copy-back's guarantees are unchanged.
+---
+ runtime/vk_memory.c | 40 +++++++++++++++++++++++++++++++++++-----
+ 1 file changed, 35 insertions(+), 5 deletions(-)
+
+diff --git a/runtime/vk_memory.c b/runtime/vk_memory.c
+index 6234e53..3953aca 100644
+--- a/runtime/vk_memory.c
++++ b/runtime/vk_memory.c
+@@ -1034,21 +1034,51 @@ void vk_mem_gpu_pending(uint64_t addr, uint64_t size) {
+     plat_mutex_unlock(&shadow_lock);
+ }
+ 
++// shadow_lock held: one changed run of shadow_write_back.
++static void shadow_put(PoolRec *r, uint64_t a, uint64_t b) {
++    mem_thaw(a, b - a);
++    memcpy((void *)(uintptr_t)a, r->smap + (a - r->import_lo), b - a);
++    vk_guest_written(a, b - a);
++    s_wb_bytes += b - a;
++}
++
++// shadow_lock held: copies the shadow's [a, b) into guest memory, page by page (4 KiB, by address), leaving out the
++// pages whose guest bytes already equal the shadow's, and stamps only the pages it wrote (vk_guest_written).
++// A written range is what the replay bound as writable, not what the shaders wrote: a storage buffer reached through a
++// pointer binds to the end of its backing, and the outdoor areas bind 4-15 MiB storage ranges of which the compute
++// passes change a few KiB (about 76 MiB of written ranges per frame, 2026-11-08). Copied and stamped whole, every
++// page came back dirty: the next vk_mem_shadow_sync copied the same bytes into the shadow again, the mirror re-uploaded
++// them, and the textures over them were checked again; 40 GB each way per 1200 frames, ~23 fps. Skipping an equal page
++// leaves guest memory byte for byte what the plain copy left (copying equal bytes changes nothing), so the guarantees
++// of the copy-back stay as they were, including a page the CPU and the GPU both wrote keeping the GPU's bytes; only
++// the page is not reported written, and no consumer of the stamps needs to see bytes that did not change.
++static void shadow_write_back(PoolRec *r, uint64_t a, uint64_t b) {
++    uint64_t run = 0;
++    for (uint64_t x = a; x < b;) {
++        uint64_t y = (x | 0xfffull) + 1;
++        if (y > b) y = b;
++        const uint8_t *src = r->smap + (x - r->import_lo);
++        int same = !memcmp((const void *)(uintptr_t)x, src, y - x);
++        if (!same && !run) run = x;
++        if (same && run) shadow_put(r, run, x), run = 0;
++        x = y;
++    }
++    if (run) shadow_put(r, run, b);
++}
++
+ void vk_gpu_written(uint64_t addr, uint64_t size) {
+     if (shadow_on && size) {
+         plat_mutex_lock_shared(&pool_lock);
+         const pidx_ent *e = pidx_find(&pool_index, addr, size);
+         PoolRec *r = e ? e->buf : NULL;
+         plat_mutex_lock(&shadow_lock);
+-        if (r && r->smap && addr >= r->import_lo && addr + size <= r->import_hi) {
+-            mem_thaw(addr, size);
+-            memcpy((void *)(uintptr_t)addr, r->smap + (addr - r->import_lo), size);
+-            s_wb_bytes += size;
+-        }
++        int done = 0;
++        if (r && r->smap && addr >= r->import_lo && addr + size <= r->import_hi) shadow_write_back(r, addr, addr + size), done = 1;
+         for (int i = 0; i < nspend; i++)
+             if (spend[i].lo == addr && spend[i].hi == addr + size) { spend[i] = spend[--nspend]; break; }
+         plat_mutex_unlock(&shadow_lock);
+         plat_mutex_unlock_shared(&pool_lock);
++        if (done) return;
+     }
+     vk_guest_written(addr, size);
+ }
+-- 
+2.56.0
+

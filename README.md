@@ -120,3 +120,12 @@ Python 3.12.15 and 3.14.8, uv 0.13.5, SDL3 3.4.18 and Vulkan 1.4.363; a test pro
 line (`-lvulkan -lSDL3 -lopus -lvpx -lzstd -l:libstdc++.a`) and runs; `uv` resolves both requirement files as wheels
 for the Nix interpreters; `nixVulkanIntel` builds and points `VK_ICD_FILENAMES` at Mesa 26.2.6. Not verified: the real
 game build and play.
+
+## Private local patches
+
+`patches/` holds local fixes to upstream NX2navi code. They are applied as local commits on the
+`build` branch of the `NX2navi` worktree and are never pushed or published (the license forbids
+distribution). After `just update`, `build` may need a rebase onto the new upstream.
+
+- `0001-shadow-write-back-changed-pages.patch`: shadow write-back copies only pages the GPU changed
+  (fixes the outdoor write-back storm, ~23 -> 30 fps).
