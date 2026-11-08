@@ -83,9 +83,15 @@ def step_glue(src, py, extracted, out, lift):
 def write_ninja(src, out, lift, gen, cpu):
     runtime = src / 'runtime'
     march = f'-march=x86-64-{cpu}'
-    vma = os.environ.get('NX2NAVI_VMA_INCLUDE') or '/usr/include'
-    if not (Path(vma) / 'vk_mem_alloc.h').is_file():
-        sys.exit(f'build-linux: no vk_mem_alloc.h in {vma} (set NX2NAVI_VMA_INCLUDE)')
+    # vk_mem_alloc.h is copied into the build folder: the compile lines then hold no Nix store path, so objects
+    # built on one machine (the container) stay valid on another (the host) with the same /home path
+    vma_src = Path(os.environ.get('NX2NAVI_VMA_INCLUDE') or '/usr/include') / 'vk_mem_alloc.h'
+    if not vma_src.is_file():
+        sys.exit(f'build-linux: no {vma_src} (set NX2NAVI_VMA_INCLUDE)')
+    vma = out / 'include'
+    vma.mkdir(parents=True, exist_ok=True)
+    if not (vma / 'vk_mem_alloc.h').is_file() or (vma / 'vk_mem_alloc.h').read_bytes() != vma_src.read_bytes():
+        shutil.copyfile(vma_src, vma / 'vk_mem_alloc.h')
     inc = f'-I {npath(runtime)} -I {npath(lift)} -I {npath(gen)}'
     rt_inc = f'{inc} -I {npath(out)} -I {npath(vma)} -I {npath(runtime / "third_party" / "imgui")}'
     lines = [
