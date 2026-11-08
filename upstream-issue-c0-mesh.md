@@ -29,16 +29,31 @@ The task stage's table at 0x670 fits exactly (0x670 + 0x100 = 0x770); the mesh s
 
 ## Fix
 
-Clamp the table to the bank, for example in `vk_c0_fill`:
+Clamp the table to the bank (the mesh stage gets 9 rows at 0x770; the game binds slots 0-2 there):
 
-```c
-int base = c0_ssbo_base(stage);
-if (base < 0) return;
-int rows = (VK_C0_BYTES - base) / 16;   // 9 for the mesh stage at 0x770
-c0_table_n(bank + base, ssbo, rows < 16 ? rows : 16);
+```diff
+--- a/runtime/vk_exec_draw.c
++++ b/runtime/vk_exec_draw.c
+@@ static void c0_table(uint8_t *at, const p_bind_buf b[16]) {
+-static void c0_table(uint8_t *at, const p_bind_buf b[16]) {
+-    for (int r = 0; r < 16; r++) {
++static void c0_table(uint8_t *at, const p_bind_buf b[16], int rows) {
++    for (int r = 0; r < rows; r++) {
+@@ void vk_c0_fill(uint8_t bank[VK_C0_BYTES], int stage, ...
+     int base = c0_ssbo_base(stage);
+     if (base < 0) return;
+-    c0_table(bank + base, ssbo);
++    int rows = (int)((VK_C0_BYTES - (uint32_t)base) / 16);   // 9 for the mesh stage: 0x770 + 16 * 16 > 0x800
++    c0_table(bank + base, ssbo, rows < 16 ? rows : 16);
+     if (stage == NVN_STAGE_TASK || stage == NVN_STAGE_MESH) return;
+     if (stage == NVN_STAGE_CS) {
+         memcpy(bank + 0x200, dispatch, 12);
+-        c0_table(bank + 0x210, ubo);
++        c0_table(bank + 0x210, ubo, 16);
 ```
 
-or give `c0_table` the row count. `B.c0_in[k]`/`B.c0[k]` are unaffected (fixed sizes).
+`B.c0_in[k]`/`B.c0[k]` are unaffected (fixed sizes). `NX2NAVI_FIX_C0=0` avoids the crash but leaves the bank zero, and
+the picture goes black, so it is not a workaround.
 
 ## Repro
 
