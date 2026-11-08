@@ -178,3 +178,20 @@ Proper fix: a translator patch in the justfile's patch series honouring Fmz in F
   keys (dump sh_*.spv == cache .spv/.orig by size+cmp). Then apply fmz-all to copies one shader at a time through the reload
   loop (temp + rename, keep .orig, restore after), then one site at a time. Then trace the inf/NaN operand (MUFU edge cases,
   the SH words 12-27 = 0xFFFFFFFF).
+
+## Deku web, live hot-reload bisect (2026-11-08, play-20261108-141155)
+
+- FMZ is cleared as the cause. fmz-all on the 172 drawn pixel shaders lights the room; reduced to one pixel shader (fb9bc087,
+  multiply sites 513 + 538 together), which takes its SH L0 term from input location 1.w * 0.282095. A NaN guard on that
+  input lights the room and an inf guard does not. The NaN comes from vs b295ba18 (out1.w = SH from storage buffer slot 0, words 13/21/25..., the
+  sky-SH block 0x25a4c7f00). fmz-all on the vs does nothing; a NaN guard on its outputs lights the room.
+- The block is accumulated by float atomic adds that the translator emulates as AtomicOr(0) + CAS loops (cs e9b99bf2 pass 23
+  4x4x6, cs a806b657 pass 101 1x1x1). Neither pass stores or clears the block. Once the GPU copy holds NaN it stays NaN
+  (NaN + x). tools/cas-nan-guard.py (old NaN -> 0 in the CAS add) on a806b657's 3 cache files (b51b2871, ef9d2a01,
+  29fce94c) lights the whole room like the reference: ground metric 49 -> 234. Kept live; backups in build/v111/reload-bak.
+- Still open: how the NaN enters on our side but not on hardware. Leads: (1) the guest bytes hold 0xFFFFFFFF in words
+  12-27 and seed the GPU copy; (2) the game's per-frame reset of the block (CPU memset, or a GPU fill/copy) does not reach
+  the GPU copy, a mirror/shadow sync gap for a GPU-written range. If (2) is right, the guarded sums would grow over time.
+  Next: log the GPU copy of 0x25a4c7f00..+0x100 per frame (vk_dump buffer snap) with and without the guard, and trace
+  the guest writes to that page.
+- `just fmzpow` rewrites b51b2871 from its .orig and would drop the guard; run cas-nan-guard.py again after it.
