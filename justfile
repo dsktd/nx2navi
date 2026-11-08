@@ -80,6 +80,17 @@ shaders:
 run *args:
     cd "{{src}}" && {{dev}} env {{radv}} {{wrapper}} build/{{ver}}/nx2navi {{args}}
 
+# Play under gdb, everything logged to NX2navi/build/{{ver}}/logs/run-<time>.log (a fatal error comes with the host
+# backtrace of every fault); Tally watches that folder from the container
+debug *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd "{{src}}"
+    mkdir -p "build/{{ver}}/logs"
+    log="build/{{ver}}/logs/run-$(date +%Y%m%d-%H%M%S).log"
+    echo "log: $log"
+    {{dev}} env {{radv}} {{wrapper}} nix shell nixpkgs#gdb -c gdb -batch -q -x "{{flake}}/tools/crash.gdb" --args "build/{{ver}}/nx2navi" {{args}} 2>&1 | tee "$log" | grep -v -E "no such proc|preparation progress|PushComputeConstants"
+
 # Selftest and Vulkan check without game files on the GPU
 selftest:
     cd "{{src}}" && {{dev}} env {{radv}} {{wrapper}} build/{{ver}}/nx2navi --selftest
