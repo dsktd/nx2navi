@@ -16,6 +16,9 @@ msys := justfile_directory() / ".msys-stub"
 flake := justfile_directory()
 impure := if gpu == "nvidia" { "--impure" } else { "" }
 wrapper := if gpu == "nvidia" { "nixVulkanNvidia" } else { "nixVulkanIntel" }
+# RADV (Mesa 26.2.6) segfaults in its graphics pipeline library path while this game builds pipelines
+# (libvulkan_radeon.so+0x19be92, found 2026-11-08 on an RX 6900 XT); without it the runtime builds whole pipelines
+radv := "RADV_DEBUG=nogpl"
 dev := "NX2NAVI_NVIDIA=" + (if gpu == "nvidia" { "1" } else { "0" }) + " nix develop " + impure + " " + flake + " --command"
 py := ".venv/bin/python"
 py314 := ".venv-py314/bin/python"
@@ -71,15 +74,15 @@ game cpu="v3":
 
 # Prepare every shader of the game files and warm the GPU driver's cache (opens a window: run from the desktop session)
 shaders:
-    cd "{{src}}" && {{dev}} {{wrapper}} {{py314}} tools/prepare_shaders.py build/{{ver}} --romfs "{{work}}/extracted/{{ver}}/romfs" --exefs "{{work}}/extracted/{{ver}}/exefs" --no-list
+    cd "{{src}}" && {{dev}} env {{radv}} {{wrapper}} {{py314}} tools/prepare_shaders.py build/{{ver}} --romfs "{{work}}/extracted/{{ver}}/romfs" --exefs "{{work}}/extracted/{{ver}}/exefs" --no-list
 
 # Play
 run *args:
-    cd "{{src}}" && {{dev}} {{wrapper}} build/{{ver}}/nx2navi {{args}}
+    cd "{{src}}" && {{dev}} env {{radv}} {{wrapper}} build/{{ver}}/nx2navi {{args}}
 
 # Selftest and Vulkan check without game files on the GPU
 selftest:
-    cd "{{src}}" && {{dev}} {{wrapper}} build/{{ver}}/nx2navi --selftest
+    cd "{{src}}" && {{dev}} env {{radv}} {{wrapper}} build/{{ver}}/nx2navi --selftest
 
 # Pull upstream and rebuild what changed
 update: && xlate game shaders

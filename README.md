@@ -59,6 +59,14 @@ nixVulkanIntel build/v111/nx2navi
 session. The game binary finds `libSDL3.so.0` and the Vulkan loader through the shell's `LD_LIBRARY_PATH`, so start it
 from the shell (a desktop entry can call `nix develop ~/claude/nx2navi --command nixVulkanIntel <path>/nx2navi`).
 
+## RADV workaround
+
+Mesa 26.2.6's RADV crashes (`libvulkan_radeon.so+0x19be92`, writing address 0x40) while the game builds pipelines
+through `VK_EXT_graphics_pipeline_library`, on the RX 6900 XT, inside the container and on the host alike. The
+justfile runs the shader preparation and the game with `RADV_DEBUG=nogpl`; the runtime then builds whole pipelines,
+and the vertex and fragment variants compile at their first draw (stutter on the first visit to an area). Retest
+without it on a newer Mesa.
+
 ## Status
 
 2026-11-08: the lift (297,414 functions, 1.2 GB of C), compile (680 objects) and link ran in the Manager's container
