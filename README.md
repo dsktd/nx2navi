@@ -14,6 +14,14 @@ The flake lives here and is read directly: `nix develop ~/claude/nx2navi`, or th
 - NVIDIA: `NX2NAVI_NVIDIA=1 nix develop --impure ~/claude/nx2navi`. nixGL fetches the driver of the host's exact version
   and repackages it (a one-time build, redone after a driver update); then wrap the game with `nixVulkanNvidia`.
 
+## How the build works
+
+The repository's two build paths do not cover Linux and Ocarina together: `tools/build_game.py` builds on Linux but
+writes the glue of the other game versions (Switch 1 memory pool, NVN 1), and the kit `tools/make_game.py` knows
+Ocarina 1.1.1 but compiles only with MSYS2 on Windows. `build-linux.py` here runs the kit's own lift (with its two
+bring-up fixes) and glue writer, then compiles and links with the Linux flags of `build_game.py` through Ninja, plus
+dav1d (the Switch 2 movies) and `-fdeclspec` (the FidelityFX header). Nothing in the checkout changes.
+
 ## Game files
 
 A `.nup` dump is unencrypted and needs no keys: `NX2NAVI_NUP=/path/game.nup just extract` unpacks it with
@@ -50,6 +58,13 @@ nixVulkanIntel build/v111/nx2navi
 `--cpu v2` on `build_game.py` only for a CPU without AVX2. The shader preparation opens a window: run it in the desktop
 session. The game binary finds `libSDL3.so.0` and the Vulkan loader through the shell's `LD_LIBRARY_PATH`, so start it
 from the shell (a desktop entry can call `nix develop ~/claude/nx2navi --command nixVulkanIntel <path>/nx2navi`).
+
+## Status
+
+2026-11-08: the lift (297,414 functions, 1.2 GB of C), compile (680 objects) and link ran in the Manager's container
+against Cal's extracted files, giving a 318 MB `build/v111/nx2navi`. `--selftest` passes except one check that assumes
+the other game's 3.3 GB pool (a 4 GiB map is expected to fail; Ocarina's 9.8 GB pool allows it). Not yet verified:
+shaders and play on the GPU.
 
 ## What was verified
 
