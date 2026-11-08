@@ -1,0 +1,4 @@
+#!/bin/bash
+# lab-when <label> <regex>: seconds since start at which the first matching line of .lab/<label>/run.log appeared
+d=$HOME/claude/nx2navi/.lab/$1; n=$(grep -anE "$2" $d/run.log | head -1 | cut -d: -f1)
+awk -v n=$n '$2>=n{print $1; exit}' $d/trace
