@@ -166,3 +166,15 @@ Proper fix: a translator patch in the justfile's patch series honouring Fmz in F
 - Private full re-translate: copy the live in/ (44,156 stored inputs, 629 MB) into an empty cache; prewarm translates
   43,453 in 145 s with 16 translators, 0 failed.
 - spirv-val: 8 of 289 frame shaders fail in base and fix alike (StorageImageReadWithoutFormat missing), pre-existing.
+
+## Hot-reload + where the FMZ bisect stopped (2026-11-08, interrupted by host reboot)
+
+- patches/0003-shader-hot-reload.patch (build 087f7bc): NX2NAVI_SHADER_RELOAD=1 reloads a rewritten cache <key>.spv in
+  about 1 frame ("vk_pipeline: reload <key16> ok|failed"); touch build/v111/shot.req -> logs/shot-<n>.png. Tested on a
+  private cache only. Each edit takes about 1-3 s, compared with about 60 s for a lab-run dump. The live cache was never touched.
+- Recording input-20261108-131323 now replays into an indoor scene (map "1F") at frames 820/1100 (3 runs): it diverged,
+  so lab A/Bs on it do not show the Kokiri ground. Bisect not started yet.
+- Next: in Cal's live game (`NX2NAVI_SHADER_RELOAD=1 just play`, outdoors), map the 93 pass-169/171 shaders to cache
+  keys (dump sh_*.spv == cache .spv/.orig by size+cmp). Then apply fmz-all to copies one shader at a time through the reload
+  loop (temp + rename, keep .orig, restore after), then one site at a time. Then trace the inf/NaN operand (MUFU edge cases,
+  the SH words 12-27 = 0xFFFFFFFF).
