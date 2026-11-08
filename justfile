@@ -81,7 +81,7 @@ extract:
 
 # The shader translator (.NET)
 xlate:
-    cd "{{src}}" && {{dev}} {{py}} tools/build_xlate.py
+    cd "{{src}}" && {{dev}} env GIT_CEILING_DIRECTORIES="{{src}}" {{py}} tools/build_xlate.py
 
 # Lift (the kit, with its bring-up fixes), glue, compile and link build/{{ver}}/nx2navi (a CPU without AVX2: just game v2)
 game cpu="v3":

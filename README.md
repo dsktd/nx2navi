@@ -79,6 +79,17 @@ beside the runtime and renames upstream's versions with per-file `-D` flags, so 
 - `plat_fiber_new` starts a fiber's function with the stack misaligned by 8 bytes; glibc's `pthread_create` then
   faults on an aligned SSE store. `frames.c` wraps upstream's constructor and shifts the first frame by one word.
 
+## Translator patches and the worktree (black picture, NaN fog)
+
+`tools/build_xlate.py` applies its 34 patches with `git apply` from `build/`. In a worktree whose `.gitignore` lists
+`build/`, git treats that directory as part of the checkout and skips a patch that creates a new file
+(`0021-prmt-byte-permute.patch`, the PRMT byte-permute instruction), printing "Skipped patch" and exiting 0. The
+translator then builds without PRMT, 6,006 shaders carried "PrmtR is not implemented", and every shader using it
+read stale registers: the volumetric fog light injection wrote NaN into its froxel volume, the fog history made it
+permanent, and the fog composite turned the whole picture black at the first outdoor scene. The justfile's `xlate`
+recipe sets `GIT_CEILING_DIRECTORIES` to the checkout so git does not look upward from `build/`; after a translator
+change run `just xlate game shaders` (the shader cache keys include the translator id).
+
 ## Upstream bug: mesh-stage c0 table overflow
 
 `runtime/vk_exec_draw.c` writes the mesh stage's 16-entry storage table at 0x770 of a 0x800-byte stack bank, 112
