@@ -1,0 +1,143 @@
+From e31e6a59057951abefab30234717bc7aede910de Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Sun, 8 Nov 2026 16:56:28 -0500
+Subject: [PATCH] vk_texture: the pool's per-submit freshness check reads
+ compact per-slot arrays
+
+---
+ runtime/vk.h           |  1 +
+ runtime/vk_exec_draw.c |  2 +-
+ runtime/vk_texture.c   | 40 ++++++++++++++++++++++++++++++++--------
+ 3 files changed, 34 insertions(+), 9 deletions(-)
+
+diff --git a/runtime/vk.h b/runtime/vk.h
+index 33743bc..68365c2 100644
+--- a/runtime/vk.h
++++ b/runtime/vk.h
+@@ -403,6 +403,7 @@ const VkTexImage *vk_texture_by_id(int id, view_t *view, int *has_view);
+ void vk_texture_lock(void);
+ void vk_texture_unlock(void);
+ const VkTexImage *vk_texture_by_id_locked(int id, view_t *view, int *has_view);
++void vk_texture_fresh_check_locked(int id);   // vk_texture_by_id_locked's freshness check alone, for the pool walk
+ VkSampler vk_sampler_by_id_locked(int id);
+ // The slot's sampler with nearest filtering and no anisotropy: a depth texture read without a compare lands on one texel
+ // on the Switch although the game binds a linear sampler. VK_NULL_HANDLE
+diff --git a/runtime/vk_exec_draw.c b/runtime/vk_exec_draw.c
+index 0fdeb34..e9ab84b 100644
+--- a/runtime/vk_exec_draw.c
++++ b/runtime/vk_exec_draw.c
+@@ -1954,7 +1954,7 @@ static void pool_sync_entries(VkExec *ex) {
+                 pool_fill(ex, (uint32_t)id, fresh, t);
+             } else if (t && ep != PL.epoch) {
+                 PL.n_fresh++;
+-                vk_texture_by_id_locked(id, NULL, NULL);   // the submit's freshness check
++                vk_texture_fresh_check_locked(id);   // the submit's freshness check
+             }
+         }
+         if (!walked) PL.n_slots += (uint64_t)n;
+diff --git a/runtime/vk_texture.c b/runtime/vk_texture.c
+index 6db2505..c2ab751 100644
+--- a/runtime/vk_texture.c
++++ b/runtime/vk_texture.c
+@@ -62,13 +62,12 @@ typedef struct Tex {
+ } Tex;
+ 
+ // A slot keeps what vk_texture_by_id resolved for it, so a draw binding skips the key lookup and the address chain: the
+-// entry (ce), valid while the generation of its address (agen) is still cgen, the view and has_view handed out with it,
+-// and the submit_epoch of the last freshness check through the slot (cepoch). Hot fields first: a lookup that hits
+-// touches one or two cache lines.
++// entry (ce), valid while the generation of its address (agen) is still cgen, and the view and has_view handed out with
++// it (the submit_epoch of its last freshness check is in scep). Hot fields first: a lookup that hits touches one or two
++// cache lines.
+ typedef struct {
+     struct Tex *ce;               // NULL: nothing cached (registered since, or never resolved)
+     uint32_t cgen;                // agen of the slot's address when ce was resolved
+-    uint32_t cepoch;
+     view_t cview;
+     uint8_t chas_view, used, has_view;
+     uint64_t khash;               // hash of the descriptor key and view, 0 for CPU-written textures (vk_texture_slot_khash_locked)
+@@ -125,6 +124,12 @@ static uint32_t agen[AGEN_N];
+ // and the address generation index (bits 0-15), one word so a reader gets a consistent pair. Fixed-size (slot ids are
+ // 20 bits), unlike tslots, which moves when it grows.
+ static uint64_t *sinfo;
++// Per slot id, beside sinfo: the entry the slot resolved to (TexSlot.ce), the address generation it was resolved under
++// (cgen) and the submit_epoch of its last freshness check. The texture pool's per-submit check looks every registered
++// slot up (vk_texture_fresh_check_locked), ~23,000 in the haze; through the TexSlot records, one cache miss each, that
++// took ~2 ms of the render thread per submission, and these arrays are walked in order.
++static Tex **sce;
++static uint32_t *scg, *scep;
+ static uint32_t reg_serial;
+ static uint64_t n_same_regs;   // vk_texture_register calls that changed nothing (vk_texture_same_regs)
+ 
+@@ -1252,6 +1257,8 @@ void vk_texture_register(int id, const tex_t *t, const view_t *v) {
+     }
+     if (!sinfo) {
+         uint64_t *p = calloc(1 << 20, sizeof *p);
++        sce = calloc(1 << 20, sizeof *sce), scg = calloc(1 << 20, sizeof *scg), scep = calloc(1 << 20, sizeof *scep);
++        if (!sce || !scg || !scep) rt_fatal("vk: out of memory for texture slot tokens");
+         slot_next = malloc(sizeof *slot_next << 20), slot_prev = malloc(sizeof *slot_prev << 20);
+         slot_bucket = calloc(1 << 20, sizeof *slot_bucket);
+         if (!p || !slot_next || !slot_prev || !slot_bucket) rt_fatal("vk: out of memory for texture slot tokens");
+@@ -1273,6 +1280,7 @@ void vk_texture_register(int id, const tex_t *t, const view_t *v) {
+     s->t = *t;
+     s->used = 1;
+     s->ce = NULL;
++    sce[id] = NULL;
+     slots_gen++;
+     if (!++reg_serial) reg_serial = 1;
+     __atomic_store_n(&sinfo[id], (uint64_t)reg_serial << 16 | agen_idx((uintptr_t)t->mem), __ATOMIC_RELEASE);
+@@ -1434,24 +1442,40 @@ const VkTexImage *vk_texture_by_id_locked(int id, view_t *view, int *has_view) {
+         s->ce = slot_resolve(s, &v, &hv);   // entry_of may create an entry and bump g: g read before it
+         s->cview = v, s->chas_view = (uint8_t)hv;
+         s->cgen = g;
+-        s->cepoch = 0;
++        sce[id] = s->ce, scg[id] = g, scep[id] = 0;
+     }
+     Tex *e = s->ce;
+     // Bindings of one submit share one check, answered from the submit's write-watch snapshot (guest writes during a
+     // replay race the GPU read on hardware too). After one check an entry is either uploaded or never uploads (not
+     // mirrored, GPU-owned or no CPU layout), so a slot that checked its entry in this submit has nothing left to do.
+-    if (e && s->cepoch != submit_epoch) {
++    if (e && scep[id] != submit_epoch) {
+         if (!e->uploaded || e->checked != submit_epoch) {
+             make_fresh_snap(e);
+             e->checked = submit_epoch;
+         }
+-        s->cepoch = submit_epoch;
++        scep[id] = submit_epoch;
+     }
+     if (view) *view = has_view ? s->cview : s->v;
+     if (has_view) *has_view = view ? s->chas_view : s->has_view;
+     return e ? &e->pub : NULL;
+ }
+ 
++// The freshness check vk_texture_by_id_locked gives slot id, from the per-slot arrays while its resolution holds.
++void vk_texture_fresh_check_locked(int id) {
++    if (id < 0 || id >= ntslots) return;
++    Tex *e = sce[id];
++    if (!e || scg[id] != agen[sinfo[id] & 0xffff]) {
++        vk_texture_by_id_locked(id, NULL, NULL);
++        return;
++    }
++    if (scep[id] == submit_epoch) return;
++    if (!e->uploaded || e->checked != submit_epoch) {
++        make_fresh_snap(e);
++        e->checked = submit_epoch;
++    }
++    scep[id] = submit_epoch;
++}
++
+ // vk_dump: the swizzle selectors of the descriptor registered in slot id; 0 when the slot is empty.
+ int vk_texture_slot_swz(int id, uint8_t swz[4]) {
+     lock();
+@@ -2239,6 +2263,6 @@ void vk_texture_shutdown(void) {
+     free(tslots), free(sslots);
+     tslots = NULL, sslots = NULL, ntslots = nsslots = 0, nreleased = 0;
+     rel_head = rel_tail = NULL;
+-    if (sinfo) memset(sinfo, 0, sizeof *sinfo << 20);   // no slot is registered: tokens 0
++    if (sinfo) memset(sinfo, 0, sizeof *sinfo << 20), memset(sce, 0, sizeof *sce << 20);   // no slot is registered: tokens 0
+     unlock();
+ }
+-- 
+2.56.0
+

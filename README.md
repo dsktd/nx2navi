@@ -143,3 +143,6 @@ distribution). After `just update`, `build` may need a rebase onto the new upstr
   crop, so a 1920x1080 crop in a 2560x1440 texture is no longer saved into the top-left of a black picture.
 - `0008-vk_memory-compare-the-write-back-pages-outside-shado.patch`: the fence write-back's page compare (0001) runs
   before taking shadow_lock, so the render thread no longer waits on it (haze replay 51.9 -> 59.3 fps, p99 22.7 -> 19.9 ms).
+- `0009-vk_texture-the-pool-s-per-submit-freshness-check-rea.patch`: the texture pool's per-submit freshness check
+  over every registered slot (~21k) reads compact per-slot arrays instead of the TexSlot records (haze 59.1 -> 60.0 fps,
+  p99 19.6 -> 19.1 ms).
