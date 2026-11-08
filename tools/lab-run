@@ -23,6 +23,8 @@ rm -rf "$OUT"; mkdir -p "$OUT"
 case $rec in /*) ;; *) rec=$PWD/$rec;; esac
 envs=(); for kv in "$@"; do envs+=("$kv"); done
 t0=$(date +%s.%N)
+FEED=$HOME/claude/.services/screensavers/feeds/nx2navi-lab.log
+echo "$(date +%H:%M) run $label: replay to frame $frame ${envs[*]}" >>"$FEED"
 setsid nice -n 19 env WAYLAND_DISPLAY=gpu-display XDG_RUNTIME_DIR=$HOME/claude/.services/gpu-display/runtime \
   nix develop $ROOT --command env TERM=dumb SDL_VIDEODRIVER=wayland SDL_JOYSTICK_HIDAPI_STEAM=0 RADV_DEBUG=nogpl \
   NX2NAVI_PIPE_SKIP=strict NX2NAVI_INPUT_SCRIPT="$rec" NX2NAVI_DUMP=$frame NX2NAVI_DUMP_DIR=$OUT/dump "${envs[@]}" \
@@ -43,6 +45,7 @@ kill -- -$pgid 2>/dev/null; sleep 2; kill -9 -- -$pgid 2>/dev/null
 D=$OUT/dump
 printf 'time-to-dump %.0f s (hit=%s), dump %s\n' "$(awk "BEGIN{print $t1-$t0}")" $hit "$(du -sh $D 2>/dev/null | cut -f1)"
 grep -aE "vk_dump: frame $frame: |FATAL" "$log" | tail -2 | cut -c1-150
+echo "$(date +%H:%M) done $label: hit=$hit in $(awk "BEGIN{printf \"%.0f\", $t1-$t0}") s" >>"$FEED"
 echo "NaN images: $(grep -cE ' nan [1-9]' $D/images.txt 2>/dev/null)"
 P=$(grep -E '^pass [0-9]+: dispatch 8x9x12' $D/passes.txt 2>/dev/null | head -1 | awk '{print $2}' | tr -d :)
 [ -n "$P" ] && { echo "first 8x9x12 dispatch = pass $P:"; grep -E "^pass_${P}_img[0-9]" $D/images.txt | cut -c1-170; }
