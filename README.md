@@ -290,12 +290,41 @@ rebuilds the game; a new `.nup` re-extracts. Play defaults are the justfile's: `
 Permissions: Wayland (X11 fallback), `--device=all` (GPU and the Deck's pad), PulseAudio, `/sys/class/dmi/id` read-only
 (Deck detection), home and `/run/media` read-only (the scan), no network.
 
-### Steam Deck
+### Steam Deck in one command
 
-1. Copy `nx2navi-kit.flatpak` to the Deck. In Desktop Mode, Konsole: `flatpak install --user nx2navi-kit.flatpak`
-   (pulls the 26.08 runtime from Flathub).
-2. Copy your own Ocarina of Time 1.1.1 `.nup` (or an export from the desktop) to `~/Downloads` or an SD card. Allow
-   about 60 GB for a build, 30 GB for an import.
-3. Steam: "Add a Non-Steam Game", pick NX2navi. Start it in Game Mode, plugged in: the setup screen lists the files it
-   found; choose one with the D-pad and A. A build takes hours (estimate 3 to 5); quitting resumes later.
-4. When it is done the same entry starts the game directly, with the Deck device profile (1280x800, 40 fps).
+Prerequisites, once, on the Deck in Desktop Mode (Konsole): `passwd`, then `sudo systemctl enable --now sshd`; from
+the desktop `ssh-copy-id deck@<deck>` (or type the password when asked). Desktop side: Nix (gh, flatpak, just come
+from nixpkgs when not on PATH), the dsktd token at `~/.config/gh/dsktd.token` (read here only, never copied).
+
+    just host=<deck-hostname-or-ip> deck                    # or: flatpak/deck-setup <deck> [local] [nup <game.nup>] [game <export>] [user <name>]
+    just host=<deck> nup=/path/game.nup deck                # first time without a desktop build: send the .nup too
+
+What it does, end to end:
+
+1. **Kit.** If this desktop has the kit installed with a built game (`flatpak run io.github.dsktd.NX2navi status`
+   shows `game` and `shaders` at the kit id), the Deck gets exactly that kit, bundled from the local Flatpak repo.
+   Otherwise the newest `flatpak` workflow artifact of the private repo (`gh run download -n nx2navi-kit`), or, with
+   `local` or when there is no artifact, `just flatpak` builds it.
+2. **Game.** With a built desktop kit it runs `export` (about 30 GB, no saves; reused when an export of the same kit
+   exists) unless `game <file>` names one. Without, it prints the two commands for that fast route and continues
+   with the `.nup` route: `nup <path>` lands in the Deck's `~/Downloads`, where the setup screen finds it.
+3. **Deck** (rsync, else scp, into `~/Downloads/nx2navi`; then over SSH as user `deck`): Flathub remote,
+   `flatpak install --user` (`--reinstall` when already there: an update, app data stays), `import` of the export
+   (this Deck's saves, `nx2navi.ini` and logs are kept), the copies deleted, and a Steam shortcut "NX2navi"
+   (`/usr/bin/flatpak`, launch options `run io.github.dsktd.NX2navi`) written into every user's
+   `config/shortcuts.vdf` by `flatpak/deck-shortcut.py`, only while Steam is not running (quit Steam in Desktop Mode
+   first; otherwise it prints the manual "Add a Non-Steam Game" steps).
+
+Then switch to Game Mode and start NX2navi from the Library: with an import it plays at once; with a `.nup` the
+setup screen builds (3 to 5 hours, resumes when stopped, keep it plugged in).
+
+**Update later:** re-run the same command. It ships the current kit (desktop's, or the newest artifact) and
+re-imports the game; saves stay. With the desktop route, update the desktop first: `flatpak install --user -y
+flatpak/nx2navi-kit.flatpak`, then `flatpak run io.github.dsktd.NX2navi build` (it rebuilds only what the new kit
+changed), then `just host=<deck> deck`. The import refuses an export whose kit id differs from the Deck's kit, so the
+two always match.
+
+Manual route, if SSH is not an option: copy `nx2navi-kit.flatpak` and your `.nup` (or an export) to the Deck's
+`~/Downloads` or an SD card, `flatpak install --user nx2navi-kit.flatpak` in Konsole, Steam > Add a Non-Steam Game >
+`/usr/bin/flatpak` with launch options `run io.github.dsktd.NX2navi`, and start it in Game Mode. Allow about 60 GB
+for a build, 30 GB for an import.

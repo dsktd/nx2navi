@@ -1,0 +1,163 @@
+#!/usr/bin/env bash
+# Set up (or update) NX2navi on a Steam Deck from this desktop, over SSH. One command, idempotent:
+#
+#   flatpak/deck-setup <deck-host> [local] [nup <game.nup>] [game <file.nx2navi.tar.zst>] [user <name>]
+#   just deck host=<deck-host> [nup=<game.nup>]
+#
+# 1. The kit bundle. When this desktop has the kit installed with a built game, the Deck gets exactly that kit
+#    (bundled from the local Flatpak repo, so the export below matches it). Otherwise the newest `flatpak` workflow
+#    artifact of the private repo dsktd/nx2navi (gh, token from ~/.config/gh/dsktd.token, read here only), or with
+#    `local` or when there is none, `just flatpak` builds it.
+# 2. The game. With a built desktop kit: `export` (about 30 GB, no saves) unless `game <file>` names an export.
+#    Else the .nup route: `nup <path>` is copied to the Deck's ~/Downloads, where the setup screen finds it, and the
+#    Deck builds the game itself (3 to 5 hours). Game files never leave your machines.
+# 3. On the Deck (user deck, bash): flatpak install/update of the bundle, `import` of the export (saves stay), the
+#    "NX2navi" Steam shortcut (python3, binary VDF) while Steam is not running, else the manual steps are printed.
+#
+# Prerequisites on the Deck, once, in Desktop Mode: `passwd`, `sudo systemctl enable --now sshd`, and an SSH key or
+# password login from this desktop. Nothing is published anywhere.
+set -euo pipefail
+
+APP=io.github.dsktd.NX2navi
+REPO=dsktd/nx2navi
+HERE=$(cd "$(dirname "$0")" && pwd)
+TOP=$(dirname "$HERE")
+TOKEN=${NX2NAVI_GH_TOKEN_FILE:-$HOME/.config/gh/dsktd.token}
+BUNDLE=$HERE/nx2navi-kit.flatpak
+
+[ $# -ge 1 ] || { echo 'usage: deck-setup <deck-host> [local] [nup <game.nup>] [game <export.tar.zst>] [user <name>]' >&2; exit 2; }
+host=$1 mode=auto nup='' game='' user=deck; shift
+while [ $# -gt 0 ]; do
+    case $1 in
+        local) mode=local ;;
+        nup) nup=$(realpath "$2"); shift ;;
+        game) game=$(realpath "$2"); shift ;;
+        user) user=$2; shift ;;
+        *) echo "deck-setup: unknown argument $1" >&2; exit 2 ;;
+    esac
+    shift
+done
+DECK=$user@$host
+INBOX=Downloads/nx2navi   # on the Deck, relative to its home
+
+say() { printf '\n== %s\n' "$*"; }
+die() { printf 'deck-setup: %s\n' "$*" >&2; exit 1; }
+# a tool from PATH, else from nixpkgs (the desktop has Nix; the Deck side never uses this)
+with() { local t=$1; shift; if command -v "$t" >/dev/null; then "$t" "$@"; else nix shell "nixpkgs#$t" -c "$t" "$@"; fi; }
+fp() { with flatpak "$@"; }
+remote() { ssh "$DECK" bash -s -- "$@"; }   # runs the script on stdin on the Deck
+copy() {   # copy <file> <remote-dir>: resumable; big files, so rsync when both sides have it
+    if command -v rsync >/dev/null && ssh "$DECK" 'command -v rsync >/dev/null'; then
+        rsync -P --inplace -e ssh "$1" "$DECK:$2/"
+    else
+        scp -p "$1" "$DECK:$2/"
+    fi
+}
+
+say "checking $DECK"
+ssh -o ConnectTimeout=10 "$DECK" 'echo "ok: $(hostname), $(df -h ~ | awk "NR==2{print \$4}") free in home"' ||
+    die "cannot reach $DECK: in Desktop Mode run  passwd; sudo systemctl enable --now sshd  and copy your key (ssh-copy-id $DECK)"
+
+# --- 1. the bundle ---------------------------------------------------------------------------------------------------
+desktop_kit=   # the kit id of a built game on this desktop, if any
+if fp info --user "$APP" >/dev/null 2>&1; then
+    id=$(fp run --command=cat "$APP" /app/kit/id)
+    st=$(fp run "$APP" status)
+    if grep -qx "game *$id" <<<"$st" && grep -qx "shaders *$id" <<<"$st"; then desktop_kit=$id; fi
+fi
+
+if [ -n "$desktop_kit" ] && [ $mode = auto ]; then
+    say "this desktop has kit $desktop_kit with a built game: the Deck gets the same kit"
+    fp build-bundle --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo \
+        "${XDG_DATA_HOME:-$HOME/.local/share}/flatpak/repo" "$BUNDLE" "$APP"
+else
+    got=
+    if [ $mode = auto ]; then
+        say "fetching the newest kit from the $REPO Actions artifacts"
+        [ -r "$TOKEN" ] || die "no GitHub token at $TOKEN"
+        dl=$(mktemp -d)
+        if GH_TOKEN=$(tr -d '\n' < "$TOKEN") with gh run download -R "$REPO" -n nx2navi-kit -D "$dl"; then
+            mv "$dl/nx2navi-kit.flatpak" "$BUNDLE"; got=1
+        else
+            echo "no artifact (CI failed or expired): building locally"
+        fi
+        rm -rf "$dl"
+    fi
+    if [ -z "$got" ]; then
+        say "building the kit with just flatpak (needs network, 20+ min)"
+        (cd "$TOP" && with just flatpak)
+    fi
+    [ -n "$desktop_kit" ] && echo "note: this desktop's built kit ($desktop_kit) is not the one shipped; the export is skipped"
+    desktop_kit=
+fi
+[ -s "$BUNDLE" ] || die "no bundle at $BUNDLE"
+
+# --- 2. the game -----------------------------------------------------------------------------------------------------
+if [ -z "$game" ] && [ -n "$desktop_kit" ]; then
+    game=$HOME/.var/app/$APP/data/nx2navi/game-v111.nx2navi.tar.zst   # export writes only into its data dir
+    if [ -s "$game" ] && [ "$(zstd -dc "$game" | tar -xO --occurrence=1 NX2NAVI-EXPORT | sed -n 's/^kit //p')" = "$desktop_kit" ]; then
+        say "reusing the export $game (kit $desktop_kit)"
+    else
+        say "exporting the desktop's game (about 30 GB, several minutes)"
+        fp run "$APP" export
+    fi
+fi
+if [ -z "$game" ] && [ -z "$nup" ]; then
+    cat <<EOF
+
+No prebuilt game to send: the Deck will build it from your own .nup (3 to 5 hours on the Deck). The fast route for
+next time: install the kit on this desktop and build once, then re-run this command (the export is imported in minutes):
+    flatpak install --user -y $BUNDLE
+    flatpak run $APP build /path/to/your-game.nup
+Pass  nup /path/to/your-game.nup  now to copy the .nup to the Deck's ~/Downloads for the setup screen.
+EOF
+fi
+
+# --- 3. copy and set up ----------------------------------------------------------------------------------------------
+say "copying to $DECK:~/$INBOX"
+remote <<EOF
+mkdir -p $INBOX
+EOF
+copy "$BUNDLE" "$INBOX"
+[ -n "$game" ] && copy "$game" "$INBOX"
+[ -n "$nup" ] && copy "$nup" Downloads
+
+say "installing on the Deck"
+remote "$(basename "$BUNDLE")" "${game:+$(basename "$game")}" <<'EOF'
+set -euo pipefail
+APP=io.github.dsktd.NX2navi
+INBOX=$HOME/Downloads/nx2navi
+bundle=$INBOX/$1; game=${2:-}
+flatpak --user remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+if flatpak info --user $APP >/dev/null 2>&1; then
+    flatpak install --user -y --noninteractive --reinstall "$bundle"   # an update: app data in ~/.var/app stays
+else
+    flatpak install --user -y --noninteractive "$bundle"
+fi
+echo "kit $(flatpak run --command=cat $APP /app/kit/id) installed"
+rm -f "$bundle"
+if [ -n "$game" ]; then
+    echo "importing $game (saves on this Deck are kept)"
+    flatpak run $APP import "$INBOX/$game"
+    rm -f "$INBOX/$game"
+    flatpak run $APP status
+fi
+EOF
+
+say "Steam shortcut"
+if ssh "$DECK" python3 - < "$HERE/deck-shortcut.py"; then :; else
+    cat <<EOF
+Could not write the shortcut (Steam is running, or no Steam user yet). Either switch the Deck to Desktop Mode, quit
+Steam, and re-run this command, or add it by hand: Steam > Add a Non-Steam Game > Browse, pick /usr/bin/flatpak,
+then Properties: name NX2navi, launch options  run $APP
+EOF
+fi
+
+say "done"
+if [ -n "$game" ]; then
+    echo "Switch to Game Mode and start NX2navi from the Library (Non-Steam). It plays at once."
+else
+    echo "Switch to Game Mode and start NX2navi: the setup screen lists the .nup in ~/Downloads; pick it with the D-pad and A."
+    echo "Keep the Deck plugged in; the build resumes if it stops."
+fi
+echo "Later: re-run the same command to update the kit and the game; saves and settings on the Deck stay."

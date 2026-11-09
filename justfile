@@ -15,6 +15,8 @@ shellname := if mesa == "stable" { "#mesa-stable" } else { "" }
 # draws, which with the pipeline library off otherwise go black while they build
 pipeskip := env("NX2NAVI_PIPE_SKIP", "any")
 nup := env("NX2NAVI_NUP", "")
+# the Steam Deck's hostname or IP for `just deck`
+host := env("NX2NAVI_DECK", "")
 
 # The live screensaver's job registry (claude-job in the container): a run registers itself so the Director's
 # jobwatch scene shows its log and frame count; removed when the run ends
@@ -192,3 +194,9 @@ flatpak:
 # Install the bundle for this user (the runtime comes from Flathub)
 flatpak-install:
     nix shell nixpkgs#flatpak -c flatpak install --user -y "{{flake}}/flatpak/nx2navi-kit.flatpak"
+
+# Set up or update a Steam Deck over SSH (flatpak/deck-setup): kit bundle, prebuilt game or the .nup, Steam shortcut.
+#   just host=steamdeck deck            just host=steamdeck nup=/path/game.nup deck
+deck:
+    test -n "{{host}}" || { echo "set NX2NAVI_DECK (or host=...) to the Deck's hostname or IP"; exit 1; }
+    "{{flake}}/flatpak/deck-setup" "{{host}}" {{ if nup != "" { "nup " + quote(nup) } else { "" } }}
