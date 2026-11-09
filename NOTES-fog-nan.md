@@ -309,3 +309,52 @@ Test plan (GPU back, Cal not playing): no live cache is touched.
    side. Pass = no NaN, same picture within noise at both frames and no darkening over the soak.
 5. If B passes: drop `fmzpow` from `just shaders` and move fmz-pow.py to the obsolete list; if B fails at a single
    frame only, keep fmz-pow and note the shader (the test shows which pass goes NaN).
+
+## #128 intro dialogue too early at 240 fps: static pass (2026-11-09, no GPU)
+
+Symptom (Cal): fps_limit 240, New Game: the intro's narration/voice lines overlap (trigger early); movie, audio and
+gameplay speed are right. Static analysis of main 1.1.1 only (capstone disassembly of the whole .text, 15.8M
+instructions, plus the lifted C). **Culprit not identified; no patch written.** What is established:
+
+- Frame producer: the framework update main+0x6e6be0 (`this` = update object, no direct callers: reached through a
+  pointer). s8 = frames per update (ostep: page +256); `this+0xd50` int32 += 1 per update (ldadd), `this+0xd58`
+  double += s8, then main+0x3b4e300(mgr, s8) fills the time manager **[main+0x4c7e890]: +0x10 frames, +0x14 1/frames,
+  +0x18 seconds (= frames * [main+0x3e4066c]), +0x1c int32 rate = round(60/frames); gameplay {frames, 1/f, s, 60/f}
+  at +0x0..+0xc = base(+0x1c0) * frames * factor; 6 categories at +0x20 + 0x30*i (16 B each) from the 16 factors at
+  +0x140 picked by the nibbles of +0x1c4. A listener at mgr+0x1c8 (GameSpStepRateMgr, init main+0xec7a10, heap
+  "GameSpStepRateMgrHeap", vtable main+0x49a36f8) is called each step. `+0xd50` has no reader but an accessor
+  (main+0x128c840, `!= 0`); `+0x1c` has no direct reader anywhere.
+- Cleared (all take the manager's patched values): every reader of +0x10 (91 sites), +0x18 (25) and +0x0 (21); the
+  event-flow waits: shared helper main+0x5ed3d0 (counter += category frames, category from the actor) used by
+  ExecuteGenericWaitFrame (update main+0x26e7ef0), ...ByPlug (0x5ed4e0), SeqExecuteWaitFrame (0x3bb0be0),
+  ExecuteWaitFrameOrInput (0x2888510); SeqExecuteGenericWaitFrame (0x32c0670) adds [[main+0x4e94b20]]+0x10 (same
+  layout as the manager); ...WithStepRate (0x26e7d20) adds its StepRate parameter via main+0x3b4e220;
+  ExecuteStartVoice update (main+0x2863200): timer +0x64 += category frames, done when > param + 10 frames.
+  Node vtables: slot 0 getName (adrp/add of the name string), slot 10 enter, slot 11 update.
+- Not cleared, in order: (1) the Timeline/Demo runtime (.evtm; extension table at main+0x4c639c8: .evfc, .evtm,
+  EventTrigger) was not located; the movie param "TimelineFileNameSyncMovie" is only parsed (main+0x5a9ff0,
+  0x3ba14a0), so whether the intro's timeline follows the movie or its own clock is unknown. (2) main+0x32932b0
+  (one caller main+0x17be90): `obj+0x265fc += (uint32)frames` (0 per update above 60 fps) and integer per-update
+  counters at obj+0x284; a state machine (states <= 0xe, masks 0x2e80/0x5000, a [-1,1] value at +0x124 scaled to
+  256), probably input/UI, not dialogue. (3) integer frame conversions at main+0xa682ec and 0x3403b0c (actor side).
+  Rounding of the step (0.25 +- jitter) cannot produce a 4x speed-up, so the pacer is not the cause.
+
+Tools (session scratchpad `i128/`, regenerate if gone): `main.img` = recomp/nso.py image of exefs/main; `text.dis`
+from capstone (`.venv` has capstone, lief); `adis.py <addr> [n]`, `fn.py <addr>` (function around an address),
+`xref.py <addr>..` (adrp+add sites), `tm.py` (field histogram of the time manager), `gobj.py <page> <imm>` (same for
+any **global), `vt.py <fn>` / `vtab.py <vtable>` (reloc-aware vtable lookup; RTTI names are stripped, class names
+come from getName strings only), `fnstr.py` (strings a function references).
+
+Test plan (GPU back, Cal not playing). The replay script (7 A presses, frames 300 520 700 900 1100 1300 1500, each
+`<frame> A 4`) was `scratchpad/newgame.txt`; recreate it with those lines if gone. From the title it reaches New
+Game and the intro; frames are 60 Hz input frames (input.c runs on the world clock).
+1. `NX2NAVI_FPS_LIMIT=60 NX2NAVI_AUDIO_DUMP=$OUT/a60.raw tools/lab-run newgame.txt 3000 intro-60` and the same with
+   `NX2NAVI_FPS_LIMIT=240 ... intro-240` (and 120, to tell 2x from 4x). The dump is raw float32 stereo at the mixer's
+   rate (audio_mixer.c:276); LAB_KEEP=1.
+2. Compare the first 20 s: 100 ms RMS envelope per file, list onsets (RMS rising above 3x the floor); the movie's
+   music is the time base, the voice onsets are the measure. Expected: 60 = reference; 240 early by ~4x if a
+   per-update counter, ~2x at 120; equal everywhere = not a frame counter (look at audio/voice scheduling instead).
+3. If early: `NX2NAVI_WATCH` on the suspects while the intro runs (the frame counter write at main+0x6e6cf8 is not
+   it unless something reads +0xd50: watch the update object's +0xd50 for reads), and a dump of the Timeline
+   player's state once it is found (start from the .evtm table's resource class, main+0x4c639c8 - 0x18 holds its
+   vtable functions 0x260c0b0/0x260c0c0).
