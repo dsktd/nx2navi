@@ -10,12 +10,15 @@
 # Never touches shader-cache or the binary; the game itself still writes its caches in the bin dir's cwd.
 set -u
 # lab-run [--show] ...: --show also writes latest-frame.png (only if the dump frame was reached); off by default.
-show=0; [ "${1:-}" = --show ] && { show=1; shift; }
+# lab-run --dry ...: assemble the profile, print it, exit (no lock, no replay).
+show=0; dry=0
+while :; do case ${1:-} in --show) show=1; shift;; --dry) dry=1; shift;; *) break;; esac; done
 rec=$1 frame=$2 label=$3; shift 3
 ROOT=$HOME/claude/nx2navi
 BIN=${LAB_BIN:-$ROOT/NX2navi/build/v111}
 OUT=$ROOT/.lab/$label; log=$OUT/run.log
 # lock shared with every other lab/investigation run (held by the game via fd 9, gone when it exits)
+[ $dry = 1 ] || {
 exec 9>/tmp/nx2navi-lab.lock; flock -w ${LAB_LOCK_WAIT:-3600} 9 || { echo "lab-run: lock busy" >&2; exit 3; }
 # guard: any other nx2navi game process (argv0 basename nx2navi, or gdb --args .../nx2navi)
 busy=$(for p in /proc/[0-9]*; do [ "${p#/proc/}" = $$ ] && continue
@@ -28,6 +31,7 @@ hostlog=$(ls -t "$ROOT"/NX2navi/build/v111/logs/play-*.log 2>/dev/null | head -1
 [ -z "${LAB_FORCE:-}" ] && [ -n "$hostlog" ] && [ $(( $(date +%s) - $(stat -c %Y "$hostlog") )) -lt 120 ] && {
   echo "lab-run: Cal's game is running (${hostlog##*/} written <2 min ago); refusing" >&2; exit 3; }
 [ -n "$busy" ] && { echo "lab-run: another nx2navi game is running (pid $busy); refusing" >&2; exit 3; }
+}
 rm -rf "$OUT"; mkdir -p "$OUT"
 case $rec in /*) ;; *) rec=$PWD/$rec;; esac
 envs=(); for kv in "$@"; do envs+=("$kv"); done
@@ -52,6 +56,15 @@ fi
 # live profile allowed (Cal, 2026-11-09): snapshot his saves first and restore them after the run
 prof=""; for e in "${envs[@]}"; do [[ $e == NX2NAVI_PROFILE_DIR=* ]] && prof=${e#*=}; done
 live=$(realpath -m "$BIN/profile")
+# recording bundle: `just play` saves logs/profile-<ts>/ next to input-<ts>.txt; replay from that save in a scratch
+# profile (live profile copied for account.uid/cache, its save dirs replaced by the bundle's)
+bundle=""; [[ ${rec##*/} =~ ^input-(.+)\.txt$ ]] && bundle=$(dirname "$rec")/profile-${BASH_REMATCH[1]}
+if [[ -z $prof && -d $bundle ]]; then
+  prof=$OUT/profile; mkdir -p "$prof"
+  cp -a "$live"/. "$prof"/ && rm -rf "$prof"/save "$prof"/save-tx "$prof"/save-backup && cp -a "$bundle"/. "$prof"/ || exit 4
+  envs+=("NX2NAVI_PROFILE_DIR=$prof"); echo "lab-run: profile from bundle ${bundle##*/}"
+elif [[ -z $prof ]]; then echo "lab-run: no bundle for ${rec##*/}; using the live profile (saves restored after)" >&2; fi
+[ $dry = 1 ] && { echo "profile: ${prof:-$live}"; ls -la "${prof:-$live}"; exit 0; }
 if [[ -z $prof || $(realpath -m "$prof") == "$live" ]]; then
   snap=$(mktemp -d "${TMPDIR:-/tmp}/nx2navi-save.XXXXXX")
   cp -a "$live/save" "$live/save-tx" "$live/save-backup" "$snap"/ 2>/dev/null

@@ -138,6 +138,10 @@ play *args:
     ts=$(date +%Y%m%d-%H%M%S)
     log="build/{{ver}}/logs/play-$ts.log"
     echo "log: $log"
+    # recording bundle: the save this recording starts from, so lab-run replays it exactly (keep the newest 40)
+    snap="build/{{ver}}/logs/profile-$ts"; mkdir -p "$snap"
+    for d in save save-tx save-backup; do [ -d "build/{{ver}}/profile/$d" ] && cp -a "build/{{ver}}/profile/$d" "$snap/"; done
+    ls -d build/{{ver}}/logs/profile-*/ | sort | head -n -40 | xargs -r rm -rf
     mkdir -p "{{jobs_dir}}"; job="{{jobs_dir}}/nx2navi.json"
     printf '{"name":"nx2navi","log":"%s","since":%s,"progress":{"regex":"frame (?P<done>[0-9]+):"},"pid":%s}\n' "$PWD/$log" "$(date +%s)" "$$" > "$job"
     trap 'rm -f "$job"' EXIT

@@ -257,6 +257,15 @@ yakin quick-menu item (add it to the `[menu] items` of your yakin config yoursel
 { label = "Mark glitch", icon = "screenshot", target = "desktop:spawn:touch /home/purplg/claude/nx2navi/NX2navi/build/v111/mark.req" },
 ```
 
+## Recording bundles
+
+`just play` copies the profile's `save`, `save-tx` and `save-backup` into `build/v111/logs/profile-<ts>/` before the
+game starts, with the same `<ts>` as its `input-<ts>.txt`, so a recording keeps the save it started from (the newest 40
+bundles are kept). `tools/lab-run` given such a recording and no `NX2NAVI_PROFILE_DIR` builds a scratch profile in
+`.lab/<label>/profile` (a copy of the live profile with the bundle's save dirs) and replays from it, so old recordings
+replay exactly. Without a bundle it warns and falls back to the live profile, saves snapshotted and restored.
+`lab-run --dry <rec> 0 <label>` only assembles and lists the profile.
+
 ## lab-run debug options
 
 Both are opt-in environment variables for `tools/lab-run` (see its header):
