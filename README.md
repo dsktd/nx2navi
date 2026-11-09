@@ -137,6 +137,17 @@ Field, HDR10 native through niri-spicy, 240 Hz panel. Since the 2026-11-08 morni
   windows are matched on the load spike, not on frame numbers). The lab scene compares only 6 MiB per frame (Cal's
   trace: 66), so the gain the notes predict needs his play to show; the first version of fix 2 without the threshold
   lost 5 fps in the lab to pool wakeups on 0.1 MiB lists. Castle slot (frame 1500) and crash spot (frame 1700) pass.
+- #132 texture dedupe and released-list LRU (2026-11-09, patch 0028, in `nx2navi.new3`, not swapped, **both off by
+  default**): the tex trace answers the Kakariko question of `NOTES-perf-2026-11-09.md`: first-time uploads are real
+  new keys, not cache misses. Lab replay of the 17:47 recording to present 9000 (toggles off): 2516 MiB first-time, of
+  which only 37 MiB are bytes uploaded before under another key (21 MiB address, 16 MiB descriptor; their entry mostly
+  still live); castle slot: 9.5 of 2047 MiB. Dedupe shared 12 MiB (17:47) and 3.7 MiB (castle), every share verified,
+  0 hash collisions, and it paints wrong terrain: large dark ground patches at the castle slot, frame 1500, with
+  dedupe alone (`dd-castle-dd`) and with both toggles, clean with both off on the same binary. No fps gain (17:47
+  replay, two 60 s windows: 80.9 / 57.2 fps off, 76.9 / 55.6 on; castle 27.1 either way). The cost that is left is the
+  byte cap's churn: 2609 released-bytes sweeps (9.5 GiB) and 759 MiB of re-uploads in that replay; LRU did not lower it
+  (924 MiB) and LRU alone has no lab shot yet (the lab was paused for Cal's play), so it is off until tested. Crash
+  spot (frame 1700) passes.
 - Debug and play features: shader hot-reload and on-request shots (0003), dump.req (0011), mark this moment (0015,
   F9 / L3+R3), draw lists in dumps (0017), Steam Input pad preferred (0014), projection unjitter (0012).
 - Defaults: `NX2NAVI_PIPE_SKIP=any`, `NX2NAVI_HDR=native`, `REPLAY_ASYNC=1`, `VK_RECORDER=1`, `TEX_RELEASED_MIB=3072`.
@@ -259,6 +270,13 @@ distribution). After `just update`, `build` may need a rebase onto the new upstr
 - `0026-vk_device-under-a-RenderDoc-capture-NX2NAVI_RDOC-VK_.patch`: #135. While `NX2NAVI_RDOC` is set (rdoc.c loaded
   RenderDoc) `VK_EXT_external_memory_host` is neither required nor enabled: RenderDoc hides it and shadow mode never
   imports host memory. Inert otherwise. See "RenderDoc".
+- `0028-vk_texture-identical-texture-bytes-share-one-VkImage.patch` (two commits): #132. `NX2NAVI_TEX_DEDUPE=1`: a
+  first-time upload whose storage bytes hash like a compatible entry's (same descriptor apart from the address,
+  verified by a compare) shares that entry's VkImage and unshares before a write. `NX2NAVI_TEX_RELEASED_LRU=1`: the
+  released list drops the least recently used entry first, not the oldest release. Both **default 0** (second commit):
+  dedupe paints wrong terrain at the castle slot and finds under 1% to share; LRU alone is untested (Status has the
+  numbers). Kept for the trace: `NX2NAVI_TRACE=tex` gets a third line per 600 frames (what other-key repeats differ in,
+  whether their entry is live / released / gone, dedupe shares, collisions, unshares).
 
 ## Mark this moment
 

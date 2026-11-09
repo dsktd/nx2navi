@@ -1,0 +1,513 @@
+From 597f6438d249c9d16c7d1789abf12b47095f3ee1 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Mon, 9 Nov 2026 17:55:18 -0500
+Subject: [PATCH 1/2] vk_texture: identical texture bytes share one VkImage
+ (NX2NAVI_TEX_DEDUPE), the released list drops least recently used first
+ (NX2NAVI_TEX_RELEASED_LRU); tex trace: what other-key repeats differ in and
+ whether their entry is still there (#132)
+
+---
+ runtime/vk_texture.c | 295 ++++++++++++++++++++++++++++++++++++++-----
+ 1 file changed, 265 insertions(+), 30 deletions(-)
+
+diff --git a/runtime/vk_texture.c b/runtime/vk_texture.c
+index 9c8a328..3626e5a 100644
+--- a/runtime/vk_texture.c
++++ b/runtime/vk_texture.c
+@@ -60,7 +60,11 @@ typedef struct Tex {
+     uint8_t took_back;            // taken back from the released list since its last upload (tex trace)
+     uint8_t *snap;                // a texture that fills no page: its storage bytes when the GPU write was recorded
+     uint32_t wt_n;                // WriteTexels into the storage since the last upload
+-    struct Tex *rel_prev, *rel_next;   // while released: the list of released entries, oldest first
++    struct Tex *rel_prev, *rel_next;   // while released: the list of released entries, first to drop first
++    uint32_t last_use;            // submit_epoch of the last lookup (entry_of) or binding check: the released list's order (rel_lru)
++    uint64_t rel_acct;            // what rel_append added to rel_bytes for this entry
++    uint64_t chash[2];            // hash of the storage bytes the image holds (content_note); 0: not in the content index
++    struct TexShare *share;       // the image is shared with other entries of the same content (NX2NAVI_TEX_DEDUPE); NULL: own
+ } Tex;
+ 
+ // A slot keeps what vk_texture_by_id resolved for it, so a draw binding skips the key lookup and the address chain: the
+@@ -90,8 +94,11 @@ static SampSlot *sslots;
+ static int nsslots;
+ static nvn_hmap samplers = {.klen = sizeof(samp_par)};
+ static int nreleased;
+-static Tex *rel_head, *rel_tail;   // released entries in release order (sweep_released drops from the head)
+-static uint64_t rel_bytes;         // own memory of the released entries (rel_add / rel_drop)
++static Tex *rel_head, *rel_tail;   // released entries, the first to drop at the head (rel_append orders them)
++static uint64_t rel_bytes;         // own memory of the released entries (rel_append / rel_unlink)
++// NX2NAVI_TEX_RELEASED_LRU (default 1): the released list is kept in order of last use (last_use), so the sweeps drop
++// the entry unused for longest; =0: in release order (oldest release first).
++static int rel_lru = -1;
+ // NX2NAVI_TEX_RELEASED_MIB (default 0: no byte cap): past this much own memory in released entries, each release
+ // drops the oldest ones until under it, as RELEASED_MAX does for the count. Released entries are mostly render targets
+ // of a few MiB each, so the count cap alone held 6 to 8 GiB on a 16 GiB card.
+@@ -172,30 +179,98 @@ static uint64_t td_n[DC_N], td_bytes[DC_N];
+ static uint64_t tu_n[DC_N], tu_bytes[DC_N], tu_ns[DC_N];                           // first-time uploads by the key's past
+ static uint64_t tu_same_n, tu_same_bytes, tu_other_n, tu_other_bytes;              // ... whose bytes were uploaded before: same key / other key
+ static uint64_t tr_n, tr_bytes, tr_ns, tr_tb_n, tr_tb_bytes, tb_n;                // re-uploads (of them: after a take-back), take-backs
+-static nvn_hmap ghosts = {.klen = sizeof(TexKey)}, contents = {.klen = sizeof(uint64_t)};
++// Other-key repeats by what the key differs in from the one the bytes were uploaded under (the address alone, the
++// swizzle selectors too, anything else) and, every repeat, by the state of the entry that uploaded them.
++enum { OK_ADDR, OK_SWZ, OK_DESC, OK_N };
++enum { PS_LIVE, PS_RELEASED, PS_GONE, PS_N };
++static uint64_t ok_n[OK_N], ok_bytes[OK_N], ps_n[PS_N], ps_bytes[PS_N];
++// Dedupe (NX2NAVI_TEX_DEDUPE): first-time uploads answered by sharing the image of a live [0] / released [1] entry, of
++// them verified by a compare of both storages; refused as a hash collision (the compare differed) or incompatible;
++// shared images given their own before a write: re-upload [0], GPU write or WriteTexels [1].
++static uint64_t dd_n[2], dd_bytes[2], dd_verified, dd_collide, dd_incompat, dd_unshare[2];
++static nvn_hmap ghosts = {.klen = sizeof(TexKey)};
++static int same_but_swizzle(const TexKey *a, const TexKey *b);
+ static int tex_trace(void) { return (rt_trace & RT_TRACE_TEX) != 0; }
+ 
+-static uint64_t content_hash(const uint8_t *p, uint64_t n) {   // four lanes of multiply-xorshift: speed over quality
++// ---- the content index (NX2NAVI_TEX_DEDUPE, default 1; the tex trace reads it too)
++// Every upload of a mirrored texture hashes the storage bytes it copies (128 bits, content_hash) and the index maps the
++// hash to the entry that holds them (Content: the newest one, its key and size). A first-time upload whose bytes the
++// index knows under a compatible entry (share_compatible: the same descriptor and layout apart from the swizzle
++// selectors, the image uploaded and never written by the GPU) shares that entry's VkImage instead of uploading
++// (share_adopt, a reference count per image in TexShare): Ocarina re-creates the same textures under new pool
++// addresses at every area transition. A shared image is never written: a re-upload, a GPU write or a WriteTexels into
++// one of its entries gives that entry an image of its own first (unshare).
++typedef struct { Tex *e; TexKey key; uint64_t size, h2; } Content;   // e NULL: the entry is gone or holds other bytes
++static nvn_hmap contents = {.klen = sizeof(uint64_t)};             // hash -> Content, kept for the run
++typedef struct TexShare { int refs; } TexShare;
++static int tex_dedupe = -1;
++
++static void content_hash(const uint8_t *p, uint64_t n, uint64_t out[2]) {   // four lanes of multiply-xorshift: speed over quality
+     uint64_t h[4] = {0x9E3779B97F4A7C15ull ^ n, 0xBF58476D1CE4E5B9ull, 0x94D049BB133111EBull, 0x2545F4914F6CDD1Dull}, w;
+     for (; n >= 32; n -= 32, p += 32)
+         for (int i = 0; i < 4; i++) { memcpy(&w, p + 8 * i, 8); h[i] = (h[i] ^ w) * 0x100000001B3ull; h[i] ^= h[i] >> 29; }
+     for (; n; n--, p++) h[0] = (h[0] ^ *p) * 0x100000001B3ull;
+-    uint64_t r = h[0] ^ (h[1] * 3) ^ (h[2] * 5) ^ (h[3] * 7);
+-    r ^= r >> 31;
+-    return r | 1;
++    uint64_t r = h[0] ^ (h[1] * 3) ^ (h[2] * 5) ^ (h[3] * 7), q = (h[0] * 0xff51afd7ed558ccdull) ^ (h[1] >> 17) ^
++                                                                  (h[2] * 0xc4ceb9fe1a85ec53ull) ^ (h[3] << 13);
++    r ^= r >> 31, q ^= q >> 29;
++    out[0] = r | 1, out[1] = q;
+ }
+ 
+-// A first-time upload done (e->uploaded still 0): classify it. Tex lock held.
+-static void tex_trace_first(Tex *e, uint64_t dt, int readable) {
++// The hash of e's storage bytes, read held mapped; 0 when the storage is not readable.
++static int content_of(const Tex *e, uint64_t h[2]) {
++    if (!e->t.L.size || !mem_read_hold(e->pub.addr, e->t.L.size)) return 0;
++    content_hash(e->t.mem, e->t.L.size, h);
++    mem_read_release();
++    return 1;
++}
++
++static void content_forget(Tex *e) {   // e no longer holds the bytes of its hash
++    if (!e->chash[0]) return;
++    Content *c = nvn_hm_get(&contents, &e->chash[0]);
++    if (c && c->e == e) c->e = NULL;
++    e->chash[0] = e->chash[1] = 0;
++}
++
++static void content_note(Tex *e, const uint64_t h[2]) {   // e holds these bytes now
++    content_forget(e);
++    Content *c = nvn_hm_get(&contents, &h[0]);
++    if (!c) {
++        if (!(c = calloc(1, sizeof *c))) rt_fatal("vk: out of memory for the texture content index");
++        nvn_hm_put(&contents, &h[0], c);
++    }
++    c->e = e, c->key = e->key, c->size = e->t.L.size, c->h2 = h[1];
++    e->chash[0] = h[0], e->chash[1] = h[1];
++}
++
++static int dedupe_on(void) {
++    if (tex_dedupe < 0) {
++        tex_dedupe = rt_knob("TEX_DEDUPE", "1");
++        rt_log("vk: texture content dedupe %s (NX2NAVI_TEX_DEDUPE)", tex_dedupe ? "on: identical bytes share one image" : "off");
++    }
++    return tex_dedupe;
++}
++
++// A first-time upload done (e->uploaded still 0): classify it by the key's past. Tex lock held.
++static void tex_trace_first(Tex *e, uint64_t dt) {
+     void *g = nvn_hm_del(&ghosts, &e->key);
+     int c = g ? (int)(uintptr_t)g - 1 : DC_NEW;
+     tu_n[c]++, tu_bytes[c] += e->t.L.size, tu_ns[c] += dt;
+-    if (!readable || !e->t.L.size) return;
+-    uint64_t ch = content_hash(e->t.mem, e->t.L.size), kh = nvn_hm_hash(&e->key, sizeof e->key) | 1;
+-    void *prev = nvn_hm_put(&contents, &ch, (void *)(uintptr_t)kh);
+-    if (!prev) return;
+-    if ((uintptr_t)prev == kh) tu_same_n++, tu_same_bytes += e->t.L.size;
+-    else tu_other_n++, tu_other_bytes += e->t.L.size;
++}
++
++// A first-time upload of bytes the index knows (tex trace): under the same key or another one, what differs, and the
++// state of the entry that uploaded them; that entry, if it is still around.
++static Tex *content_repeat(const Tex *e, const Content *c) {
++    uint64_t sz = e->t.L.size;
++    if (!memcmp(&c->key, &e->key, sizeof c->key)) tu_same_n++, tu_same_bytes += sz;
++    else {
++        TexKey a = c->key, b = e->key;
++        a.addr = b.addr = 0;
++        int k = !memcmp(&a, &b, sizeof a) ? OK_ADDR : same_but_swizzle(&a, &b) ? OK_SWZ : OK_DESC;
++        tu_other_n++, tu_other_bytes += sz, ok_n[k]++, ok_bytes[k] += sz;
++    }
++    int st = !c->e ? PS_GONE : c->e->released ? PS_RELEASED : PS_LIVE;
++    ps_n[st]++, ps_bytes[st] += sz;
++    return c->e;
+ }
+ 
+ static void tex_trace_log(uint64_t frame) {   // tex lock held
+@@ -216,9 +291,22 @@ static void tex_trace_log(uint64_t frame) {   // tex lock held
+            (unsigned long long)td_n[2], td_bytes[2] / 1048576.0, (unsigned long long)td_n[3], td_bytes[3] / 1048576.0,
+            (unsigned long long)td_n[4], td_bytes[4] / 1048576.0, (unsigned long long)td_n[5], td_bytes[5] / 1048576.0, nreleased,
+            rel_bytes / 1048576.0, by_key.n);
++    rt_log("tex: frame %llu: other key differs in: address %llu (%.1f MiB), swizzle %llu (%.1f MiB), descriptor %llu (%.1f MiB); "
++           "the repeats' entry: live %llu (%.1f MiB), released %llu (%.1f MiB), gone %llu (%.1f MiB); dedupe: shared with live %llu "
++           "(%.1f MiB), with released %llu (%.1f MiB), verified %llu, hash collisions %llu, incompatible %llu; unshared: re-upload %llu, "
++           "GPU write %llu",
++           (unsigned long long)frame, (unsigned long long)ok_n[0], ok_bytes[0] / 1048576.0, (unsigned long long)ok_n[1],
++           ok_bytes[1] / 1048576.0, (unsigned long long)ok_n[2], ok_bytes[2] / 1048576.0, (unsigned long long)ps_n[0],
++           ps_bytes[0] / 1048576.0, (unsigned long long)ps_n[1], ps_bytes[1] / 1048576.0, (unsigned long long)ps_n[2],
++           ps_bytes[2] / 1048576.0, (unsigned long long)dd_n[0], dd_bytes[0] / 1048576.0, (unsigned long long)dd_n[1],
++           dd_bytes[1] / 1048576.0, (unsigned long long)dd_verified, (unsigned long long)dd_collide, (unsigned long long)dd_incompat,
++           (unsigned long long)dd_unshare[0], (unsigned long long)dd_unshare[1]);
+     memset(td_n, 0, sizeof td_n), memset(td_bytes, 0, sizeof td_bytes), memset(tu_n, 0, sizeof tu_n);
+     memset(tu_bytes, 0, sizeof tu_bytes), memset(tu_ns, 0, sizeof tu_ns);
++    memset(ok_n, 0, sizeof ok_n), memset(ok_bytes, 0, sizeof ok_bytes), memset(ps_n, 0, sizeof ps_n), memset(ps_bytes, 0, sizeof ps_bytes);
++    memset(dd_n, 0, sizeof dd_n), memset(dd_bytes, 0, sizeof dd_bytes), memset(dd_unshare, 0, sizeof dd_unshare);
+     tu_same_n = tu_same_bytes = tu_other_n = tu_other_bytes = tr_n = tr_bytes = tr_ns = tr_tb_n = tr_tb_bytes = tb_n = 0;
++    dd_verified = dd_collide = dd_incompat = 0;
+ }
+ 
+ static uint64_t n_bumps, n_site[4];   // tex_gen_bump calls, by site: destroy, create, take-back, release   // tex_gen_bump calls, take-backs that undid a release's bump (vk_texture_bucket_stats)
+@@ -685,20 +773,33 @@ static uint64_t own_bytes(const Tex *e) {
+     if (!e->alloc || !c) return 0;
+     VmaAllocationInfo ai;
+     vmaGetAllocationInfo(c->vma, e->alloc, &ai);
+-    return ai.size;
++    return e->share ? ai.size / (uint64_t)e->share->refs : ai.size;   // a shared image: its share of the bytes
+ }
+ 
++// Into the released list: at the tail (release order), or with rel_lru behind the entries used no later than e, so
++// the head is the entry unused for longest (the sweeps drop from the head). A released entry mostly carries a recent
++// last_use, so the walk from the tail is short.
+ static void rel_append(Tex *e) {
+-    rel_bytes += own_bytes(e);
+-    e->rel_next = NULL;
+-    e->rel_prev = rel_tail;
+-    if (rel_tail) rel_tail->rel_next = e;
++    if (rel_lru < 0) {
++        rel_lru = rt_knob("TEX_RELEASED_LRU", "1");
++        rt_log("vk: released textures dropped %s (NX2NAVI_TEX_RELEASED_LRU)", rel_lru ? "least recently used first" : "oldest release first");
++    }
++    e->rel_acct = own_bytes(e);
++    rel_bytes += e->rel_acct;
++    if (e->checked > e->last_use) e->last_use = e->checked;
++    Tex *after = rel_tail;
++    if (rel_lru)
++        while (after && after->last_use > e->last_use) after = after->rel_prev;
++    e->rel_prev = after;
++    e->rel_next = after ? after->rel_next : rel_head;
++    if (e->rel_next) e->rel_next->rel_prev = e;
++    else rel_tail = e;
++    if (after) after->rel_next = e;
+     else rel_head = e;
+-    rel_tail = e;
+ }
+ 
+ static void rel_unlink(Tex *e) {
+-    uint64_t b = own_bytes(e);
++    uint64_t b = e->rel_acct;
+     rel_bytes = rel_bytes > b ? rel_bytes - b : 0;
+     if (e->rel_prev) e->rel_prev->rel_next = e->rel_next;
+     else rel_head = e->rel_next;
+@@ -723,8 +824,14 @@ static void destroy_tex(Tex *e) {
+             if (p->next_at == e) { p->next_at = e->next_at; break; }
+     }
+     if (e->released) nreleased--, rel_unlink(e);
+-    vk_exec_image_gone(e->pub.image);
+-    vk_defer_image(e->pub.image, e->alloc);
++    content_forget(e);
++    if (e->share && --e->share->refs > 0) {   // the image stays with the entries still sharing it, views included
++        e->share = NULL;
++    } else {
++        free(e->share);
++        vk_exec_image_gone(e->pub.image);
++        vk_defer_image(e->pub.image, e->alloc);
++    }
+     free(e->snap);
+     free(e);
+ }
+@@ -865,9 +972,16 @@ static void astc_check(const Tex *e, const uint8_t *raw, const VkAstcRegion *ar,
+ 
+ // Copies the whole storage into the image (every level and layer the image has).
+ static void upload_body(Tex *e);
++static void unshare(Tex *e, int keep, int why);
+ static void upload(Tex *e) {
+     RT_ZONE(zu, "texture upload");
+     RT_ZONE_VALUE(zu, e->t.L.size);
++    if (e->uploaded) {   // a re-upload: the storage changed, so the index forgets the old bytes and learns the new
++        unshare(e, 0, 0);
++        uint64_t h[2];
++        if ((dedupe_on() || tex_trace()) && e->pub.mirrored && content_of(e, h)) content_note(e, h);
++        else content_forget(e);
++    }
+ #ifdef TRACY_ENABLE
+     if (e->uploaded) RT_ZONE_TEXT(zu, e->took_back ? "re-upload: after take-back" : "re-upload");
+     else {
+@@ -890,7 +1004,8 @@ static void upload_body(Tex *e) {
+         static volatile int32_t n_unmapped;
+         log_limited(&n_unmapped, "texture %#llx (%llu bytes): storage not mapped; not uploaded",
+                     (unsigned long long)e->pub.addr, (unsigned long long)e->t.L.size);
+-        if (tex_trace() && !e->uploaded) tex_trace_first(e, 0, 0);
++        if (tex_trace() && !e->uploaded) tex_trace_first(e, 0);
++        content_forget(e);
+         e->uploaded = 1;
+         return;
+     }
+@@ -942,6 +1057,7 @@ static void upload_body(Tex *e) {
+             static volatile int32_t n_gone;
+             log_limited(&n_gone, "texture %#llx (%llu bytes): storage released during the upload; uploaded as zeros",
+                         (unsigned long long)e->pub.addr, (unsigned long long)e->t.L.size);
++            content_forget(e);   // the image holds zeros, not the hashed bytes
+         }
+         for (k = k0; k < k1; k++) {
+             uint32_t lv = rg[k].imageSubresource.mipLevel, ly = rg[k].imageSubresource.baseArrayLayer;
+@@ -1035,7 +1151,7 @@ static void upload_body(Tex *e) {
+         }
+     } else {
+         n_uploads++, perf_count(PERF_CNT_TEX_UP);
+-        if (tex_trace()) tex_trace_first(e, dt, mem_readable(e->pub.addr, t->L.size));
++        if (tex_trace()) tex_trace_first(e, dt);
+     }
+     e->wt_n = 0;
+     e->took_back = 0;
+@@ -1073,13 +1189,126 @@ static int storage_rewritten(const Tex *e, uint32_t since, uint32_t *now) {
+     return 0;
+ }
+ 
++// ---- dedupe (see the content index above)
++// e, about to upload for the first time, can share c's image: both mirrored images in memory of their own, the same
++// descriptor apart from the swizzle selectors (the image is made from the rest; the swizzle lives in the views), the
++// same layout and size, and c's image holding exactly its storage bytes: uploaded, never written by the GPU.
++static int share_compatible(const Tex *e, const Tex *c) {
++    if (c == e || !c->uploaded || c->pub.gpu_owned || c->gpu_dirty || !c->alloc || c->bound_to || !c->pub.mirrored) return 0;
++    if (!e->alloc || e->bound_to || !e->pub.mirrored || e->pub.gpu_owned || e->pub.image == c->pub.image) return 0;
++    if (c->t.L.size != e->t.L.size || c->pub.format != e->pub.format || c->pub.levels != e->pub.levels ||
++        c->pub.layers != e->pub.layers || c->pub.width != e->pub.width || c->pub.height != e->pub.height ||
++        c->pub.depth != e->pub.depth || c->pub.usage != e->pub.usage || c->pub.block_views != e->pub.block_views)
++        return 0;
++    TexKey a = c->key, b = e->key;
++    a.addr = b.addr = 0;
++    return same_but_swizzle(&a, &b);
++}
++
++// Both storages compared byte for byte when c's is still readable and unchanged since its upload: 1 equal, 0 differ,
++// -1 not comparable (the hash alone decides then).
++static int content_verify(const Tex *e, const Tex *c) {
++    uint32_t now;
++    if (vk_mem_changed(c->pub.addr, c->t.L.size, c->wgen, &now) != 0) return -1;
++    if (!mem_read_hold(c->pub.addr, c->t.L.size)) return -1;
++    int same = mem_readable(e->pub.addr, e->t.L.size) && !memcmp(c->t.mem, e->t.mem, e->t.L.size);
++    mem_read_release();
++    return same;
++}
++
++// e takes c's image: its own goes (deferred), the shared one gets another reference. Slots resolved to e get views
++// of the new image through the generation bump.
++static void share_adopt(Tex *e, Tex *c) {
++    vk_exec_image_gone(e->pub.image);
++    vk_defer_image(e->pub.image, e->alloc);
++    if (!c->share) {
++        if (!(c->share = calloc(1, sizeof *c->share))) rt_fatal("vk: out of memory for a shared texture");
++        c->share->refs = 1;
++    }
++    c->share->refs++;
++    e->share = c->share;
++    e->pub.image = c->pub.image, e->alloc = c->alloc, e->bound_to = NULL;
++    e->uploaded = 1, e->n_up++, e->took_back = 0, e->wt_n = 0;
++    tex_gen_bump(e->key.addr);
++}
++
++// Before a first upload: the storage hashed and the index asked whether the GPU already has these bytes (the tex trace
++// classes the repeat). With dedupe on and a compatible holder, e shares its image and nothing is uploaded: 1. Else the
++// index learns e as the holder of the bytes it is about to upload: 0.
++static int content_first(Tex *e) {
++    if ((!dedupe_on() && !tex_trace()) || !e->pub.mirrored) return 0;
++    uint64_t h[2];
++    if (!content_of(e, h)) return 0;
++    Content *c = nvn_hm_get(&contents, &h[0]);
++    if (c && c->h2 == h[1] && c->size == e->t.L.size) {
++        Tex *p = content_repeat(e, c);
++        if (tex_dedupe && p) {
++            int v;
++            if (!share_compatible(e, p)) dd_incompat++;
++            else if (!(v = content_verify(e, p))) dd_collide++;
++            else {
++                if (v > 0) dd_verified++;
++                int r = p->released != 0;
++                dd_n[r]++, dd_bytes[r] += e->t.L.size;
++                share_adopt(e, p);
++                content_note(e, h);
++                nvn_hm_del(&ghosts, &e->key);   // not an upload: the dedupe counters above have it
++                return 1;
++            }
++        }
++    }
++    content_note(e, h);
++    return 0;
++}
++
++// An entry whose shared image is about to be written gets an image of its own first (create_tex again, with its
++// descriptor), the shared content copied over when the write is partial (keep); why: dd_unshare index. Nothing
++// to do for an unshared or sole image.
++static void unshare(Tex *e, int keep, int why) {
++    TexShare *s = e->share;
++    if (!s) return;
++    if (s->refs == 1) {
++        free(s), e->share = NULL;
++        return;
++    }
++    Tex *n = create_tex(&e->t, &e->key, 1);
++    if (!n) {
++        static volatile int32_t n_stuck;
++        log_limited(&n_stuck, "texture %#llx: no image of its own to unshare into; the shared image takes the write",
++                    (unsigned long long)e->pub.addr);
++        return;
++    }
++    VkImage old = e->pub.image;
++    s->refs--;
++    e->share = NULL;
++    e->pub.image = n->pub.image, e->alloc = n->alloc, e->bound_to = n->bound_to;
++    free(n);
++    dd_unshare[why]++;
++    VkCommandBuffer cb = vk_upload_begin();
++    init_image(e, cb);
++    if (keep) {
++        uint32_t levels = e->pub.levels;
++        VkImageCopy *rg = calloc(levels, sizeof *rg);
++        if (!rg) rt_fatal("vk: out of memory for an unshare copy");
++        for (uint32_t lv = 0; lv < levels; lv++)
++            rg[lv] = (VkImageCopy){.srcSubresource = {e->pub.aspect, lv, 0, e->pub.layers}, .dstSubresource = {e->pub.aspect, lv, 0, e->pub.layers},
++                                   .extent = {mip(e->pub.width, lv), mip(e->pub.height, lv), mip(e->pub.depth, lv)}};
++        barrier(cb, ALL_RW, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT);
++        vkCmdCopyImage(cb, old, VK_IMAGE_LAYOUT_GENERAL, e->pub.image, VK_IMAGE_LAYOUT_GENERAL, levels, rg);
++        barrier(cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, ALL_RW);
++        free(rg);
++    }
++    vk_upload_end();
++    tex_gen_bump(e->key.addr);
++}
++
+ // A mirrored texture is uploaded on first use and again when its storage pages carry a newer write generation.
+ static void make_fresh(Tex *e) {
+     if (!e->pub.mirrored || e->pub.gpu_owned) return;
+     uint64_t size = e->t.L.size;
+     if (!e->uploaded) {
+         vk_mem_changed(e->pub.addr, size, 0, &e->wgen);   // resets the write bits before the storage is read
+-        upload(e);
++        if (!content_first(e)) upload(e);
+         return;
+     }
+     uint32_t now;
+@@ -1098,7 +1327,7 @@ static void make_fresh_snap(Tex *e) {
+     n_checks++;
+     int ch = vk_mem_changed_snap(e->pub.addr, e->t.L.size, e->uploaded ? e->wgen : 0, submit_epoch, &now);
+     e->wgen = now;
+-    if (!e->uploaded) { upload(e); return; }
++    if (!e->uploaded) { if (!content_first(e)) upload(e); return; }
+     e->last_ch = ch;
+     if (ch) upload(e);
+ }
+@@ -1253,6 +1482,7 @@ static Tex *entry_of(const tex_t *t) {
+     }
+     if (e->released) e->released = 0, e->took_back = 1, nreleased--, rel_unlink(e), n_site[2]++, tb_n++, tex_gen_bump(k.addr);
+     e->t = *t;
++    e->last_use = submit_epoch;
+     return e;
+ }
+ 
+@@ -1309,6 +1539,7 @@ void vk_texture_gpu_written(const tex_t *t) {
+     Tex *e = entry_of(t);
+     if (e) {
+         make_fresh(e);   // a partial render keeps what the storage held before
++        unshare(e, 1, 1);   // the render must not land in an image other entries share
+         e->pub.gpu_owned = 1;
+         uint64_t f = vk_exec_recording_fence();
+         if (f > e->wr_fence) e->wr_fence = f;
+@@ -1885,9 +2116,10 @@ void vk_write_texels(const tex_t *t, const view_t *v, const NVNcopyRegion *r, co
+         if (!storage_texels(t, &g, r, (uint8_t *)src, 1))
+             log_limited(&n_bad, "WriteTexels: region outside level %u of texture %#llx", g.level, (unsigned long long)e->pub.addr);
+         vk_guest_written((uintptr_t)t->mem, t->L.size);
+-        if (e->pub.gpu_owned) image_texels(e, &g, r, (uint8_t *)src, 1);
++        if (e->pub.gpu_owned) unshare(e, 1, 1), image_texels(e, &g, r, (uint8_t *)src, 1);
+         else if (e->uploaded) e->wt_n++;
+     } else if (e) {
++        unshare(e, 1, 1);
+         image_texels(e, &g, r, (uint8_t *)src, 1);
+     }
+     unlock();
+@@ -2382,6 +2614,9 @@ void vk_texture_shutdown(void) {
+     for (uint32_t i = 0; i < samplers.cap; i++)
+         if (samplers.vals[i] && c) vkDestroySampler(c->device, (VkSampler)samplers.vals[i], NULL);
+     free(by_key.keys), free(by_key.vals), free(by_addr.keys), free(by_addr.vals), free(samplers.keys), free(samplers.vals);
++    nvn_hm_clear(&contents, free);
++    free(contents.keys), free(contents.vals);
++    contents = (nvn_hmap){.klen = sizeof(uint64_t)};
+     by_key = (nvn_hmap){.klen = sizeof(TexKey)};
+     by_addr = (nvn_hmap){.klen = 8};
+     samplers = (nvn_hmap){.klen = sizeof(samp_par)};
+-- 
+2.56.0
+
+
+From 2e1f51f988c0fc0d515559d307cc3d9508b87f4b Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Mon, 9 Nov 2026 18:38:09 -0500
+Subject: [PATCH 2/2] vk_texture: NX2NAVI_TEX_DEDUPE and
+ NX2NAVI_TEX_RELEASED_LRU off by default: dedupe paints wrong terrain at the
+ castle slot (3.7 MiB shared of 2 GiB), LRU alone is untested (#132)
+
+---
+ runtime/vk_texture.c | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/runtime/vk_texture.c b/runtime/vk_texture.c
+index 3626e5a..c0d1f0e 100644
+--- a/runtime/vk_texture.c
++++ b/runtime/vk_texture.c
+@@ -96,7 +96,7 @@ static nvn_hmap samplers = {.klen = sizeof(samp_par)};
+ static int nreleased;
+ static Tex *rel_head, *rel_tail;   // released entries, the first to drop at the head (rel_append orders them)
+ static uint64_t rel_bytes;         // own memory of the released entries (rel_append / rel_unlink)
+-// NX2NAVI_TEX_RELEASED_LRU (default 1): the released list is kept in order of last use (last_use), so the sweeps drop
++// NX2NAVI_TEX_RELEASED_LRU (default 0 until a lab shot clears it; =1): the released list is kept in order of last use (last_use), so the sweeps drop
+ // the entry unused for longest; =0: in release order (oldest release first).
+ static int rel_lru = -1;
+ // NX2NAVI_TEX_RELEASED_MIB (default 0: no byte cap): past this much own memory in released entries, each release
+@@ -192,7 +192,7 @@ static nvn_hmap ghosts = {.klen = sizeof(TexKey)};
+ static int same_but_swizzle(const TexKey *a, const TexKey *b);
+ static int tex_trace(void) { return (rt_trace & RT_TRACE_TEX) != 0; }
+ 
+-// ---- the content index (NX2NAVI_TEX_DEDUPE, default 1; the tex trace reads it too)
++// ---- the content index (NX2NAVI_TEX_DEDUPE, default 0: sharing painted wrong terrain at the castle, 2026-11-09; the tex trace reads it too)
+ // Every upload of a mirrored texture hashes the storage bytes it copies (128 bits, content_hash) and the index maps the
+ // hash to the entry that holds them (Content: the newest one, its key and size). A first-time upload whose bytes the
+ // index knows under a compatible entry (share_compatible: the same descriptor and layout apart from the swizzle
+@@ -244,7 +244,7 @@ static void content_note(Tex *e, const uint64_t h[2]) {   // e holds these bytes
+ 
+ static int dedupe_on(void) {
+     if (tex_dedupe < 0) {
+-        tex_dedupe = rt_knob("TEX_DEDUPE", "1");
++        tex_dedupe = rt_knob("TEX_DEDUPE", "0");
+         rt_log("vk: texture content dedupe %s (NX2NAVI_TEX_DEDUPE)", tex_dedupe ? "on: identical bytes share one image" : "off");
+     }
+     return tex_dedupe;
+@@ -781,7 +781,7 @@ static uint64_t own_bytes(const Tex *e) {
+ // last_use, so the walk from the tail is short.
+ static void rel_append(Tex *e) {
+     if (rel_lru < 0) {
+-        rel_lru = rt_knob("TEX_RELEASED_LRU", "1");
++        rel_lru = rt_knob("TEX_RELEASED_LRU", "0");
+         rt_log("vk: released textures dropped %s (NX2NAVI_TEX_RELEASED_LRU)", rel_lru ? "least recently used first" : "oldest release first");
+     }
+     e->rel_acct = own_bytes(e);
+-- 
+2.56.0
+
