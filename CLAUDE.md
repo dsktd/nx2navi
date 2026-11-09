@@ -22,7 +22,7 @@ Read `README.md` first: build steps, workarounds, private patches. The investiga
     - screenshots: `touch build/v111/shot.req`, and the shot lands in `logs/shot-N.png` (HDR10 too since patch 0015); marks: `mark.req`, F9 or L3+R3 (README "Mark this moment")
     - dumps: `dump.req`, with `NX2NAVI_DUMP_REQ=1`
 - **Builds are allowed while he plays.** Renice the process group to 19; the container's base niceness is -4, so `nice -n 19` only reaches 15. Build to `build/v111/nx2navi.new` and swap the file whole (rename). Never overwrite the running binary.
-- **Never write to `profile/`.** Copy it for tests; `NX2NAVI_PROFILE_DIR` needs an absolute path (Nushell passes `~` through literally). Never write to the live shader cache except through the reload loop.
+- **Never write to `profile/`.** `lab-run` refuses without an explicit `NX2NAVI_PROFILE_DIR` that is not the live one; copy it for tests; `NX2NAVI_PROFILE_DIR` needs an absolute path (Nushell passes `~` through literally). Never write to the live shader cache except through the reload loop.
 - **No hardlinked copies of build trees.** Use reflink or plain copies.
 - **Commits:** only your own files (`git add <paths>`, never `-a`), plain messages, **no Co-Authored-By or Claude-Session trailers**. Push with:
   `GH_TOKEN=$(tr -d '\n' < ~/.config/gh/dsktd.token) git -c credential.helper= -c 'credential.helper=!gh auth git-credential' push`

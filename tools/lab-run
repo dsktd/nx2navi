@@ -49,6 +49,12 @@ EOF
   envs+=("VK_ADD_LAYER_PATH=$vvl/share/vulkan/explicit_layer.d" VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation
     "VK_LAYER_SETTINGS_PATH=$OUT/vk_layer_settings.txt" ${LAB_VK_LOADER_DEBUG:+VK_LOADER_DEBUG=layer})
 fi
+# never touch Cal's live profile: require an explicit copy
+prof=""; for e in "${envs[@]}"; do [[ $e == NX2NAVI_PROFILE_DIR=* ]] && prof=${e#*=}; done
+live=$(realpath -m "$BIN/profile")
+if [[ -z $prof || $(realpath -m "$prof") == "$live" || $(realpath -m "$prof") == "$live"/* ]]; then
+  echo "lab-run: refusing: set NX2NAVI_PROFILE_DIR=<absolute copy of $live> (cp -a)" >&2; exit 4
+fi
 t0=$(date +%s.%N)
 FEED=$HOME/claude/.services/screensavers/feeds/nx2navi-lab.log
 echo "$(date +%H:%M) run $label: replay to frame $frame ${envs[*]}" >>"$FEED"
