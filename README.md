@@ -125,6 +125,10 @@ Field, HDR10 native through niri-spicy, 240 Hz panel. Since the 2026-11-08 morni
   byte cap is the `just play` default since 2026-11-09 (`NX2NAVI_TEX_RELEASED_MIB=3072`): in the lab replay of the
   19:58 play recording to frame 5000, VRAM stays at 12.8 GiB instead of 17.6 of 16.4 GiB, pressure drops 761 -> 0,
   59.6 vs 58.0 fps mean and p99 18.6 vs 27.6 ms over frames 3000-4000, no texture artefacts in 9 shots.
+  Cal's real-play Tracy trace of 2026-11-09 (`NOTES-perf-2026-11-09.md`): Hyrule Field is a flat 22.9 ms (43 fps) with
+  no spikes; the game's render thread is the critical path (the replay thread never blocks a present), 5.1 ms of it is
+  `submit finish wait`, which includes the completion thread's 5.4 ms/frame of write-back compares because `done` is
+  published after the callbacks; 17.8 ms of that thread is unzoned. Ranked fixes and new zones in the notes.
 - Debug and play features: shader hot-reload and on-request shots (0003), dump.req (0011), mark this moment (0015,
   F9 / L3+R3), draw lists in dumps (0017), Steam Input pad preferred (0014), projection unjitter (0012).
 - Defaults: `NX2NAVI_PIPE_SKIP=any`, `NX2NAVI_HDR=native`, `REPLAY_ASYNC=1`, `VK_RECORDER=1`, `TEX_RELEASED_MIB=3072`.
@@ -303,6 +307,12 @@ nix shell nixpkgs#tracy -c tracy-csvexport .lab/zones.tracy | head     # zone st
 Zones: `nvn submit`, `submit finish wait`, `shadow sync`, `write-back compare`, `write-back`, `bind pipeline`,
 `texture upload` (zone text `re-upload` for a re-upload, value = bytes), `released sweep`, `audio mix`; frames are marked
 at the present. Overhead: see Status (2026-11-09, measured against `nx2navi.new` on the same replay).
+
+`tracy-csvexport` does not export frame marks; `NOTES-perf-2026-11-09.md` "Method" has the 12-line addition to
+`csvexport.cpp` (Tracy's `Worker::GetFrames`) that prints them. Zones to add next, from that analysis: `frame bound` /
+`replay full` (the game's waits for the replay thread, `vk_backend.c`), `nvn block <name>` at the `NVN_BLOCKING()` entries,
+`replay submit` / `part submit` (the replay thread's recording per submission and `vkQueueSubmit2` per part),
+`completion cb` and `lod guard` (how much of a fence wait is callbacks).
 
 ## Flatpak build kit (Steam Deck)
 
