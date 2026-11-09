@@ -1,0 +1,238 @@
+From 26b812cc7a78e67ab914b0c13e8ffef3e669cb33 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Mon, 9 Nov 2026 17:39:19 -0500
+Subject: [PATCH] NX2NAVI_TRACE=tex: texture upload classes (first-time by the
+ key's past, content hash repeats, re-uploads, destroys by cause) every 600
+ frames; Tracy zone text per class (#132)
+
+---
+ runtime/host.h       |  2 +-
+ runtime/main.c       |  2 +-
+ runtime/vk_texture.c | 94 ++++++++++++++++++++++++++++++++++++++++++--
+ 3 files changed, 92 insertions(+), 6 deletions(-)
+
+diff --git a/runtime/host.h b/runtime/host.h
+index 016db84..c34b55e 100644
+--- a/runtime/host.h
++++ b/runtime/host.h
+@@ -25,7 +25,7 @@ void rt_log_raw(const char *p, size_t n);
+ const char *rt_log_path(void);                  // the log file, NULL when this run writes none
+ enum { RT_TRACE_SVC = 1, RT_TRACE_HOSTCALL = 2, RT_TRACE_IPC = 4, RT_TRACE_FS = 8, RT_TRACE_GFX = 16, RT_TRACE_PERF = 32,
+        RT_TRACE_SCHED = 64, RT_TRACE_AUDIO = 128, RT_TRACE_PRESENT = 256,
+-       RT_TRACE_COUNTERS = 512 };   // counters: a present/clock line per 60 presents and every voice start (#128 lab)
++       RT_TRACE_COUNTERS = 512, RT_TRACE_TEX = 1024 };   // tex: texture upload classes every 600 frames (#132)   // counters: a present/clock line per 60 presents and every voice start (#128 lab)
+ extern unsigned rt_trace;                       // from NX2NAVI_TRACE=svc,host,ipc,fs,gfx,perf,sched,audio,present (or all)
+ // prof_win.c: NX2NAVI_PROFILE=<path> sampling profiler; NX2NAVI_TRACE=perf frame timing (waits of the render thread)
+ // PERF_TEX: texture uploads on the render thread (deswizzle, decode, staging), PERF_ASTC included
+diff --git a/runtime/main.c b/runtime/main.c
+index 2e624a8..fd52f9d 100644
+--- a/runtime/main.c
++++ b/runtime/main.c
+@@ -135,7 +135,7 @@ static void parse_trace(void) {
+     if (!e) return;
+     static const struct { const char *name; unsigned bit; } names[] = {
+         {"svc", RT_TRACE_SVC}, {"host", RT_TRACE_HOSTCALL}, {"ipc", RT_TRACE_IPC}, {"fs", RT_TRACE_FS},
+-        {"gfx", RT_TRACE_GFX}, {"perf", RT_TRACE_PERF}, {"sched", RT_TRACE_SCHED}, {"audio", RT_TRACE_AUDIO},
++        {"gfx", RT_TRACE_GFX}, {"perf", RT_TRACE_PERF}, {"tex", RT_TRACE_TEX}, {"sched", RT_TRACE_SCHED}, {"audio", RT_TRACE_AUDIO},
+         {"present", RT_TRACE_PRESENT}, {"counters", RT_TRACE_COUNTERS}, {"all", ~0u}};
+     for (const char *p = e; *p;) {
+         size_t n = strcspn(p, ",");
+diff --git a/runtime/vk_texture.c b/runtime/vk_texture.c
+index 10e1ae7..9c8a328 100644
+--- a/runtime/vk_texture.c
++++ b/runtime/vk_texture.c
+@@ -57,6 +57,7 @@ typedef struct Tex {
+     uint64_t wr_fence;            // any entry: newest submission recorded to write its image (render, copy, clear,
+                                   // storage binding); ReadTexels waits for it instead of draining the replay queue
+     uint8_t listed;               // in owned[]
++    uint8_t took_back;            // taken back from the released list since its last upload (tex trace)
+     uint8_t *snap;                // a texture that fills no page: its storage bytes when the GPU write was recorded
+     uint32_t wt_n;                // WriteTexels into the storage since the last upload
+     struct Tex *rel_prev, *rel_next;   // while released: the list of released entries, oldest first
+@@ -156,6 +157,70 @@ static uint16_t *slot_bucket;
+ 
+ static void dirty_push(uint32_t x) { dirty[ndirty++ % DIRTY_N] = x; }
+ 
++// NX2NAVI_TRACE=tex (#132): what the texture uploads are. Destroys are counted by cause; a first-time upload is
++// classified by what its key was before (never seen, or destroyed by that cause: the ghosts map keeps the cause per
++// destroyed key) and by a hash of the storage bytes it copies (contents: hash -> the key hash it was uploaded under
++// last), so uploads of bytes the GPU already had show up, under the same key or another one. A summary line goes to
++// the log every 600 frames (vk_texture_new_submit); the Tracy zone text names the class.
++enum { DC_NEW, DC_RANGE_GONE, DC_REPLACED, DC_SWEEP_COUNT, DC_SWEEP_BYTES, DC_PRESSURE, DC_N };
++#ifdef TRACY_ENABLE
++static const char *const dc_name[DC_N] = {"first", "first: after range gone", "first: after replaced at address",
++                                          "first: after released-count sweep", "first: after released-bytes sweep", "first: after VRAM pressure"};
++#endif
++static int dcause;   // the cause of the destroy_tex calls under way (its callers set it)
++static uint64_t td_n[DC_N], td_bytes[DC_N];                                        // destroys by cause
++static uint64_t tu_n[DC_N], tu_bytes[DC_N], tu_ns[DC_N];                           // first-time uploads by the key's past
++static uint64_t tu_same_n, tu_same_bytes, tu_other_n, tu_other_bytes;              // ... whose bytes were uploaded before: same key / other key
++static uint64_t tr_n, tr_bytes, tr_ns, tr_tb_n, tr_tb_bytes, tb_n;                // re-uploads (of them: after a take-back), take-backs
++static nvn_hmap ghosts = {.klen = sizeof(TexKey)}, contents = {.klen = sizeof(uint64_t)};
++static int tex_trace(void) { return (rt_trace & RT_TRACE_TEX) != 0; }
++
++static uint64_t content_hash(const uint8_t *p, uint64_t n) {   // four lanes of multiply-xorshift: speed over quality
++    uint64_t h[4] = {0x9E3779B97F4A7C15ull ^ n, 0xBF58476D1CE4E5B9ull, 0x94D049BB133111EBull, 0x2545F4914F6CDD1Dull}, w;
++    for (; n >= 32; n -= 32, p += 32)
++        for (int i = 0; i < 4; i++) { memcpy(&w, p + 8 * i, 8); h[i] = (h[i] ^ w) * 0x100000001B3ull; h[i] ^= h[i] >> 29; }
++    for (; n; n--, p++) h[0] = (h[0] ^ *p) * 0x100000001B3ull;
++    uint64_t r = h[0] ^ (h[1] * 3) ^ (h[2] * 5) ^ (h[3] * 7);
++    r ^= r >> 31;
++    return r | 1;
++}
++
++// A first-time upload done (e->uploaded still 0): classify it. Tex lock held.
++static void tex_trace_first(Tex *e, uint64_t dt, int readable) {
++    void *g = nvn_hm_del(&ghosts, &e->key);
++    int c = g ? (int)(uintptr_t)g - 1 : DC_NEW;
++    tu_n[c]++, tu_bytes[c] += e->t.L.size, tu_ns[c] += dt;
++    if (!readable || !e->t.L.size) return;
++    uint64_t ch = content_hash(e->t.mem, e->t.L.size), kh = nvn_hm_hash(&e->key, sizeof e->key) | 1;
++    void *prev = nvn_hm_put(&contents, &ch, (void *)(uintptr_t)kh);
++    if (!prev) return;
++    if ((uintptr_t)prev == kh) tu_same_n++, tu_same_bytes += e->t.L.size;
++    else tu_other_n++, tu_other_bytes += e->t.L.size;
++}
++
++static void tex_trace_log(uint64_t frame) {   // tex lock held
++    uint64_t fn = 0, fb = 0, fns = 0;
++    for (int i = 0; i < DC_N; i++) fn += tu_n[i], fb += tu_bytes[i], fns += tu_ns[i];
++    rt_log("tex: frame %llu: first-time uploads %llu (%.1f MiB, %.1f ms): new key %llu (%.1f MiB), after range gone %llu (%.1f MiB), "
++           "replaced %llu (%.1f MiB), released-count sweep %llu (%.1f MiB), released-bytes sweep %llu (%.1f MiB), pressure %llu (%.1f MiB)",
++           (unsigned long long)frame, (unsigned long long)fn, fb / 1048576.0, fns / 1e6,
++           (unsigned long long)tu_n[0], tu_bytes[0] / 1048576.0, (unsigned long long)tu_n[1], tu_bytes[1] / 1048576.0,
++           (unsigned long long)tu_n[2], tu_bytes[2] / 1048576.0, (unsigned long long)tu_n[3], tu_bytes[3] / 1048576.0,
++           (unsigned long long)tu_n[4], tu_bytes[4] / 1048576.0, (unsigned long long)tu_n[5], tu_bytes[5] / 1048576.0);
++    rt_log("tex: frame %llu: of them bytes uploaded before: same key %llu (%.1f MiB), other key %llu (%.1f MiB); re-uploads %llu (%.1f MiB, %.1f ms), "
++           "after a take-back %llu (%.1f MiB); take-backs %llu; destroys: range gone %llu (%.1f MiB), replaced %llu (%.1f MiB), "
++           "released-count %llu (%.1f MiB), released-bytes %llu (%.1f MiB), pressure %llu (%.1f MiB); released kept %d (%.1f MiB), entries %u",
++           (unsigned long long)frame, (unsigned long long)tu_same_n, tu_same_bytes / 1048576.0, (unsigned long long)tu_other_n,
++           tu_other_bytes / 1048576.0, (unsigned long long)tr_n, tr_bytes / 1048576.0, tr_ns / 1e6, (unsigned long long)tr_tb_n,
++           tr_tb_bytes / 1048576.0, (unsigned long long)tb_n, (unsigned long long)td_n[1], td_bytes[1] / 1048576.0,
++           (unsigned long long)td_n[2], td_bytes[2] / 1048576.0, (unsigned long long)td_n[3], td_bytes[3] / 1048576.0,
++           (unsigned long long)td_n[4], td_bytes[4] / 1048576.0, (unsigned long long)td_n[5], td_bytes[5] / 1048576.0, nreleased,
++           rel_bytes / 1048576.0, by_key.n);
++    memset(td_n, 0, sizeof td_n), memset(td_bytes, 0, sizeof td_bytes), memset(tu_n, 0, sizeof tu_n);
++    memset(tu_bytes, 0, sizeof tu_bytes), memset(tu_ns, 0, sizeof tu_ns);
++    tu_same_n = tu_same_bytes = tu_other_n = tu_other_bytes = tr_n = tr_bytes = tr_ns = tr_tb_n = tr_tb_bytes = tb_n = 0;
++}
++
+ static uint64_t n_bumps, n_site[4];   // tex_gen_bump calls, by site: destroy, create, take-back, release   // tex_gen_bump calls, take-backs that undid a release's bump (vk_texture_bucket_stats)
+ static uint32_t bump_count[AGEN_N];
+ 
+@@ -645,6 +710,8 @@ static void rel_unlink(Tex *e) {
+ static void destroy_tex(Tex *e) {
+     own_remove(e);
+     n_site[0]++;
++    td_n[dcause]++, td_bytes[dcause] += e->t.L.size;
++    if (tex_trace()) nvn_hm_put(&ghosts, &e->key, (void *)(uintptr_t)(dcause + 1));
+     tex_gen_bump(e->key.addr);
+     nvn_hm_del(&by_key, &e->key);
+     Tex *head = nvn_hm_get(&by_addr, &e->key.addr);
+@@ -682,8 +749,11 @@ static void sweep_released_body(void) {
+         if (rel_cap < 0) rel_cap = 0;
+         if (rel_cap) rt_log("vk: released textures: own memory capped at %lld MiB", (long long)(rel_cap / 1048576));
+     }
++    dcause = DC_SWEEP_COUNT;
+     while (nreleased > RELEASED_MAX && rel_head) destroy_tex(rel_head);
++    dcause = DC_SWEEP_BYTES;
+     while (rel_cap && rel_bytes > (uint64_t)rel_cap && rel_head) destroy_tex(rel_head);
++    dcause = DC_NEW;
+ }
+ 
+ // NX2NAVI_TEX_VRAM_PRESSURE (percent of the device-local budget, default 90; 0 = off): above it, each submit drops up to
+@@ -711,7 +781,9 @@ static void sweep_pressure(void) {   // tex_lock held
+     for (Tex *e = rel_head, *next; e && dropped < PRESSURE_STEP; e = next) {
+         next = e->rel_next;
+         if (!e->pub.mirrored || e->pub.gpu_owned || e->gpu_dirty) continue;
++        dcause = DC_PRESSURE;
+         destroy_tex(e);
++        dcause = DC_NEW;
+         dropped++, n_pressure_drops++;
+     }
+ }
+@@ -796,7 +868,13 @@ static void upload_body(Tex *e);
+ static void upload(Tex *e) {
+     RT_ZONE(zu, "texture upload");
+     RT_ZONE_VALUE(zu, e->t.L.size);
+-    if (e->uploaded) RT_ZONE_TEXT(zu, "re-upload");
++#ifdef TRACY_ENABLE
++    if (e->uploaded) RT_ZONE_TEXT(zu, e->took_back ? "re-upload: after take-back" : "re-upload");
++    else {
++        void *g = tex_trace() ? nvn_hm_get(&ghosts, &e->key) : NULL;
++        RT_ZONE_TEXT(zu, dc_name[g ? (int)(uintptr_t)g - 1 : DC_NEW]);
++    }
++#endif
+     upload_body(e);
+     RT_ZONE_END(zu);
+ }
+@@ -812,6 +890,7 @@ static void upload_body(Tex *e) {
+         static volatile int32_t n_unmapped;
+         log_limited(&n_unmapped, "texture %#llx (%llu bytes): storage not mapped; not uploaded",
+                     (unsigned long long)e->pub.addr, (unsigned long long)e->t.L.size);
++        if (tex_trace() && !e->uploaded) tex_trace_first(e, 0, 0);
+         e->uploaded = 1;
+         return;
+     }
+@@ -945,6 +1024,8 @@ static void upload_body(Tex *e) {
+     if (e->uploaded) {
+         n_reuploads++, perf_count(PERF_CNT_TEX_REUP);
+         ru_n++, ru_bytes += t->L.size, ru_ns += dt;
++        tr_n++, tr_bytes += t->L.size, tr_ns += dt;
++        if (e->took_back) tr_tb_n++, tr_tb_bytes += t->L.size;
+         if (e->wt_n) {
+             ru_wt_n++, ru_wt_bytes += t->L.size, ru_wt_ns += dt;
+             if (rt_trace & RT_TRACE_PERF)
+@@ -954,8 +1035,10 @@ static void upload_body(Tex *e) {
+         }
+     } else {
+         n_uploads++, perf_count(PERF_CNT_TEX_UP);
++        if (tex_trace()) tex_trace_first(e, dt, mem_readable(e->pub.addr, t->L.size));
+     }
+     e->wt_n = 0;
++    e->took_back = 0;
+     e->uploaded = 1;
+     e->n_up++;
+     perf_end(PERF_TEX, p0);
+@@ -1138,7 +1221,7 @@ static Tex *entry_of(const tex_t *t) {
+         Tex *src = NULL;
+         for (Tex *p = nvn_hm_get(&by_addr, &k.addr), *nx; p; p = nx) {
+             nx = p->next_at;
+-            if (p->released) { destroy_tex(p); continue; }
++            if (p->released) { dcause = DC_REPLACED, destroy_tex(p), dcause = DC_NEW; continue; }
+             alias = 1;
+             if (tex_alias && (!src || (same_but_swizzle(&p->key, &k) && !same_but_swizzle(&src->key, &k))) &&
+                 alias_compatible(e, p) && alias_has_gpu_content(p))
+@@ -1168,7 +1251,7 @@ static Tex *entry_of(const tex_t *t) {
+         n_site[1]++;
+         tex_gen_bump(k.addr);
+     }
+-    if (e->released) e->released = 0, nreleased--, rel_unlink(e), n_site[2]++, tex_gen_bump(k.addr);
++    if (e->released) e->released = 0, e->took_back = 1, nreleased--, rel_unlink(e), n_site[2]++, tb_n++, tex_gen_bump(k.addr);
+     e->t = *t;
+     return e;
+ }
+@@ -1277,7 +1360,9 @@ void vk_texture_range_gone(uint64_t lo, uint64_t size, VmaAllocation alloc) {
+         Tex *e = by_key.vals[i];
+         if (e && ((e->key.addr >= lo && e->key.addr - lo < size) || (alloc && e->bound_to == alloc))) list[n++] = e;
+     }
++    dcause = DC_RANGE_GONE;
+     for (int i = 0; i < n; i++) destroy_tex(list[i]);
++    dcause = DC_NEW;
+     free(list);
+     unlock();
+ }
+@@ -1534,8 +1619,9 @@ void vk_texture_new_submit(void) {
+     lock();
+     if (!++submit_epoch) submit_epoch = 1;
+     sweep_pressure();
+-    static uint64_t log_at;
++    static uint64_t log_at, tex_log_at;
+     uint64_t f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) / 60;
++    if (tex_trace() && f / 10 != tex_log_at) tex_log_at = f / 10, tex_trace_log(f * 60);
+     if ((rt_trace & RT_TRACE_PERF) && f != log_at && tex_alias > 0) {
+         log_at = f;
+         rt_log("perf: frame %llu: texture aliases: content copied %llu, filled from storage %llu, left uninitialised %llu",
+-- 
+2.56.0
+

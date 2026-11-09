@@ -300,3 +300,40 @@ frames) and the 3.4 ms of extra unzoned game-thread time, nor the 60 s stall blo
 4. **Unzoned game thread, 21 ms.** Same next measurement as the field (sampling), now more important: it is 3.4 ms more
    than the field at the same zone costs, and it is the frame floor once 1 + 2 land.
 5. Shadow sync (2.8 ms, 747 pools, t2) and audio (0.52 ms per mix): unchanged ranking, not on the critical path.
+
+## Kakariko texture uploads: classification (patch 0027, 2026-11-09 evening)
+
+`NX2NAVI_TRACE=tex` (patch 0027, built into `nx2navi.new2`, not swapped) logs every 600 frames what the uploads are:
+first-time uploads by the key's past (never seen / destroyed by range gone, replaced at address, released-count or
+released-bytes sweep, VRAM pressure), repeats of bytes uploaded before (content hash; same key / other key), re-uploads
+(of them after a take-back), take-backs, destroys by cause and the released list. The Tracy `texture upload` zone text
+carries the same class. The cache key (`TexKey`) is address + the whole `nvn_texdesc` (format, size, target, levels,
+swizzle, flags) + the 8-byte layout; a released entry at an address is destroyed when a *different* descriptor is
+created there (`entry_of`), and `vk_texture_range_gone` (pool_fini) destroys every entry in the pool.
+
+Lab replay of `input-20261109-165243.txt` (live profile, no bundle) to present 4200 with `nx2navi.new2`:
+
+| frames | first-time | of them: new key / after sweep / pressure | same bytes seen before (same key / other key) | re-uploads | destroys: replaced / released-bytes sweep | released kept |
+|---|---|---|---|---|---|---|
+| 600-1200 (load) | 5688, 2058 MiB, 783 ms | 5677 (2048 MiB) / 0 / 0 | 5 (9.5 MiB) / 172 (12 MiB) | 3288, 318 MiB | 147 (412 MiB) / 15 (19 MiB) | 920 (3021 MiB) |
+| 1200-4200 | 21, 10 MiB | 0 / 10 (4.9 MiB) / 11 (5.3 MiB) | 20 (9.9 MiB) / 0 | 2100-3100 per 600 frames, 2-4 MiB, 35-48 ms | 160-580 (0.9-4.4 GiB) / 1058-2446 (4.2-10.5 GiB) | 660-740 (3.0 GiB) |
+
+- The 2 GiB scene load is genuine: unique content under new keys (content-hash repeats 1%). Nothing is uploaded again
+  because of the key or the released list after it: zero "after range gone / replaced" first-time uploads.
+- The replay did not reproduce Cal's 3.75 GiB of first-time uploads over 56 s of running (it starts from the live
+  profile's save, not the recording's; frames 1200-4200 are steady state with 0 first-time uploads). The field's
+  Tracy shape (10 MiB first-time per movement frame, 2 MiB x 1026) therefore most likely comes from **scene/area
+  loads along his route** (houses, well, graveyard: each a fresh pool with unique content), not from key misses.
+  To confirm: `NX2NAVI_TRACE=tex just play` for a minute of running around Kakariko and read the `tex:` lines.
+- The re-uploads are what the field had: 2000-3000 tiny ones per 600 frames (palettes, 128 B-3 KiB), 35-48 ms per
+  600 frames = 0.07 ms/frame. Not worth a fix.
+- What is big: the released list churns 5-10 GiB of **render targets** per 600 frames (released-bytes sweep) and
+  0.9-4.4 GiB of "replaced at address" destroys, with 660-920 entries at the 3 GiB cap. These are not uploads
+  (render targets are not mirrored) but each is a vkCreateImage + allocation + alias copy of a transient target the
+  game finalizes and re-creates; `vk_defer_image` frees run on the completion thread. A cap keyed by count of
+  render targets per (format, size) class, or keeping the newest released entry per address instead of FIFO oldest
+  overall (LRU by take-back), would cut that churn; measure with `perf: frame N: texture aliases` first.
+- Proposed if the play log confirms scene loads: content-addressed image parking (hash at upload time, sampled hash
+  index at create, adopt the parked VkImage in `create_tex` for an identical `VkImageCreateInfo`), capped by bytes;
+  saves the upload of textures shared between areas (the 12 MiB "other key" share here says little is shared within
+  one scene; across areas it is unknown). Not implemented: the replay did not show the problem.
