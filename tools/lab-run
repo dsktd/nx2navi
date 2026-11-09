@@ -3,6 +3,10 @@
 # Replays an input recording on the private gpu-display, dumps one frame (NX2NAVI_DUMP counts PRESENTS), stops only its
 # own process group, prints key stats, writes the final frame to ~/claude/nx2navi/latest-frame.png (1280x720).
 # Env: LAB_BIN (game dir, default NX2navi/build/v111), LAB_KEEP=1 keep the dump (default: delete), LAB_TIMEOUT (s, 300).
+# LAB_VALIDATE=1: Khronos validation layer (nixpkgs vulkan-validation-layers) + synchronization validation; messages go to
+#   $OUT/validation.log, each message ID capped at 3 repeats (duplicate_message_limit). Slow; layer settings in $OUT/vk_layer_settings.txt.
+# LAB_HANG=1: RADV_DEBUG=nogpl,hang and the radv_dumps_* land in $OUT/hang (radv writes them under $HOME, so HOME is
+#   pointed there for the game only; XDG_CACHE_HOME stays).
 # Never touches shader-cache or the binary; the game itself still writes its caches in the bin dir's cwd.
 set -u
 # lab-run [--show] ...: --show also writes latest-frame.png (only if the dump frame was reached); off by default.
@@ -27,11 +31,24 @@ hostlog=$(ls -t "$ROOT"/NX2navi/build/v111/logs/play-*.log 2>/dev/null | head -1
 rm -rf "$OUT"; mkdir -p "$OUT"
 case $rec in /*) ;; *) rec=$PWD/$rec;; esac
 envs=(); for kv in "$@"; do envs+=("$kv"); done
+radv=nogpl; [ -n "${LAB_HANG:-}" ] && { radv=nogpl,hang; mkdir -p "$OUT/hang"; envs+=("XDG_CACHE_HOME=${XDG_CACHE_HOME:-$HOME/.cache}" "HOME=$OUT/hang"); }
+if [ -n "${LAB_VALIDATE:-}" ]; then
+  vvl=$(nix build nixpkgs#vulkan-validation-layers --no-link --print-out-paths | tail -1) || exit 4
+  cat >"$OUT/vk_layer_settings.txt" <<EOF
+khronos_validation.enables = VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT
+khronos_validation.debug_action = VK_DBG_LAYER_ACTION_LOG_MSG
+khronos_validation.log_filename = $OUT/validation.log
+khronos_validation.duplicate_message_limit = 3
+khronos_validation.report_flags = error,warn
+EOF
+  envs+=("VK_ADD_LAYER_PATH=$vvl/share/vulkan/explicit_layer.d" VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation
+    "VK_LAYER_SETTINGS_PATH=$OUT/vk_layer_settings.txt" VK_KHRONOS_VALIDATION_VALIDATE_SYNC=1 ${LAB_VK_LOADER_DEBUG:+VK_LOADER_DEBUG=layer})
+fi
 t0=$(date +%s.%N)
 FEED=$HOME/claude/.services/screensavers/feeds/nx2navi-lab.log
 echo "$(date +%H:%M) run $label: replay to frame $frame ${envs[*]}" >>"$FEED"
 setsid nice -n 19 env WAYLAND_DISPLAY=${LAB_DISPLAY:-gpu-display} XDG_RUNTIME_DIR=${LAB_RUNTIME:-$HOME/claude/.services/gpu-display/runtime} \
-  nix develop $ROOT --command env TERM=dumb SDL_VIDEODRIVER=wayland SDL_JOYSTICK_HIDAPI_STEAM=0 RADV_DEBUG=nogpl \
+  nix develop $ROOT --command env TERM=dumb SDL_VIDEODRIVER=wayland SDL_JOYSTICK_HIDAPI_STEAM=0 RADV_DEBUG=$radv \
   ${LAB_AUDIO:+PULSE_SERVER=unix:/run/user/1000/pulse/native} NX2NAVI_PIPE_SKIP=strict NX2NAVI_INPUT_SCRIPT="$rec" NX2NAVI_DUMP=$frame NX2NAVI_DUMP_DIR=$OUT/dump "${envs[@]}" \
   bash -c 'cd "$0" && exec nixVulkanIntel ./nx2navi' "$BIN" </dev/null >"$log" 2>&1 &
 pgid=$!
