@@ -1,0 +1,51 @@
+From e4bc0f51a5620cc1cb94f17caf10d3ad304a241a Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Mon, 9 Nov 2026 17:15:21 -0500
+Subject: [PATCH] vk_device: under a RenderDoc capture (NX2NAVI_RDOC)
+ VK_EXT_external_memory_host is not required
+
+RenderDoc 1.47 does not know VK_EXT_external_memory_host and hides it, so device creation failed under the capture
+layer (docs/controls.md "blocked"). Shadow mode, the Linux default, never imports host memory: while rdoc_active() the
+extension is neither required nor enabled. Inert without NX2NAVI_RDOC.
+---
+ runtime/vk_device.c | 10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/runtime/vk_device.c b/runtime/vk_device.c
+index 83bed0d..50348bf 100644
+--- a/runtime/vk_device.c
++++ b/runtime/vk_device.c
+@@ -113,6 +113,11 @@ static const char *const k_required_ext[] = {
+     VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME, VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME,
+     VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME};
+ 
++// RenderDoc (rdoc.c) hides VK_EXT_external_memory_host; shadow mode, the Linux default, never imports host memory, so under a
++// capture the extension is neither required nor enabled (import_pool fails softly without it).
++static int ext_wanted(const char *name) {
++    return !(rdoc_active() && strcmp(name, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME) == 0);
++}
+ // Name of the first missing required extension, or NULL.
+ static const char *missing_required(VkPhysicalDevice pd) {
+     uint32_t n = 0;
+@@ -121,7 +126,7 @@ static const char *missing_required(VkPhysicalDevice pd) {
+     vkEnumerateDeviceExtensionProperties(pd, NULL, &n, e);
+     const char *miss = NULL;
+     for (size_t i = 0; i < sizeof k_required_ext / sizeof *k_required_ext && !miss; i++)
+-        if (!has_ext(e, n, k_required_ext[i])) miss = k_required_ext[i];
++        if (ext_wanted(k_required_ext[i]) && !has_ext(e, n, k_required_ext[i])) miss = k_required_ext[i];
+     free(e);
+     return miss;
+ }
+@@ -242,7 +247,8 @@ static int create_device(void) {
+     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, ep);
+     const char *ext[64];
+     uint32_t n_ext = 0;
+-    for (size_t i = 0; i < sizeof k_required_ext / sizeof *k_required_ext; i++) ext[n_ext++] = k_required_ext[i];
++    for (size_t i = 0; i < sizeof k_required_ext / sizeof *k_required_ext; i++)
++        if (ext_wanted(k_required_ext[i])) ext[n_ext++] = k_required_ext[i];
+ 
+     FeatureChain *c = calloc(1, sizeof *c);
+     void **tail = &c->f2.pNext;
+-- 
+2.56.0
+

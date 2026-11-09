@@ -256,6 +256,9 @@ distribution). After `just update`, `build` may need a rebase onto the new upstr
   A/B 2026-11-09 at the castle courtyard (Cal's slot save, frame 1500): the topiary 15 m ahead is bare with and
   without the patch and neither log has a `without a vertex format` line, so this is **not** the #138 cause; kept as
   a correctness fix, in the swapped-in binary.
+- `0026-vk_device-under-a-RenderDoc-capture-NX2NAVI_RDOC-VK_.patch`: #135. While `NX2NAVI_RDOC` is set (rdoc.c loaded
+  RenderDoc) `VK_EXT_external_memory_host` is neither required nor enabled: RenderDoc hides it and shadow mode never
+  imports host memory. Inert otherwise. See "RenderDoc".
 
 ## Mark this moment
 
@@ -342,6 +345,72 @@ at the present. Overhead: see Status (2026-11-09, measured against `nx2navi.new`
 `replay full` (the game's waits for the replay thread, `vk_backend.c`), `nvn block <name>` at the `NVN_BLOCKING()` entries,
 `replay submit` / `part submit` (the replay thread's recording per submission and `vkQueueSubmit2` per part),
 `completion cb` and `lod guard` (how much of a fence wait is callbacks).
+
+## RenderDoc
+
+Opt-in, #135: capture one frame once, then inspect it standalone in seconds, no game run, no drift. Two halves: the
+capture (the game under RenderDoc's Vulkan layer, one `.rdc` per present) and the replay (`tools/rdc` without a GUI,
+or `qrenderdoc` on the host). Upstream has the in-app hook already (`runtime/rdoc.c`: `NX2NAVI_RDOC=<frame>[,...]`
+captures those presents, `NX2NAVI_RDOC_DIR`, `NX2NAVI_RDOC_DLL`; it loads `librenderdoc.so`, sets
+AllowUnsupportedVendorExtensions, RefAllResources and SaveAllInitials and the file template). It needs the layer in the
+loader too (`VK_ADD_IMPLICIT_LAYER_PATH` to nixpkgs renderdoc's `share/vulkan/implicit_layer.d`,
+`ENABLE_VULKAN_RENDERDOC_CAPTURE=1`), and **patch 0026**: RenderDoc 1.47 does not know `VK_EXT_external_memory_host`,
+which `vk_device.c` required, so device creation failed under the layer (upstream's `docs/controls.md` calls it
+blocked); shadow mode, the Linux default, never imports host memory, so with `NX2NAVI_RDOC` set the extension is
+neither required nor enabled. The capture of present N holds N's submits and its present. A frame dump
+(`NX2NAVI_DUMP`) of the same frame would record its copies into the capture, so dump a later frame.
+
+Lab (`tools/lab-run`): `LAB_RENDERDOC=<frame>[,<frame>...]`; the captures land in `.lab/<label>/nx2navi_capture*.rdc` (the
+run log's `rdoc: frame N captured: <path>` maps them to presents). lab-run waits for that line before it stops the
+game. Measured (castle, frame 1500, 2560x1440): 203 s to the capture, a 10.3 GB `.rdc` (RefAllResources and
+SaveAllInitials are on in rdoc.c, and shadow mode's pools are full copies of guest memory); opening that capture for
+replay takes 221 s (chunk initialisation, CPU-bound), then every query is quick. `LAB_VALIDATE` stacks on top (the
+validation layer outside RenderDoc's). Castle spot, frame 1500, with the binary built from patch 0026 (`--exe
+nx2navi.rdoc --rt-obj runtime-rdoc`, so its runtime objects never race the plain build's):
+
+```sh
+LAB_RENDERDOC=1500 LAB_EXE=nx2navi.rdoc tools/lab-run lab-profile-flicker/load-slot01.txt 1501 rdoc-castle \
+  NX2NAVI_PROFILE_DIR=$HOME/claude/nx2navi/lab-profile-flicker
+tools/rdc info .lab/rdoc-castle/nx2navi_capture.rdc
+```
+
+`tools/rdc` (nixpkgs renderdoc rebuilt with its Python module, `tools/rdc.nix`; the first call builds it, 20-40 min,
+cached after; the replay runs on the GPU through the flake's `nixVulkanIntel` like lab-run, so not while Cal plays,
+and it holds lab-run's lock `/tmp/nx2navi-lab.lock` for its run: one GPU job at a time, a replay beside a lab run
+ended that run in `VK_ERROR_DEVICE_LOST` on 2026-11-09. The Python module must not be preceded by a `RTLD_GLOBAL`
+dlopen of `librenderdoc.so`: its exported layer entry points then shadow the loader's and the replay segfaults):
+
+- `tools/rdc info x.rdc`: frame number, draw/dispatch/pass counts, file sizes, every pipeline with its draw count,
+  first event and shader hashes (sha1 of the SPIR-V, first 10 hex digits).
+- `tools/rdc draws x.rdc`: one line per draw or dispatch: event id, pass, pipeline, vs/fs hashes, index and instance
+  counts (dispatch size), viewport, depth test/write/function, blend per target and write mask, the bound targets with
+  size and format.
+- `tools/rdc save x.rdc <eventId> out.png [i|depth]`: colour target i (default 0) or the depth target as it is after
+  that event.
+- `tools/rdc shader x.rdc <eventId> vs|fs|cs|gs|ms|ts [target]`: disassembly; the default target is SPIR-V, a substring
+  picks another one RenderDoc offers (the header line lists them).
+
+Event ids are RenderDoc's (`draws` prints them), stable for one capture. The GUI shows the same ids.
+
+On the host (Nushell), the GUI from nixpkgs: `nix shell nixpkgs#renderdoc -c qrenderdoc <file.rdc>` opens a capture.
+To capture from `just play` yourself, run the game under the layer with the frames to capture, or a frame that never
+comes plus RenderDoc's own capture key (F12 or PrintScreen while the game window is focused):
+
+```nu
+let rd = (nix build nixpkgs#renderdoc --no-link --print-out-paths)
+with-env {
+  VK_ADD_IMPLICIT_LAYER_PATH: $"($rd)/share/vulkan/implicit_layer.d", ENABLE_VULKAN_RENDERDOC_CAPTURE: "1",
+  NX2NAVI_RDOC: "999999999", NX2NAVI_RDOC_DIR: "build/v111/captures", NX2NAVI_RDOC_DLL: $"($rd)/lib/librenderdoc.so",
+  NX2NAVI_EXE: "rdoc",
+} { just play }
+```
+
+Captures land in `~/claude/nx2navi/NX2navi/build/v111/captures/nx2navi_capture*.rdc` (the play log's `rdoc:` lines
+map them to presents; expect about 10 GB each), which Tally sees at the same path: hand over the path and
+`tools/rdc` answers from it. `qrenderdoc` on the host opens the same file; "File > Launch Application" works too, but
+set `NX2NAVI_RDOC` in its environment block or the game requires the hidden extension and stops at device creation.
+`NX2NAVI_EXE=rdoc` picks `nx2navi.rdoc` until patch 0026 is in the plain binary. HDR: the lab runs SDR; a native-HDR
+capture holds the PQ swapchain, `rdc save` writes it as stored.
 
 ## Flatpak build kit (Steam Deck)
 

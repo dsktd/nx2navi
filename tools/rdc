@@ -1,0 +1,15 @@
+#!/bin/bash
+# tools/rdc <info|draws|save|shader> <file.rdc> [...]: a RenderDoc capture without the GUI (README "RenderDoc").
+#   info   x.rdc                       frame, draw/dispatch/pass counts, file sizes, the pipelines with their shader hashes
+#   draws  x.rdc                       one line per draw/dispatch: pass, pipeline, shader hashes, counts, viewport, blend, depth, targets
+#   save   x.rdc <eventId> out.png [i|depth]   colour target i (default 0) or the depth target as it is after that event
+#   shader x.rdc <eventId> vs|fs|cs|gs|ms|ts [target]   disassembly (default target: the first, SPIR-V; or a substring, e.g. ISA)
+# The replay needs a Vulkan device: it runs inside the flake's shell through nixVulkanIntel like lab-run, and holds
+# lab-run's lock (/tmp/nx2navi-lab.lock, fd 9) for its whole run: one GPU job at a time, a replay beside a lab run has
+# ended one in VK_ERROR_DEVICE_LOST. It still does not see Cal's game (on the host): not while he plays. First use
+# builds nixpkgs renderdoc with its Python module (tools/rdc.nix, 20-40 min, cached after).
+set -eu
+here=$(dirname "$(realpath "$0")")
+exec 9>/tmp/nx2navi-lab.lock; flock -w ${LAB_LOCK_WAIT:-3600} 9 || { echo "rdc: lab lock busy" >&2; exit 3; }
+rd=$(nix build --impure --no-link --print-out-paths --expr "import $here/rdc.nix (builtins.getFlake \"nixpkgs\").legacyPackages.x86_64-linux" | tail -1)
+exec nix develop "$here/.." --command nixVulkanIntel env PYTHONPATH="$rd/lib/python" "$rd/bin/rdc-python" -P -s "$here/rdc.py" "$@"

@@ -8,7 +8,7 @@ the other game versions. This driver runs the kit's own code for the lift and th
 the flags build_game.py documents for Linux, through Ninja. Nothing in the checkout is modified.
 
     build-linux.py --src <checkout> [--extracted build/extracted/v111] [--out build/v111] [--cpu v3|v2] [--jobs N]
-                   [--exe nx2navi] [--tracy]
+                   [--exe nx2navi] [--tracy] [--rt-obj NAME]
 
 Steps (each incremental), after make_game.py's exefs and romfs steps have filled <extracted>:
   lift      make_game.step_lift: the kit lifts <extracted>/exefs into <extracted>/build-cache/lift with its fixes
@@ -99,12 +99,12 @@ PER_FILE_FLAGS = {
 }
 
 
-def write_ninja(src, out, lift, gen, cpu, exe='nx2navi', tracy=None):
+def write_ninja(src, out, lift, gen, cpu, exe='nx2navi', tracy=None, rt_obj=None):
     runtime = src / 'runtime'
     rt_extra = f' -DTRACY_ENABLE -I {npath(tracy / "include" / "tracy")}' if tracy else ''
     ld_extra = f' -L {npath(tracy / "lib")} -Wl,-rpath,{npath(tracy / "lib")}' if tracy else ''
     libs_extra = ' -lTracyClient' if tracy else ''
-    rt_obj = 'runtime-tracy' if tracy else 'runtime'
+    rt_obj = rt_obj or ('runtime-tracy' if tracy else 'runtime')
     march = f'-march=x86-64-{cpu}'
     # vk_mem_alloc.h is copied into the build folder: the compile lines then hold no Nix store path, so objects
     # built on one machine (the container) stay valid on another (the host) with the same /home path
@@ -181,6 +181,7 @@ def main():
     ap.add_argument('--python', type=Path, help='the kit interpreter (default <src>/.venv/bin/python)')
     ap.add_argument('--exe', default='nx2navi', help='the binary name in <out> (default nx2navi)')
     ap.add_argument('--tracy', action='store_true', help='build with the Tracy client (NX2NAVI_TRACY_PREFIX)')
+    ap.add_argument('--rt-obj', help='runtime objects under obj/<name> (default runtime; runtime-tracy with --tracy): a build beside another one')
     a = ap.parse_args()
     src = a.src.resolve()
     extracted = (a.extracted or src / 'build' / 'extracted' / 'v111').resolve()
@@ -194,7 +195,7 @@ def main():
         tracy = Path(os.environ.get('NX2NAVI_TRACY_PREFIX') or '')
         if not (tracy / 'lib' / 'libTracyClient.so').is_file():
             sys.exit('build-linux: --tracy needs NX2NAVI_TRACY_PREFIX (the nixpkgs tracy store path; the flake sets it)')
-    ninja = write_ninja(src, out, lift, gen, a.cpu, a.exe, tracy)
+    ninja = write_ninja(src, out, lift, gen, a.cpu, a.exe, tracy, a.rt_obj)
     run(['ninja', '-C', out, '-f', ninja.name, f'-j{a.jobs}'])
     step_copy(src, out)
     print(f'\nbuild-linux: {out / a.exe} ({(out / a.exe).stat().st_size / 1e6:.0f} MB)')

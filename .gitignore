@@ -13,3 +13,4 @@ flatpak/.repo/
 flatpak/.flatpak-builder/
 flatpak/*.flatpak
 REPORT-*.md
+tools/__pycache__/
