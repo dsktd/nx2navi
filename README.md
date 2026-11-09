@@ -129,6 +129,14 @@ Field, HDR10 native through niri-spicy, 240 Hz panel. Since the 2026-11-08 morni
   no spikes; the game's render thread is the critical path (the replay thread never blocks a present), 5.1 ms of it is
   `submit finish wait`, which includes the completion thread's 5.4 ms/frame of write-back compares because `done` is
   published after the callbacks; 17.8 ms of that thread is unzoned. Ranked fixes and new zones in the notes.
+- #132 fixes 1 and 2 (2026-11-09 evening, patches 0024 and 0025, in `nx2navi.new`, not swapped): the submit finish wait
+  and the LOD guard wait for the GPU alone (`reached_gpu`), and the write-back compare runs on 4 threads when a
+  submission's list is 4 MiB or more. Lab A/B on the 19:58 field recording, 30 s of wall time after the area load,
+  `NX2NAVI_FPS_LIMIT=240`, same binary with both toggles off vs on: 59.3 -> 60.4 fps mean, p99 29.6 -> 29.3 ms (an
+  earlier pair 59.8 vs 58.7 with fix 1 alone; run-to-run noise is about 1 fps, and the replay diverges by wall time so
+  windows are matched on the load spike, not on frame numbers). The lab scene compares only 6 MiB per frame (Cal's
+  trace: 66), so the gain the notes predict needs his play to show; the first version of fix 2 without the threshold
+  lost 5 fps in the lab to pool wakeups on 0.1 MiB lists. Castle slot (frame 1500) and crash spot (frame 1700) pass.
 - Debug and play features: shader hot-reload and on-request shots (0003), dump.req (0011), mark this moment (0015,
   F9 / L3+R3), draw lists in dumps (0017), Steam Input pad preferred (0014), projection unjitter (0012).
 - Defaults: `NX2NAVI_PIPE_SKIP=any`, `NX2NAVI_HDR=native`, `REPLAY_ASYNC=1`, `VK_RECORDER=1`, `TEX_RELEASED_MIB=3072`.
@@ -226,6 +234,18 @@ distribution). After `just update`, `build` may need a rebase onto the new upstr
   already times: the present (frame mark), `nvn submit` and `submit finish wait` (nvnQueueSubmitCommands), `shadow sync`,
   `write-back compare` and `write-back` (0008 area), `bind pipeline`, `texture upload` (text `re-upload`), `released
   sweep` (0019), `audio mix`. Built only by `just game tracy=1` (see "Profiling with Tracy"); the plain binary is untouched.
+- `0024-vk_sync-the-submit-finish-wait-and-the-LOD-guard-wai.patch`: #132 fix 1 (NOTES-perf-2026-11-09 item 1). The
+  completion thread publishes `reached_gpu` as soon as the timeline says the GPU is through with a value, before it
+  runs that value's callbacks (write-back compares, pool resets, frees); `done` stays after them. The game thread's
+  `submit finish wait` and the LOD guard wait on `reached_gpu` (`GfxBackend.gpu_wait`/`gpu_done`): both only order the
+  GPU's reads of guest memory before the game rewrites it. Everything that reads what the GPU wrote (nvnSyncWait,
+  Finish, texture and guest reads, usnap, pipeline-set waits) stays on `done`, which still follows the shadow
+  write-back. `NX2NAVI_GPU_WAIT=0` restores the old wait. The patch message has the reasoning per waiter.
+- `0025-vk_memory-the-write-back-compare-runs-on-a-small-thr.patch`: #132 fix 2 (item 2). `vk_gpu_written_many` takes a
+  submission's whole written-range list from the draw recorder's completion callback, lays the ranges with a shadow end
+  to end and splits that span into page-aligned slices over a persistent pool (`vk wb diff k` threads, started once);
+  the changed runs are merged in worker order, so the copies under shadow_lock land as the sequential path's did.
+  `NX2NAVI_DIFF_THREADS=n` (default 4, 1 = the old loop). Lab numbers: see Status.
 - `0020-vk_exec_xfer-NX2NAVI_OQ_FORCE-forces-every-samples-p.patch`: debugging the game's CPU-side occlusion culls (#138):
   `NX2NAVI_LOG_OQ=1` logs every samples-passed report (address, queries, sum, count), `NX2NAVI_OQ_FORCE=<n>` makes each
   report write n (0 = off). Built into `nx2navi.new` (not swapped). A/B at the castle: forced counts do not restore the leaves.

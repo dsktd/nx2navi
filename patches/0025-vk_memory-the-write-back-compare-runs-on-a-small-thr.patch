@@ -1,0 +1,286 @@
+From 52c2171d7094971db2d5297c28bbe3ae5f9dc829 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Mon, 9 Nov 2026 17:38:22 -0500
+Subject: [PATCH] vk_memory: the write-back compare runs on a small thread pool
+ (NX2NAVI_DIFF_THREADS)
+
+A submission's written ranges (162 of them, 66 MiB, per Hyrule Field frame on Cal's 2026-11-09 Tracy trace) were
+compared page by page one after the other on the completion thread, 5.4 ms per frame at 12 GB/s: memory-bound, and
+on the path to `done`, so on every real fence wait.
+
+vk_gpu_written_many takes the whole list from the draw recorder's completion callback (cb_done). It resolves the
+ranges with a shadow under pool_lock (shared, held across the call), lays them end to end and cuts that byte span into
+one slice per worker, slice edges rounded up to a page edge by address so no page is compared twice and none is
+missed. The completion thread takes slice 0, a persistent pool of N-1 threads ("vk wb diff k", started on the first
+call, woken by a generation counter and a condition variable, no per-frame thread creation) the rest; each lists the
+changed runs of its slice in order. Then, under shadow_lock, the lists are walked in worker order: that is address
+order within a range and list order across ranges, so the copies (shadow_put) land exactly as the sequential path's
+did; a run cut at a slice edge is two adjacent copies. The pending-write entries are dropped and the ranges without a
+shadow are stamped (vk_guest_written) as before.
+
+NX2NAVI_DIFF_THREADS=n, default 4, 1 = the old loop over vk_gpu_written (the single-range path stays for
+vk_exec_xfer and the probes). Expected: the compare drops to ~1.5-2 ms, which shortens `done` for the fence waits and
+the LOD guard, and the frame by what the submit finish wait still spends in it (NX2NAVI_GPU_WAIT).
+---
+ runtime/cfg.c          |   2 +-
+ runtime/vk.h           |   4 +
+ runtime/vk_exec_draw.c |   4 +-
+ runtime/vk_memory.c    | 179 ++++++++++++++++++++++++++++++++++++++++-
+ 4 files changed, 183 insertions(+), 6 deletions(-)
+
+diff --git a/runtime/cfg.c b/runtime/cfg.c
+index b48a3cf..46f1212 100644
+--- a/runtime/cfg.c
++++ b/runtime/cfg.c
+@@ -41,7 +41,7 @@ static const char *const known[] = {
+     "BIND_ZL", "BIND_ZR", "BLOCK_VIEWS_3D", "CLOTH_REALTIME", "COLOR_BRIGHTNESS", "COLOR_CONTRAST", "COLOR_GAMMA",
+     "COLOR_PRESET", "COLOR_SATURATION", "CONTACT_DEBUG", "CONTACT_SHADOWS", "CORE_DIAG", "CRIT", "CRIT_OUT",
+     "DESC_TEMPLATE", "DEVICE_PROFILE", "DISCORD_APP_ID", "DISCORD_IMAGE", "DISCORD_RPC", "DLAA", "DLAA_JITTER", "DLAA_MV", "DLAA_MASKDEBUG", "DLAA_MVDEBUG", "DLAA_OBJMV", "DLAA_SURVEY", "DLAA_TIMES", "DLSS", "DLSS_CHAR_MASK", "DLSS_PRESET", "DLSS_REACTIVE", "DUMP", "DUMP_BUF", "DUMP_DIR", "DUMP_REQ",
+-    "DUMP_LOG", "LOG_CS_BINDS", "LOG_TEX_FLAGS", "LOG_MESH", "MESH", "POOL", "NATIVE_TENSOR", "LOG_RCOND", "LOG_OQ", "OQ_FORCE", "LOG_RT_SIZES", "DUMP_WHITE", "DUMP_AFTER", "SUBMIT_FINISH", "GPU_WAIT", "ACQUIRE_WAIT", "CS_FALLBACK", "EXEFS", "FEEDBACK", "FIX_C0", "FIX_ZERO", "FLIGHT", "FLIGHT_AT", "FLIGHT_DIR", "FLIGHT_FRAMES",
++    "DUMP_LOG", "LOG_CS_BINDS", "LOG_TEX_FLAGS", "LOG_MESH", "MESH", "POOL", "NATIVE_TENSOR", "LOG_RCOND", "LOG_OQ", "OQ_FORCE", "LOG_RT_SIZES", "DUMP_WHITE", "DUMP_AFTER", "SUBMIT_FINISH", "GPU_WAIT", "DIFF_THREADS", "ACQUIRE_WAIT", "CS_FALLBACK", "EXEFS", "FEEDBACK", "FIX_C0", "FIX_ZERO", "FLIGHT", "FLIGHT_AT", "FLIGHT_DIR", "FLIGHT_FRAMES",
+     "FLIGHT_SPIKE_MS", "FLIGHT_THUMBS", "FLUSH_SPAN", "FOV", "FOV_PATCH", "FG_HUDLESS_SHOW", "FPS60", "FPS_LIMIT", "FRAMEGEN", "FREEZE_IDLE", "FREE_CORES",
+     "FULLSCREEN", "FXAA", "GAME_ASPECT", "GAME_RES", "GPA", "GPA_EMPTY", "GPA_TWIN", "GPL", "GPL_DRAW_BUILD", "GPU", "GPU_INDEX", "GPU_NAME", "HDR", "HDR_GAME_NITS", "HDR_HUE",
+     "HDR_PEAK_NITS", "HDR_UI_NITS", "HIGHFPS_FIX", "INPUT", "INPUT_RECORD", "INPUT_SCRIPT", "LANG", "LIB_PREBUILD",
+diff --git a/runtime/vk.h b/runtime/vk.h
+index c6e4094..75e0e37 100644
+--- a/runtime/vk.h
++++ b/runtime/vk.h
+@@ -290,6 +290,10 @@ void vk_mem_mirror_prologue(VkCommandBuffer cb);
+ void vk_mem_shadow_sync(void);
+ void vk_mem_gpu_pending(uint64_t addr, uint64_t size);
+ void vk_gpu_written(uint64_t addr, uint64_t size);
++// The same for a submission's whole list of written ranges: the page compares run on the write-back pool
++// (NX2NAVI_DIFF_THREADS), the copies land in list order under shadow_lock.
++typedef struct { uint64_t addr, size; } VkGpuWrite;
++void vk_gpu_written_many(const VkGpuWrite *w, int n);
+ void vk_watch(const char *what, uint64_t a, uint64_t n, uint64_t v, const uint8_t *shadow);
+ int vk_mem_flush_add_probe(void);        // --probe-vkexec: the flush range list; 0 or the number of the failed check
+ uint64_t vk_mem_mirror_uploaded(void);   // --probe-vkexec: bytes copied into mirrors since the last summary line
+diff --git a/runtime/vk_exec_draw.c b/runtime/vk_exec_draw.c
+index 3ff4818..ffd7fb6 100644
+--- a/runtime/vk_exec_draw.c
++++ b/runtime/vk_exec_draw.c
+@@ -76,7 +76,7 @@ typedef struct {
+     uint32_t aspect, level0, levels, layer0, layers, swz;
+ } ViewKey;
+ _Static_assert(sizeof(ViewKey) == 40, "ViewKey is hashed as bytes: no padding");
+-typedef struct { uint64_t addr, size; } Range;
++typedef VkGpuWrite Range;
+ typedef struct {
+     Chunk *chunks;
+     int nchunks, cchunks;
+@@ -182,7 +182,7 @@ static uint64_t bind_gen = 1;            // bumped by every bind op that writes
+ static void cb_done(void *arg) {   // completion thread
+     CbRes *r = arg;
+     VkCtx *c = vk_ctx();
+-    for (int i = 0; i < r->nwritten; i++) vk_gpu_written(r->written[i].addr, r->written[i].size);
++    vk_gpu_written_many(r->written, r->nwritten);
+     for (int i = 0; i < r->npools; i++) {
+         vkResetDescriptorPool(c->device, r->pools[i], 0);
+         plat_mutex_lock(&spare_lock);
+diff --git a/runtime/vk_memory.c b/runtime/vk_memory.c
+index 1c72929..a0870f3 100644
+--- a/runtime/vk_memory.c
++++ b/runtime/vk_memory.c
+@@ -939,6 +939,7 @@ static SRange *spend;                             // shadow_lock: GPU writes rec
+ static int nspend, cspend;
+ static int64_t s_live_n, s_live_bytes;            // shadow_lock
+ static uint64_t s_syncs, s_copied, s_queries, s_untracked, s_wb_bytes, s_ticks;   // shadow_lock: since the last log
++static uint64_t s_cmp_bytes, s_cmp_pooled, s_cmp_inline;   // shadow_lock: compared bytes, callbacks on the pool / inline
+ 
+ static int shadow_pool(VkCtx *c, PoolRec *r, uint64_t addr, uint64_t size) {
+     r->import_lo = addr & ~0xfffull;
+@@ -1203,15 +1204,187 @@ void vk_gpu_written(uint64_t addr, uint64_t size) {
+     vk_guest_written(addr, size);
+ }
+ 
++// ---- write-back compare pool (NX2NAVI_DIFF_THREADS, default 4, 1 = the loop over vk_gpu_written above)
++// A submission's written ranges (162 of them, 66 MiB, per field frame on 2026-11-09) were compared one after the other
++// on the completion thread: 5.4 ms, memory-bound. Here the ranges with a shadow are laid end to end, that byte span is
++// cut into one slice per worker (slice edges rounded up to a page edge by address, so no page is compared twice and
++// none is missed), the completion thread takes slice 0 and the pool threads the rest, each listing the changed runs of
++// its slice in order. The lists are then walked in worker order, which is address order within each range and list
++// order across ranges, so the copies under shadow_lock land exactly as the sequential path's did (a run cut at a slice
++// edge is two adjacent copies of the same bytes). The compares read guest memory and the shadow only; pool_lock is
++// held shared across the whole call, so the records stay put. Ranges without a shadow are stamped afterwards.
++// A list under WBP_MIN_BYTES is compared inline: waking the pool costs more than it saves there, and the wakeups
++// preempt guest threads (lab, 2026-11-09: the 19:58 field replay writes back 0.1 MiB per frame and lost 5 fps to them).
++#define WBP_MIN_BYTES (4u << 20)
++typedef struct { PoolRec *r; uint64_t a, b; } WbJob;
++typedef struct { uint64_t lo, hi; int ri; } WbPRun;
++typedef struct { WbPRun *runs; int n, c; } WbList;
++static int wbp_threads = -1;              // workers including the completion thread; 1 = off
++static WbJob *wbj;                        // the call's jobs (completion thread; the workers read them)
++static int nwbj, cwbj;
++static uint64_t wbj_bytes;
++static WbList *wbp_lists;                       // one per worker
++static PlatMutex wbp_lock = PLAT_MUTEX_INIT;
++static PlatCond wbp_go = PLAT_COND_INIT, wbp_done = PLAT_COND_INIT;
++static uint64_t wbp_gen;                  // bumped per call
++static int wbp_pending;
++
++// Slice k's start as (job, address): the first page edge at or after byte offset k * bytes / threads of the span.
++static void wbp_edge(int k, int *job, uint64_t *addr) {
++    uint64_t off = wbj_bytes * (uint64_t)k / (uint64_t)wbp_threads, cum = 0;
++    for (int j = 0; j < nwbj; j++) {
++        uint64_t n = wbj[j].b - wbj[j].a;
++        if (off < cum + n) {
++            uint64_t x = wbj[j].a + (off - cum);
++            if (x != wbj[j].a) x = (x | 0xfffull) + 1;   // page edge by address, as shadow_diff pages
++            if (x < wbj[j].b) { *job = j, *addr = x; return; }
++            off = cum + n;   // the slice starts with the next job
++        }
++        cum += n;
++    }
++    *job = nwbj, *addr = 0;
++}
++
++static void wbp_diff(WbList *l, int ri, uint64_t a, uint64_t b) {
++    PoolRec *r = wbj[ri].r;
++    uint64_t run = 0;
++    for (uint64_t x = a; x < b;) {
++        uint64_t y = (x | 0xfffull) + 1;
++        if (y > b) y = b;
++        int same = !memcmp((const void *)(uintptr_t)x, r->smap + (x - r->import_lo), y - x);
++        if (!same && !run) run = x;
++        if ((same || y == b) && run) {
++            if (l->n == l->c) grow((void **)&l->runs, &l->c, sizeof *l->runs);
++            l->runs[l->n++] = (WbPRun){run, same ? x : b, ri};
++            run = 0;
++        }
++        x = y;
++    }
++}
++
++static void wbp_slice(int k) {
++    WbList *l = &wbp_lists[k];
++    l->n = 0;
++    int j0, j1;
++    uint64_t a0, a1;
++    wbp_edge(k, &j0, &a0);
++    wbp_edge(k + 1, &j1, &a1);
++    for (int j = j0; j < nwbj && j <= j1; j++) {
++        uint64_t a = j == j0 ? a0 : wbj[j].a, b = j == j1 ? a1 : wbj[j].b;
++        if (a < b) wbp_diff(l, j, a, b);
++    }
++}
++
++static void wbp_main(void *arg) {
++    int k = (int)(intptr_t)arg;
++    uint64_t seen = 0;
++    plat_mutex_lock(&wbp_lock);
++    for (;;) {
++        while (wbp_gen == seen) plat_cond_wait(&wbp_go, &wbp_lock);
++        seen = wbp_gen;
++        plat_mutex_unlock(&wbp_lock);
++        wbp_slice(k);
++        plat_mutex_lock(&wbp_lock);
++        if (--wbp_pending == 0) plat_cond_signal(&wbp_done);
++    }
++}
++
++static int wbp_start(void) {   // completion thread
++    if (wbp_threads >= 0) return wbp_threads;
++    const char *e = cfg_get("NX2NAVI_DIFF_THREADS");
++    int n = e && *e ? atoi(e) : 4;
++    if (n > 16) n = 16;
++    if (n < 1) n = 1;
++    wbp_lists = calloc((size_t)n, sizeof *wbp_lists);
++    if (!wbp_lists) rt_fatal("vk: out of memory (write-back pool)");
++    for (int k = 1; k < n; k++) {
++        char name[32];
++        snprintf(name, sizeof name, "vk wb diff %d", k);
++        if (!plat_thread_spawn(wbp_main, (void *)(intptr_t)k, name, 0)) rt_fatal("vk: cannot start the write-back pool");
++    }
++    rt_log("vk: write-back compare on %d thread%s", n, n == 1 ? "" : "s");
++    return wbp_threads = n;
++}
++
++void vk_gpu_written_many(const VkGpuWrite *w, int n) {
++    int threads = shadow_on && n ? wbp_start() : 1;
++    if (threads <= 1) {
++        for (int i = 0; i < n; i++) vk_gpu_written(w[i].addr, w[i].size);
++        return;
++    }
++    plat_mutex_lock_shared(&pool_lock);
++    nwbj = 0, wbj_bytes = 0;
++    int *job_of = n <= 512 ? (int[512]){0} : malloc(sizeof(int) * (size_t)n);
++    if (!job_of) rt_fatal("vk: out of memory (write-back pool)");
++    for (int i = 0; i < n; i++) {
++        job_of[i] = -1;
++        if (!w[i].size) continue;
++        const pidx_ent *e = pidx_find(&pool_index, w[i].addr, w[i].size);
++        PoolRec *r = e ? e->buf : NULL;
++        if (!(r && r->smap && w[i].addr >= r->import_lo && w[i].addr + w[i].size <= r->import_hi)) continue;
++        if (nwbj == cwbj) grow((void **)&wbj, &cwbj, sizeof *wbj);
++        job_of[i] = nwbj;
++        wbj[nwbj++] = (WbJob){r, w[i].addr, w[i].addr + w[i].size};
++        wbj_bytes += w[i].size;
++    }
++    int pooled = wbj_bytes >= WBP_MIN_BYTES;
++    if (nwbj) {
++        RT_ZONE(zd, "write-back compare");
++        RT_ZONE_VALUE(zd, wbj_bytes);
++        if (pooled) {
++            plat_mutex_lock(&wbp_lock);
++            wbp_pending = threads - 1;
++            wbp_gen++;
++            plat_cond_broadcast(&wbp_go);
++            plat_mutex_unlock(&wbp_lock);
++            wbp_slice(0);
++            plat_mutex_lock(&wbp_lock);
++            while (wbp_pending) plat_cond_wait(&wbp_done, &wbp_lock);
++            plat_mutex_unlock(&wbp_lock);
++        } else {
++            int save = wbp_threads;
++            wbp_threads = 1;   // one slice: the whole span
++            wbp_slice(0);
++            wbp_threads = save;
++        }
++        RT_ZONE_END(zd);
++    }
++    plat_mutex_lock(&shadow_lock);
++    if (nwbj) s_cmp_bytes += wbj_bytes, pooled ? s_cmp_pooled++ : s_cmp_inline++;
++    if (nwbj) {
++        RT_ZONE(zw, "write-back");
++        for (int j = 0; j < nwbj; j++)
++            if (w_hi && wbj[j].a < w_hi && wbj[j].b > w_lo)
++                vk_watch("wb-fence", wbj[j].a, wbj[j].b - wbj[j].a, 0, wbj[j].r->smap + (w_lo - wbj[j].r->import_lo));
++        for (int k = 0; k < (pooled ? threads : 1); k++)
++            for (int i = 0; i < wbp_lists[k].n; i++) shadow_put(wbj[wbp_lists[k].runs[i].ri].r, wbp_lists[k].runs[i].lo, wbp_lists[k].runs[i].hi);
++        RT_ZONE_END(zw);
++    }
++    for (int i = 0; i < n; i++) {   // as vk_gpu_written: the submitted entry, not a newer part's equal one
++        if (!w[i].size) continue;
++        uint64_t lo = w[i].addr, hi = w[i].addr + w[i].size;
++        int k = -1;
++        for (int j = 0; j < nspend && (k < 0 || !spend[k].sub); j++)
++            if (spend[j].lo == lo && spend[j].hi == hi) k = j;
++        if (k >= 0) spend[k] = spend[--nspend];
++    }
++    plat_mutex_unlock(&shadow_lock);
++    plat_mutex_unlock_shared(&pool_lock);
++    for (int i = 0; i < n; i++)
++        if (w[i].size && job_of[i] < 0) vk_guest_written(w[i].addr, w[i].size);
++    if (n > 512) free(job_of);
++}
++
+ static void shadow_log(uint64_t frame) {
+     if (!shadow_on) return;
+     plat_mutex_lock(&shadow_lock);
+     rt_log("mem: shadow at frame %llu: %lld pools %.1f MiB; since the last: %llu pool syncs, %llu queries, %.1f MiB "
+-           "copied in (%llu untracked), %.1f MiB written back, %.2f ms, %d GPU writes pending",
++           "copied in (%llu untracked), %.1f MiB written back, %.2f ms, %d GPU writes pending; compared %.1f MiB in "
++           "%llu pooled + %llu inline callbacks",
+            (unsigned long long)frame, (long long)s_live_n, s_live_bytes / 1048576.0, (unsigned long long)s_syncs,
+            (unsigned long long)s_queries, s_copied / 1048576.0, (unsigned long long)s_untracked, s_wb_bytes / 1048576.0,
+-           qpc_ms(s_ticks), nspend);
+-    s_syncs = s_queries = s_copied = s_untracked = s_wb_bytes = s_ticks = 0;
++           qpc_ms(s_ticks), nspend, s_cmp_bytes / 1048576.0, (unsigned long long)s_cmp_pooled, (unsigned long long)s_cmp_inline);
++    s_syncs = s_queries = s_copied = s_untracked = s_wb_bytes = s_ticks = s_cmp_bytes = s_cmp_pooled = s_cmp_inline = 0;
+     plat_mutex_unlock(&shadow_lock);
+ }
+ 
+-- 
+2.56.0
+
