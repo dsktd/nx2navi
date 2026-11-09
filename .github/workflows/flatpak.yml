@@ -27,7 +27,7 @@ jobs:
         working-directory: flatpak
         run: |
           flatpak --user remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
-          flatpak-builder --user --install-deps-from=flathub --force-clean --repo=.repo .build io.github.dsktd.NX2navi.yml
+          flatpak-builder --disable-rofiles-fuse --user --install-deps-from=flathub --force-clean --repo=.repo .build io.github.dsktd.NX2navi.yml
           flatpak build-bundle --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo .repo nx2navi-kit.flatpak io.github.dsktd.NX2navi
       - uses: actions/upload-artifact@v4
         with:
