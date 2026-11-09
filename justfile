@@ -130,10 +130,6 @@ debug *args:
 # teed to NX2navi/build/{{ver}}/logs/play-<time>.log, every input recorded beside it (replayable with `just replay`),
 # core dumps on, and the run registered as a job so the error watch and the screensaver see it.
 # Defaults (#132): async replay and the Vulkan recorder thread on, about 5% more fps on the haze scene; set either to 0 to override.
-# continue: like play, but a script presses A through the title into the last-used save slot (~6 s), then hands over
-continue *args:
-    NX2NAVI_INPUT_SCRIPT="{{flake}}/tools/continue.txt" just play {{args}}
-
 play *args:
     #!/usr/bin/env bash
     set -euo pipefail
