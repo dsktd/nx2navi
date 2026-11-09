@@ -130,7 +130,7 @@ Field, HDR10 native through niri-spicy, 240 Hz panel. Since the 2026-11-08 morni
 - Defaults: `NX2NAVI_PIPE_SKIP=any`, `NX2NAVI_HDR=native`, `REPLAY_ASYNC=1`, `VK_RECORDER=1`, `TEX_RELEASED_MIB=3072`.
 - AO: the event-waits ordering (v3, patch 0016) fixes AO's one-frame lag in the lab but is off (one residual dip, a
   device loss at the castle spot).
-- Open: #128 intro speed (not started), #138 gray close-LOD bushes (cleared so far: mesh path, alpha test, render
+- Open: #128 intro speed (first lab pass 2026-11-09: audio envelopes at 60/120/240 put the voice energy earlier at higher rates while the music onsets stay; counters not sampled yet, NOTES "#128 first lab pass"), #138 gray close-LOD bushes (cleared so far: mesh path, alpha test, render
   conditions, vertex formats (0018), occlusion-query culls (0020's `NX2NAVI_OQ_FORCE`), the shared vs c6 block; open
   lead: the vegetation vertex shaders sample a 512x512 rgba16f texture that no pass writes at the castle, NOTES
   "Gray close-LOD bushes" round 2), AO flicker (above), the mesh-stage c0 overflow upstream (worked around by 0006).

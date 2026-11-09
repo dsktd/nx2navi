@@ -382,3 +382,36 @@ Game and the intro; frames are 60 Hz input frames (input.c runs on the world clo
    it unless something reads +0xd50: watch the update object's +0xd50 for reads), and a dump of the Timeline
    player's state once it is found (start from the .evtm table's resource class, main+0x4c639c8 - 0x18 holds its
    vtable functions 0x260c0b0/0x260c0c0).
+
+## #128 first lab pass (2026-11-09 12:30-12:45 UTC, GPU): the audio envelopes point the same way as Cal's report
+
+Setup: `tools/lab-run newgame.txt <60*rate> intro-<rate> NX2NAVI_FPS_LIMIT=<rate> NX2NAVI_PROFILE_DIR=<empty dir>
+NX2NAVI_AUDIO_DUMP=... NX2NAVI_TRACE=perf` at 60, 120 and 240 (the pacer held 60.0/120.0/240.0 fps, speed 1.000 in
+every 120-present window after boot; the untimed script lines run on game ticks, so the 7 A presses landed at ticks
+300..1500 at every rate, i.e. presents 1477/2834/4670 for the last one). Envelopes: `scratchpad/i128/cmp.py` (100 ms RMS, dB)
+over the three `scratchpad/i128/out/a<rate>.raw` dumps (float32 stereo 48 kHz).
+- **The script needs an empty profile.** On a copy of Cal's profile the same 7 presses load slot 1 (castle courtyard
+  at present 3600); the earlier note "from the title it reaches New Game" held only for a profile without saves.
+- Menu sounds at 7.0 and 10.5 s are identical at all three rates (presses at the same game time; a boot of 4.1 s to the
+  first sound). From 15 s the intro plays: its loud music onsets are shared (the 42-43.5 s dip, the 44.0 s onset,
+  the 62.5-65 s silence at 60 fps), so the movie's music keeps wall/game time, as Cal says.
+- Between them the energy moves earlier with the rate: 240 fps is 3-8 dB louder than 60 at 22-32 s and 5-12 dB quieter at
+  33-42 s, 120 fps sits between (louder than 60 at 22-30, equal at 33-36). The first non-menu onset is at 15.0 s at 120 and
+  240 but 16.0-16.5 s at 60. Consistent with voice lines starting earlier at higher present rates while the music stays;
+  the envelope alone cannot separate voice from music, so this is a direction, not a measure.
+- Frame 3600 at 60 fps (60 s) is a black picture with 3 passes (movie fade or a video frame), so a dump-frame shot does
+  not show the dialogue box; dialogue timing needs shot.req shots or a voice-channel dump instead.
+- Not done: the counter deltas. `NX2NAVI_WATCH` (patch 0005) is a GPU-side watch (vk_memory.c `vk_watch`: it logs
+  replay touches of a guest range), so it sees nothing of CPU counters; a CPU read is needed instead. The main image is at
+  a fixed 0x7000000000 (`loaded main at` in run.log), and guest addresses are host addresses, so a sampler reading
+  `/proc/<pid>/mem` at the three counters (time manager **[main+0x4c7e890] +0x10/+0x18, the update object's +0xd50/+0xd58
+  once its pointer is known, main+0x32932b0's obj+0x265fc/+0x284) once per second during the intro, at 60 and 240, gives
+  the per-second deltas without a rebuild. The ostep patch set (recomp/patches-v111.txt lines 27-28) only replaces the
+  frames-per-update at main+0x6e6cc0/6e6cc4; the update's own frame counter at +0xd50 still gets +1 per update
+  (ldadd at 0x6e6cf8), and +0xd58 += s8 (the patched fraction), so +0xd50 is the one counter in that function that
+  runs with the present rate. Whether the Timeline/voice scheduler reads it (directly or via the accessor
+  main+0x128c840) is the next question; no reader was found statically.
+- Next: (1) a mixer-side per-voice onset log (audio_mixer.c, voices with sample format 2/6 are the voice/SE decodes;
+  log the first render of each voice with wall and game time) to measure the voice offsets exactly; (2) the
+  /proc/<pid>/mem counter sampler; (3) shot.req shots every second between 15 and 45 s at 60 and 240 for the dialogue box.
+- lab-run: the process guard raced with a process exiting (`a[0]: unbound variable`, set -u); fixed to skip an empty cmdline.

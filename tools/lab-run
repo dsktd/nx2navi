@@ -19,7 +19,7 @@ OUT=$ROOT/.lab/$label; log=$OUT/run.log
 exec 9>/tmp/nx2navi-lab.lock; flock -w ${LAB_LOCK_WAIT:-3600} 9 || { echo "lab-run: lock busy" >&2; exit 3; }
 # guard: any other nx2navi game process (argv0 basename nx2navi, or gdb --args .../nx2navi)
 busy=$(for p in /proc/[0-9]*; do [ "${p#/proc/}" = $$ ] && continue
-  a=(); mapfile -d '' a < $p/cmdline 2>/dev/null || continue
+  a=(); mapfile -d '' a < $p/cmdline 2>/dev/null || continue; [ ${#a[@]} -gt 0 ] || continue   # the process may be gone
   [ "${a[0]##*/}" = nx2navi ] && echo ${p#/proc/} && continue
   [ "${a[0]##*/}" = gdb ] && [[ " ${a[*]} " == *"/nx2navi "* ]] && echo ${p#/proc/}; done)
 # Cal's game runs on the host, invisible to /proc here: refuse while its play log is being written (a GPU fault in a
