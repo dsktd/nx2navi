@@ -173,3 +173,130 @@ the blocking part.
   stalls.
 - Later, GPU zones: a C shim over `TracyCGpu*` (the C API has `___tracy_emit_gpu_*`) fed from the existing timestamp
   pairs in `vk_sync.c ts_*`, so the GPU's share of the 22.9 ms is known.
+
+## Kakariko 2026-11-09 (before)
+
+Trace `~/claude/kak.tracy` (Tracy 0.13.1, 59 MB, same binary and env as the field trace: `build/v111/nx2navi.tracy`,
+240 Hz, HDR native, `PIPE_SKIP=any`, `REPLAY_ASYNC=1`, `VK_RECORDER=1`, `TEX_RELEASED_MIB=3072`). 86 s: menu and
+loading until 30 s, then Kakariko Village to the end, Cal **running around the whole time** (the field trace was
+standing still, no inputs). Same method and scratch `csvexport` as above (`perf-scripts/an3.py`, `an4.py` in the
+scratchpad: thread ids differ per trace, so roles are detected: t3 = game render thread, t2 = replay, t6 = completion,
+t1 = audio, t4 = second guest thread, t5 = the 1 us shadow sync). `build/` was not mounted in the container when this
+was written, so the play log's counters (`pool_fini`, `frame bound`, pipeline compiles) are not quoted.
+
+**Window.** The last load spike is the 505 ms frame at 27.07 s followed by 106-217 ms frames until 28.6 s; the
+post-load re-upload storm (52-62 ms frames, 15-21 MiB of re-uploads each) ends at 30.7 s. Cal's boundary of 30 s
+matches: everything from 30.0 s to the end (1991 frames, 55.9 s) is the Kakariko window below; 30.0-30.7 s adds
+three storm frames to it, which does not move the means.
+
+### 1. Frame-time distribution
+
+| window | frames | mean ms | p50 | p90 | p99 | max | mean fps | >16.7 ms | >33 ms |
+|---|---|---|---|---|---|---|---|---|---|
+| whole trace | 3131 | 24.64 | 22.92 | 35.76 | 51.32 | 504.92 | 40.6 | 2553 | 458 |
+| before 30 s (menu + load) | 1140 | 18.65 | 16.70 | 18.94 | 70.61 | 504.92 | 53.6 | 571 | 51 |
+| Kakariko 30 s-end | 1991 | 28.07 | 27.16 | 37.06 | 50.47 | 65.54 | 35.6 | 1982 | 407 |
+| last 30 s | 1007 | 29.77 | 29.08 | 38.33 | 51.47 | 65.54 | 33.6 | 1006 | 301 |
+
+Every Kakariko frame is over 4.17 ms and all but 9 over 16.7 ms; 20% are over 33 ms. The menu runs at a flat 16.70 ms
+(the game's own 60 Hz pacing) with three unzoned 80-109 ms stalls (10.6, 21.3, 21.5 s: nothing zoned in them, the
+`pool_fini`-wait shape of the castle part above).
+
+### 2. Zone budget per frame, Kakariko window (1991 frames, mean frame 28.07 ms)
+
+| zone | thread | ms/frame | of 4.17 ms | of 16.7 ms | calls/frame | per frame | max in a frame |
+|---|---|---|---|---|---|---|---|
+| submit finish wait | t3 game | 5.35 | 128% | 32% | 1.0 | | 27.3 |
+| write-back compare | t6 completion | 5.09 | 122% | 31% | 157.5 | 61 MiB compared | 12.9 |
+| audio mix | t1 audio | 2.93 | 70% | 18% | 5.6 | 0.52 ms per call | 10.2 |
+| shadow sync | t2 replay | 2.81 | 67% | 17% | 11.9 | 747 pools touched | 8.7 |
+| texture upload (first-time) | t2 replay | 0.77 | 18% | 5% | 10.7 | 1.92 MiB | 13.3 |
+| write-back | t6 completion | 0.52 | 13% | 3% | 157.1 | | 2.1 |
+| texture upload (re-uploads) | t2 replay | 0.29 | 7% | 2% | 7.5 | 0.35 MiB | 5.3 |
+| nvn submit | t4 guest | 0.17 | 4% | 1% | 4.0 | | 0.9 |
+| bind pipeline | t2 replay | 0.09 | 2% | 1% | 645 | | 0.2 |
+| released sweep | t2 replay | 0.01 | 0% | 0% | 39 | | 0.3 |
+| nvn submit | t3 game | 0.01 | 0% | 0% | 2.0 | | 0.1 |
+
+### 3. Steady-state vs movement-triggered
+
+Frames split by whether the replay thread uploaded more than 1 MiB of textures during them (means, ms per frame):
+
+| set | frames | frame ms | finish wait | wb compare | wb ranges / MiB | shadow sync | pools | audio | upload ms | up MiB (first / re) | binds |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| quiet (no uploads) | 1612 (81%) | 26.3 | 5.11 | 4.98 | 156 / 61 | 2.77 | 744 | 2.77 | 0.14 | 0.02 / 0.02 | 643 |
+| movement (uploads) | 379 (19%) | 35.6 | 6.41 | 5.58 | 162 / 61 | 2.99 | 755 | 3.57 | 3.46 | 10.0 / 1.8 | 654 |
+| Hyrule Field, last 30 s (above) | 1310 | 22.9 | 5.07 | 5.42 | 162 / 66 | 2.71 | 771 | 1.39 | 0.06 | 0 / 0.1 | 609 |
+
+- **Per frame regardless of movement:** write-back compare (156-162 ranges, 61 MiB, 5.0-5.6 ms), shadow sync
+  (11.9 parts, 745-755 pools, 2.8-3.0 ms), finish wait (5.1 ms baseline), binds (~645). They are the same numbers as
+  the field within 10%; the compare and sync counts do not scale with movement, they are a fixed per-frame tax of
+  the written-range and pool bookkeeping.
+- **Movement-triggered:** texture uploads. 19% of the frames carry them and are 9.3 ms longer: 3.5 ms of upload on
+  the replay thread (10 MiB first-time + 1.8 MiB re-uploads per such frame), +1.3 ms finish wait, the rest unzoned.
+  Over the window: 3.75 GiB uploaded first-time and 0.69 GiB re-uploaded, 100-300 MiB/s during 68-86 s while running
+  through the village; 26298 uploads, of which 15520 re-uploads, but the re-uploads are mostly tiny (5838 of 3 KiB,
+  4060 of 128 B, 3818 of 512 B: palettes and small dynamic textures); the bytes are first-time 2 MiB
+  (2078720 B x 1026) and 0.4-0.5 MiB textures. With a 3072 MiB cap nothing should be evicted, so either Kakariko's
+  running route really touches 3.7 GiB of distinct textures (unlikely for OoT) or the cache key misses when the game
+  re-creates texture objects over reused pool memory. Next zone value: cache hit / miss / released-hit per upload.
+- **Audio** is 2.8-3.6 ms/frame here against 1.4 in the field: 0.52 ms per 5 ms mix (0.30 in the field), more
+  voices in the village. Its 0.71 correlation with frame time is mostly cadence (a longer frame holds more mixes); it
+  stays on its own thread. 23 mixes over 2 ms (max 7.2) all sit inside the stall block at 59.7-61.1 s.
+- **Quiet frames are still 3.4 ms slower than the field** (26.3 vs 22.9) with identical zone costs, so the
+  difference is unzoned game-thread time: 21.0 ms vs 17.8 (more actors: villagers, cuccos, the running Link).
+  Quiet frames by quartile (20.0 / 24.1 / 27.9 / 33.3 ms) grow with finish wait (2.2 -> 7.4), binds (539 -> 722) and
+  touched pools (603 -> 841): draw load is the driver inside the steady state, as in the field.
+
+### 4. What the zones do not cover (window)
+
+| thread | zoned ms/frame | unzoned | note |
+|---|---|---|---|
+| t3 game | 5.36 | 22.7 (81%) | 21.0 on quiet frames; field 17.8 |
+| t2 replay | 3.97 | 24.1 (86%) | recording, pipeline creation (`PIPE_SKIP=any`: new village pipelines compile here, unzoned) |
+| t6 completion | 5.62 | 22.4 | |
+| t1 audio | 2.93 | 25.1 | own thread |
+
+**Stall block 59.7-61.1 s**: ~20 frames of 50-65 ms, the worst of the window, with finish wait under 1.2 ms, uploads
+3-20 MiB, normal compare and sync, and audio mixes of 7-10 ms per frame. Nothing zoned explains them and every thread
+slows at once: a CPU-wide contention (pipeline compilation threads, or a page-fault burst on fresh pools) rather than
+GPU or replay backlog. 36 of the 112 frames over 40 ms have this shape (also 32-33, 44-45, 69 s); the other 76 are
+finish-wait frames (10-27 ms waits, movement frames with 20 MiB of uploads in front of the GPU work).
+
+### 5. Load spike (Kakariko entry)
+
+| t (s) | frame ms | finish wait | shadow sync | uploads | note |
+|---|---|---|---|---|---|
+| 27.07 | 504.9 | 476.9 | 85.0 (3 syncs: 14.7/68 pools, 23.1/190, 40.2/68) | 214 ms, 403 MiB (two 56 MiB uploads of 20 and 40 ms) | load |
+| 27.57 | 105.7 | 89.2 | 2.5 | 45 ms, 140 MiB | |
+| 27.68 | 216.9 | 160.6 | 3.3 | 123 ms, 290 MiB | |
+| 27.90 | 132.8 | 41.5 | 3.3 | 61 ms, 157 MiB | |
+| 28.03 | 184.2 | 39.6 | 3.1 | 116 ms, 324 MiB (16 and 12 MiB singles of 9-10 ms) | |
+| 28.45-28.93 | 87, 86, 69, 53, 43 | 41, 44, 31, 22, 12 | 7-8 (1012-1260 pools) | 14-43 MiB each | first village frames, re-uploads start |
+| 30.4-30.7 | 52-62 | 1-27 | 5-9 | 15-21 MiB re-uploads | storm, over at 30.7 s |
+
+1.5 s of wall time for 1.4 s of stall; 2.4 GiB uploaded in 24-30 s. Same shape as the field entry (741 + 340 + 316 ms
+there): shadow syncs of fresh pools and 50-60 MiB uploads inside the finish wait. Fix 5 above applies unchanged.
+
+### 6. Verdict on fixes 1 + 2, and the Kakariko list
+
+The steady-state bottleneck is the same: game thread waits 5.1-6.4 ms per frame on a `done` that includes 5.0-5.6 ms of
+write-back compare, with the compare and sync volumes fixed per frame. Fixes 1 (GPU-only wait) and 2 (parallel compare)
+apply as written and should take the same 3-5 ms off: 26.3 -> ~22 ms on quiet frames (38 -> ~45 fps), 35.6 -> ~31 on
+movement frames. They do **not** cover the two things Kakariko adds: 9 ms per movement frame of texture uploads (19% of
+frames) and the 3.4 ms of extra unzoned game-thread time, nor the 60 s stall block.
+
+1. Fixes 1 + 2 as above (same code, same expectation).
+2. **Texture upload path, movement frames.** First: a `texture upload` value of hit/miss/re-created to learn whether
+   3.7 GiB in 56 s are distinct textures or cache misses on re-created objects over reused pools (`vk_texture.c`
+   keying). If misses: key by (pool, offset, size, format, content hash of the first page) and reuse the existing
+   image. Either way the upload itself (3.5 ms on t2 per movement frame plus the +1.3 ms finish wait) should go
+   through a second staging ring submitted on the transfer queue, so the replay's draw recording is not behind the
+   copies. Expected: movement frames from 35.6 to ~28 ms.
+3. **Zone the stall block.** `vkCreateGraphicsPipelines` / `vkCreateComputePipelines` in the replay (with
+   `PIPE_SKIP=any` the compile is the unzoned t2 cost on new village pipelines) and the write-watch page scan
+   (`shadow_sync_pool`), so the 50-65 ms frames at 60 s are attributed. The play log of this run (host
+   `build/v111/logs/play-20261109-17*.log`) has the pipeline counters; read it when `build/` is mounted.
+4. **Unzoned game thread, 21 ms.** Same next measurement as the field (sampling), now more important: it is 3.4 ms more
+   than the field at the same zone costs, and it is the frame floor once 1 + 2 land.
+5. Shadow sync (2.8 ms, 747 pools, t2) and audio (0.52 ms per mix): unchanged ranking, not on the critical path.
