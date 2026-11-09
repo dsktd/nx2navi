@@ -439,3 +439,43 @@ over the three `scratchpad/i128/out/a<rate>.raw` dumps (float32 stereo 48 kHz).
   log the first render of each voice with wall and game time) to measure the voice offsets exactly; (2) the
   /proc/<pid>/mem counter sampler; (3) shot.req shots every second between 15 and 45 s at 60 and 240 for the dialogue box.
 - lab-run: the process guard raced with a process exiting (`a[0]: unbound variable`, set -u); fixed to skip an empty cmdline.
+
+## #128 second lab pass (2026-11-09 13:25-14:05 UTC, GPU): the narration slots run per present; no CPU reader of the per-present counters
+
+Tools (patch 0022, `tools/counter-sample`, `tools/counter-watch.gdb`): `NX2NAVI_TRACE=counters` logs `counters: present N
+t=<monotonic s>` every 60 presents and `counters: voice <slot> start: buf fmt ch Hz present t audio-frame` when a voice slot is
+rendered after a gap. `tools/counter-sample run <interval> <out> tools/lab-run ...` samples the CPU counters through
+`/proc/<pid>/mem` on the same clock; it must be an ancestor of the game (Yama ptrace_scope 1, no CAP_SYS_PTRACE; a stray
+`nx2navi.new` of an earlier run broke the first attempt, so it only takes a descendant). The update object is found by
+scanning the heap for the callback record `{typeinfo, this, main+0x6e6be0, 0}` the framework keeps in itself at +0x258
+(main+0x3b59eac): `this` = 0x1373cd100 in every run; the time manager is `[[main+0x4c7e890]] = [main+0x4e94b20]` =
+0x1373d9468 (the heap lies below main at 0x7000000000). Runs i128i/k-{60,240}, empty profile, `newgame.txt`.
+
+| counter | per present at 60 | per present at 240 | reader |
+|---|---|---|---|
+| update +0xd50 int32 (ldadd) | 1.000 | 1.000 | none: gdb awatch through the intro (i128w3-240, presents 1..7381, 34 voice starts) fires only at the update's own ldadd (7428 hits, one per update) |
+| update +0xd58 double (+= s8) | 1.000 | 0.250 | only the update function (awatch, two sites) |
+| time manager +0x10 frames/update | 1.0000 | 0.2500 (0.31-0.78 during boot) | 91 static sites, all patched values |
+| time manager +0x18 s/update | 0.01667 | 0.00417 | 25 sites |
+| time manager +0x1c int rate | 60 | 240 (147-193 during boot) | none: rwatch through the intro (i128w-240, presents 1..7561) fires only at its writer main+0x3b4e300 |
+| time manager +0x0 gameplay frames | 1.0000 | 0.2500 | 21 sites |
+
+Voice starts (slot, game seconds since the first present; the narration lines are one PCM16 stream slot each, 4096 B chunks,
+slots 20-28; slots 1-19 are the menu/music beds starting at the same game time at both rates: 2.0/2.2, 5.0/5.1, 8.7/8.8, 10.9/11.2 s):
+
+| rate | narration slot starts (s) | intervals (s) |
+|---|---|---|
+| 60 | 14.5 22.9 31.9 43.7 48.2 56.8 63.5 | 8.4 9.0 11.8 4.5 8.6 6.7 |
+| 240 | 13.1 17.5 20.8 24.0 25.1 27.3 28.8 31.8 34.3 | 4.4 3.3 3.2 1.1 2.2 1.5 3.0 2.5 |
+
+So the sequence of lines runs 2.5-4x faster per wall second at 240 while every value the ostep patch produces is right and
+no CPU code reads the two counters that still run per present. The scheduler of the narration lines is therefore not
+driven by main's time manager fields or the update counter directly; the remaining candidates are (a) the movie/Timeline
+player (.evtm runtime, not located), stepping its cursor once per update with a constant (its own 1/60 or a per-update
+tick), (b) a counter inside the lifted actor/event code that counts updates with a literal rather than the manager
+(the `obj+0x284 += 1` family at main+0x32932b0, not sampled: its object was not located), (c) a wait on the voice's own
+playback that ends early because the voice was started with the next line's data (the 240 intervals 1.1-3.3 s are shorter
+than the lines themselves, which supports a frame-counted wait rather than a playback wait). No fix proposed yet; the next
+step is a gdb awatch on the voice start path: break on the audren voice start (the first `counters: voice` of a narration
+slot comes from a guest StartVoice IPC) with a guest backtrace to the caller that decided the moment, then walk its
+wait up to the counter it compares.

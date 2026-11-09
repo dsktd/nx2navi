@@ -130,7 +130,7 @@ Field, HDR10 native through niri-spicy, 240 Hz panel. Since the 2026-11-08 morni
 - Defaults: `NX2NAVI_PIPE_SKIP=any`, `NX2NAVI_HDR=native`, `REPLAY_ASYNC=1`, `VK_RECORDER=1`, `TEX_RELEASED_MIB=3072`.
 - AO: the event-waits ordering (v3, patch 0016) fixes AO's one-frame lag in the lab but is off (one residual dip, a
   device loss at the castle spot).
-- Open: #128 intro speed (first lab pass 2026-11-09: audio envelopes at 60/120/240 put the voice energy earlier at higher rates while the music onsets stay; counters not sampled yet, NOTES "#128 first lab pass"), #138 gray close-LOD bushes (cleared so far: mesh path, alpha test, render
+- Open: #128 intro speed (second lab pass 2026-11-09: the narration voice slots start 2.5-4x faster per wall second at 240 than at 60 while the time manager and the update's +0xd58 step are patched correctly; the update's +0xd50 counter runs per present; the consumer is still unknown, NOTES "#128 second lab pass"), #138 gray close-LOD bushes (cleared so far: mesh path, alpha test, render
   conditions, vertex formats (0018), occlusion-query culls (0020's `NX2NAVI_OQ_FORCE`), the shared vs c6 block; the vertex
   textures' data (round 3: the 512x512 rgba16f one is a live ping-ponged push/bend field written by compute every other
   frame); next: the fragment side of the LOD pipes and the leaf cards' draw/instance counts, NOTES "Gray close-LOD bushes" round 3), AO flicker (above), the mesh-stage c0 overflow upstream (worked around by 0006).
@@ -211,6 +211,12 @@ distribution). After `just update`, `build` may need a rebase onto the new upstr
 - `0019-vk_texture-NX2NAVI_TEX_RELEASED_MIB-caps-the-own-mem.patch`: `NX2NAVI_TEX_RELEASED_MIB=<n>` (default 0 = off) caps the
   VRAM held by released textures kept for take-back (RELEASED_MAX 2048 entries, 7-8 GiB of render targets in the heavy field
   scene), dropping the oldest past the cap. `just play` sets 3072 since 2026-11-09 (Status has the lab numbers) (#132).
+- `0022-NX2NAVI_TRACE-counters-a-present-clock-line-per-60-p.patch`: #128 lab instrumentation. `NX2NAVI_TRACE=counters`
+  logs `counters: present N t=<CLOCK_MONOTONIC s>` every 60 presents (perf.c) and `counters: voice <slot> start: ...
+  present N t=... audio-frame A` when a voice slot is rendered after a gap (audio_mixer.c). `tools/counter-sample run
+  <interval> <out> tools/lab-run ...` reads the CPU counters of that game through `/proc/<pid>/mem` on the same clock
+  (the update object's +0xd50/+0xd58 found through the callback record, the time manager through its pointer chain).
+  Built into `nx2navi.new` (not swapped).
 - `0020-vk_exec_xfer-NX2NAVI_OQ_FORCE-forces-every-samples-p.patch`: debugging the game's CPU-side occlusion culls (#138):
   `NX2NAVI_LOG_OQ=1` logs every samples-passed report (address, queries, sum, count), `NX2NAVI_OQ_FORCE=<n>` makes each
   report write n (0 = off). Built into `nx2navi.new` (not swapped). A/B at the castle: forced counts do not restore the leaves.

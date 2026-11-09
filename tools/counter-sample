@@ -1,0 +1,116 @@
+#!/usr/bin/env python3
+"""counter-sample <pid|wait> [interval s] [out]   #128: CPU-side counters of a running nx2navi through /proc/<pid>/mem.
+
+Guest addresses are host addresses and main is at 0x7000000000. Each sample line: `t=<CLOCK_MONOTONIC s> upd50=<int32>
+upd58=<double> tm10=<frames/update> tm18=<seconds/update> tm_acc=...`; the game's `counters: present N t=` lines
+(NX2NAVI_TRACE=counters) share the clock, so present <-> sample pairs by t.
+- update object: the framework stores a callback record {typeinfo, this, fn=main+0x6e6be0, 0} in itself at +0x258..
+  (main+0x3b59eac); the sampler scans the writable mappings for the fn pointer and takes `this` from the word before it.
+  +0xd50 int32 (+1 per update, unpatched), +0xd58 double (+= frames per update, the ostep value).
+- time manager: *[main+0x4c7e890]; +0x10 frames per update (float), +0x18 seconds per update, +0x1c int rate.
+`wait` polls /proc for a process named nx2navi or nx2navi.new (lab-run starts it). Stops when the process exits.
+Yama (ptrace_scope 1, no CAP_SYS_PTRACE here) lets only an ancestor read the memory, so the usual form runs lab-run as a
+child: `counter-sample run <interval> <out> tools/lab-run <args...>` (setsid in lab-run keeps the game a descendant).
+"""
+import os, re, struct, subprocess, sys, time
+
+MAIN = 0x7000000000
+UPDATE_FN = MAIN + 0x6e6be0
+TM_PTR = MAIN + 0x4c7e890
+
+def ppid(p):
+    try:
+        for line in open(f'/proc/{p}/status'):
+            if line.startswith('PPid:'): return int(line.split()[1])
+    except OSError: pass
+    return 0
+
+def descendant(p):
+    me = os.getpid()
+    while p > 1:
+        if p == me: return True
+        p = ppid(p)
+    return False
+
+def find_pid(mine):
+    for p in os.listdir('/proc'):
+        if not p.isdigit(): continue
+        try: comm = open(f'/proc/{p}/comm').read().strip()
+        except OSError: continue
+        if comm in ('nx2navi', 'nx2navi.new', 'nx2navi.prev') and (not mine or descendant(int(p))): return int(p)
+    return None
+
+def maps(pid):
+    for line in open(f'/proc/{pid}/maps'):
+        f = line.split()
+        if 'w' not in f[1] or len(f) < 6 and False: continue
+        a, b = (int(x, 16) for x in f[0].split('-'))
+        yield a, b, f[5] if len(f) > 5 else ''
+
+def scan_update_this(mem, pid):
+    pat = struct.pack('<Q', UPDATE_FN)
+    for a, b, name in maps(pid):
+        if name.startswith('[v') or name.startswith('/dev'): continue
+        if b - a > 1 << 32: continue
+        try:
+            mem.seek(a); buf = mem.read(b - a)
+        except (OSError, OverflowError): continue
+        i = buf.find(pat)
+        while i != -1:
+            if i >= 8:
+                this = struct.unpack_from('<Q', buf, i - 8)[0]
+                if this == a + i - 8 - 0x260:   # record lives in the object itself: this == record - 0x260
+                    return this
+            i = buf.find(pat, i + 8)
+    return None
+
+def rd(mem, addr, fmt):
+    mem.seek(addr); return struct.unpack(fmt, mem.read(struct.calcsize(fmt)))
+
+def main():
+    arg = sys.argv[1] if len(sys.argv) > 1 else 'wait'
+    interval = float(sys.argv[2]) if len(sys.argv) > 2 else 1.0
+    out = open(sys.argv[3], 'w') if len(sys.argv) > 3 else sys.stdout
+    child = None
+    if arg == 'run':
+        interval = float(sys.argv[2]); out = open(sys.argv[3], 'w')
+        child = subprocess.Popen(sys.argv[4:])
+        pid = None
+        while pid is None and child.poll() is None: pid = find_pid(True); time.sleep(0.2)
+        if pid is None: sys.exit(child.returncode)
+    elif arg == 'wait':
+        pid = None
+        while pid is None: pid = find_pid(False); time.sleep(0.2)
+    else: pid = int(arg)
+    mem = open(f'/proc/{pid}/mem', 'rb', buffering=0)
+    this = None
+    while this is None:
+        try: this = scan_update_this(mem, pid)
+        except OSError: break
+        if this is None: time.sleep(1.0)
+    print(f'# pid {pid} update object 0x{this:x}' if this else f'# pid {pid} update object not found', file=out, flush=True)
+    while True:
+        try:
+            t = time.clock_gettime(time.CLOCK_MONOTONIC)
+            tm = rd(mem, TM_PTR, '<Q')[0]
+            line = f't={t:.3f}'
+            if this:
+                d50, = rd(mem, this + 0xd50, '<i'); d58, = rd(mem, this + 0xd58, '<d')
+                line += f' upd50={d50} upd58={d58:.3f}'
+            chain = [tm]
+            for _ in range(3):   # [main+0x4c7e890] -> main+0x4e94b20 -> manager (heap): follow pointers inside main
+                if not MAIN <= tm < MAIN + 0x5000000: break
+                tm = rd(mem, tm, '<Q')[0]; chain.append(tm)
+            line += ' tmchain=' + '>'.join(f'{c:x}' for c in chain)
+            if 0x10000 < tm < 1 << 47:   # the heap lies below main
+                f10, f14, f18, i1c = rd(mem, tm + 0x10, '<fffi')
+                g0, = rd(mem, tm + 0x0, '<f')
+                line += f' tm=0x{tm:x} tm10={f10:.4f} tm18={f18:.5f} tm1c={i1c} tm0={g0:.4f}'
+            print(line, file=out, flush=True)
+        except OSError:
+            break
+        time.sleep(interval)
+    print('# process gone', file=out, flush=True)
+    if child: child.wait()
+
+main()

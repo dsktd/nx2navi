@@ -1,0 +1,104 @@
+From 4295ae5de58e45fac436d92f2bf198a2be7e958c Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Mon, 9 Nov 2026 08:40:23 -0500
+Subject: [PATCH] NX2NAVI_TRACE=counters: a present/clock line per 60 presents
+ and a line when a voice slot starts after a gap (#128 lab)
+
+---
+ runtime/audio_mixer.c | 17 +++++++++++++++++
+ runtime/host.h        |  3 ++-
+ runtime/main.c        |  4 ++--
+ runtime/perf.c        |  1 +
+ 4 files changed, 22 insertions(+), 3 deletions(-)
+
+diff --git a/runtime/audio_mixer.c b/runtime/audio_mixer.c
+index 91822ad..9397e09 100644
+--- a/runtime/audio_mixer.c
++++ b/runtime/audio_mixer.c
+@@ -31,6 +31,7 @@
+ #include "audio_reverb.h"
+ #include "audren.h"
+ #include "host.h"
++#include "nvn_api.h"   // gfx_counters.frames for the voice start lines
+ #include "ipc.h"
+ 
+ #define MAX_FRAME 1024
+@@ -804,6 +805,21 @@ static void mix_circular_sink(AudioRenderer *r,int id) {
+ }
+ uint32_t audio_mixer_sink_written(AudioRenderer *r,int id) {Mixer *m=r->mixer;return m?m->sink_written[id]:0;}
+ 
++// NX2NAVI_TRACE=counters (#128): one line when a voice slot is rendered after a gap (it was not rendered in the previous
++// 5 ms frame), with the present count and the monotonic clock the counters line in perf.c logs. Render thread only.
++static void voice_start_note(AudioRenderer *r, int i, const ServerVoice *v) {
++    static uint64_t last[1024];   // voice slot -> elapsed_frames of its last render (+1, so 0 is never)
++    if (i < 0 || i >= 1024) return;
++    uint64_t now = r->elapsed_frames + 1, gap = now - last[i];
++    last[i] = now;
++    if (gap == 1) return;
++    rt_log("counters: voice %d start: buf 0x%llx+%llu fmt %u %dch %u Hz mix %d present %llu t=%.3f audio-frame %llu", i,
++           (unsigned long long)v->buffers[v->index].address, (unsigned long long)v->buffers[v->index].size, v->in.sample_format,
++           (int)v->in.channel_count, (unsigned)v->in.sample_rate, (int)v->in.mix_id,
++           (unsigned long long)__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED), kern_now_ns() / 1e9,
++           (unsigned long long)r->elapsed_frames);
++}
++
+ void audio_mixer_render(AudioRenderer *r, double seconds) {
+     (void)seconds;
+     Mixer *m = r->mixer; if (!m) return;
+@@ -826,6 +842,7 @@ void audio_mixer_render(AudioRenderer *r, double seconds) {
+                        v->in.sample_format == FMT_ADPCM || fmt_bytes(v->in.sample_format) ? "decoded" : "NOT decoded: silent",
+                        cc, (unsigned)v->in.sample_rate);
+         }
++        if (rt_trace & RT_TRACE_COUNTERS) voice_start_note(r, i, v);
+         voice_render(r, v, vs, frames);
+         for (int f = 0; f < 2; f++) if (v->in.biquads[f].enable) {
+             const AudrenBiquad *b = &v->in.biquads[f];
+diff --git a/runtime/host.h b/runtime/host.h
+index 869a93c..016db84 100644
+--- a/runtime/host.h
++++ b/runtime/host.h
+@@ -24,7 +24,8 @@ void rt_vlogf(const char *fmt, va_list ap);
+ void rt_log_raw(const char *p, size_t n);
+ const char *rt_log_path(void);                  // the log file, NULL when this run writes none
+ enum { RT_TRACE_SVC = 1, RT_TRACE_HOSTCALL = 2, RT_TRACE_IPC = 4, RT_TRACE_FS = 8, RT_TRACE_GFX = 16, RT_TRACE_PERF = 32,
+-       RT_TRACE_SCHED = 64, RT_TRACE_AUDIO = 128, RT_TRACE_PRESENT = 256 };
++       RT_TRACE_SCHED = 64, RT_TRACE_AUDIO = 128, RT_TRACE_PRESENT = 256,
++       RT_TRACE_COUNTERS = 512 };   // counters: a present/clock line per 60 presents and every voice start (#128 lab)
+ extern unsigned rt_trace;                       // from NX2NAVI_TRACE=svc,host,ipc,fs,gfx,perf,sched,audio,present (or all)
+ // prof_win.c: NX2NAVI_PROFILE=<path> sampling profiler; NX2NAVI_TRACE=perf frame timing (waits of the render thread)
+ // PERF_TEX: texture uploads on the render thread (deswizzle, decode, staging), PERF_ASTC included
+diff --git a/runtime/main.c b/runtime/main.c
+index eb342c1..2e624a8 100644
+--- a/runtime/main.c
++++ b/runtime/main.c
+@@ -136,13 +136,13 @@ static void parse_trace(void) {
+     static const struct { const char *name; unsigned bit; } names[] = {
+         {"svc", RT_TRACE_SVC}, {"host", RT_TRACE_HOSTCALL}, {"ipc", RT_TRACE_IPC}, {"fs", RT_TRACE_FS},
+         {"gfx", RT_TRACE_GFX}, {"perf", RT_TRACE_PERF}, {"sched", RT_TRACE_SCHED}, {"audio", RT_TRACE_AUDIO},
+-        {"present", RT_TRACE_PRESENT}, {"all", ~0u}};
++        {"present", RT_TRACE_PRESENT}, {"counters", RT_TRACE_COUNTERS}, {"all", ~0u}};
+     for (const char *p = e; *p;) {
+         size_t n = strcspn(p, ",");
+         int known = 0;
+         for (unsigned i = 0; i < sizeof names / sizeof *names; i++)
+             if (strlen(names[i].name) == n && !strncmp(p, names[i].name, n)) rt_trace |= names[i].bit, known = 1;
+-        if (!known && n) rt_log("NX2NAVI_TRACE: unknown item '%.*s' (svc, host, ipc, fs, gfx, perf, sched, audio, present, all)", (int)n, p);
++        if (!known && n) rt_log("NX2NAVI_TRACE: unknown item '%.*s' (svc, host, ipc, fs, gfx, perf, sched, audio, present, counters, all)", (int)n, p);
+         p += n + (p[n] == ',');
+     }
+ }
+diff --git a/runtime/perf.c b/runtime/perf.c
+index fe1ebf3..9f89be7 100644
+--- a/runtime/perf.c
++++ b/runtime/perf.c
+@@ -264,6 +264,7 @@ void perf_present(uint64_t frame) {
+     if (rt_trace & RT_TRACE_SCHED) kern_sched_report(frame);
+     uint64_t now = kern_now_ns(), d = last ? now - last : 0;
+     prof_sampler_frame(frame, now, last ? d : 0);
++    if ((rt_trace & RT_TRACE_COUNTERS) && frame % 60 == 1) rt_log("counters: present %llu t=%.3f", (unsigned long long)frame, now / 1e9);   // t: CLOCK_MONOTONIC s, for tools/counter-sample
+     uint64_t rep = ft_frame(frame, now, d);   // d is 0 on the first present: it only starts the period
+     ab_b += rt_ab();
+     cpu_placement();
+-- 
+2.56.0
+
