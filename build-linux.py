@@ -8,6 +8,7 @@ the other game versions. This driver runs the kit's own code for the lift and th
 the flags build_game.py documents for Linux, through Ninja. Nothing in the checkout is modified.
 
     build-linux.py --src <checkout> [--extracted build/extracted/v111] [--out build/v111] [--cpu v3|v2] [--jobs N]
+                   [--exe nx2navi] [--tracy]
 
 Steps (each incremental), after make_game.py's exefs and romfs steps have filled <extracted>:
   lift      make_game.step_lift: the kit lifts <extracted>/exefs into <extracted>/build-cache/lift with its fixes
@@ -16,6 +17,9 @@ Steps (each incremental), after make_game.py's exefs and romfs steps have filled
   copy      the translator (build/xlate/nx2navi_xlate and its .id, from tools/build_xlate.py) beside the game
 
 Environment: NX2NAVI_VMA_INCLUDE names the directory holding vk_mem_alloc.h (the flake sets it).
+--exe names the binary in <out> (its ninja file is build.<exe>.ninja); --tracy compiles the runtime with the Tracy
+client (-DTRACY_ENABLE, runtime/rt_tracy.h zones) and links libTracyClient from NX2NAVI_TRACY_PREFIX (the flake
+sets it to nixpkgs tracy); its runtime objects go to obj/runtime-tracy. README "Profiling with Tracy".
 """
 import argparse
 import os
@@ -95,8 +99,12 @@ PER_FILE_FLAGS = {
 }
 
 
-def write_ninja(src, out, lift, gen, cpu):
+def write_ninja(src, out, lift, gen, cpu, exe='nx2navi', tracy=None):
     runtime = src / 'runtime'
+    rt_extra = f' -DTRACY_ENABLE -I {npath(tracy / "include" / "tracy")}' if tracy else ''
+    ld_extra = f' -L {npath(tracy / "lib")} -Wl,-rpath,{npath(tracy / "lib")}' if tracy else ''
+    libs_extra = ' -lTracyClient' if tracy else ''
+    rt_obj = 'runtime-tracy' if tracy else 'runtime'
     march = f'-march=x86-64-{cpu}'
     # vk_mem_alloc.h is copied into the build folder: the compile lines then hold no Nix store path, so objects
     # built on one machine (the container) stay valid on another (the host) with the same /home path
@@ -115,9 +123,9 @@ def write_ninja(src, out, lift, gen, cpu):
         f'builddir = {npath(out)}',
         'cc = clang',
         f'genflags = {" ".join(GEN_FLAGS)} {march} {inc}',
-        f'rtflags = {" ".join(RT_FLAGS)} {march} -DRT_CPU_LEVEL={3 if cpu == "v3" else 2} {rt_inc}',
-        f'ldflags = {" ".join(LINK_FLAGS)} -Wl,-Map={npath(out / "nx2navi.map")}',
-        f'libs = {" ".join(LINK_LIBS)}',
+        f'rtflags = {" ".join(RT_FLAGS)} {march} -DRT_CPU_LEVEL={3 if cpu == "v3" else 2} {rt_inc}{rt_extra}',
+        f'ldflags = {" ".join(LINK_FLAGS)} -Wl,-Map={npath(out / (exe + ".map"))}{ld_extra}',
+        f'libs = {" ".join(LINK_LIBS)}{libs_extra}',
         '',
         'rule cc_gen', '  command = $cc $genflags -MD -MF $out.d -c $in -o $out', '  deps = gcc', '  depfile = $out.d',
         '  description = CC $in', '',
@@ -135,19 +143,21 @@ def write_ninja(src, out, lift, gen, cpu):
     sources = runtime_sources(runtime) + [gen / 'modules.c'] + EXTRA_SOURCES
     for s in sources:
         rel = s.relative_to(runtime) if s.is_relative_to(runtime) else Path(s.name)
-        o = out / 'obj' / 'runtime' / rel.with_suffix('.o')
+        o = out / 'obj' / rt_obj / rel.with_suffix('.o')
         lines.append(f'build {npath(o)}: cc_rt {npath(s)}')
         extra = PER_FILE_DEFINES.get(rel.as_posix())
         if extra:
             lines.append(f'  rtflags = $rtflags {extra}')
         flags = PER_FILE_FLAGS.get(rel.as_posix())
         if flags:
-            lines.append(f'  rtflags = {" ".join(flags)} -DRT_CPU_LEVEL={3 if cpu == "v3" else 2} {rt_inc}')
+            lines.append(f'  rtflags = {" ".join(flags)} -DRT_CPU_LEVEL={3 if cpu == "v3" else 2} {rt_inc}{rt_extra}')
         objs.append(o)
-    exe = out / 'nx2navi'
+    exe = out / exe
     lines += [f'build {npath(exe)}: link ' + ' '.join(npath(o) for o in objs), f'default {npath(exe)}', '']
     out.mkdir(parents=True, exist_ok=True)
-    (out / 'build.ninja').write_text('\n'.join(lines), encoding='utf-8')
+    ninja = out / ('build.ninja' if exe.name == 'nx2navi' else f'build.{exe.name}.ninja')
+    ninja.write_text('\n'.join(lines), encoding='utf-8')
+    return ninja
 
 
 def step_copy(src, out):
@@ -169,6 +179,8 @@ def main():
     ap.add_argument('--cpu', choices=('v2', 'v3'), default='v3')
     ap.add_argument('--jobs', type=int, default=os.cpu_count() or 4)
     ap.add_argument('--python', type=Path, help='the kit interpreter (default <src>/.venv/bin/python)')
+    ap.add_argument('--exe', default='nx2navi', help='the binary name in <out> (default nx2navi)')
+    ap.add_argument('--tracy', action='store_true', help='build with the Tracy client (NX2NAVI_TRACY_PREFIX)')
     a = ap.parse_args()
     src = a.src.resolve()
     extracted = (a.extracted or src / 'build' / 'extracted' / 'v111').resolve()
@@ -177,10 +189,15 @@ def main():
     lift = extracted / 'build-cache' / 'lift'
     step_lift(src, py, extracted)
     gen = step_glue(src, py, extracted, out, lift)
-    write_ninja(src, out, lift, gen, a.cpu)
-    run(['ninja', '-C', out, f'-j{a.jobs}'])
+    tracy = None
+    if a.tracy:
+        tracy = Path(os.environ.get('NX2NAVI_TRACY_PREFIX') or '')
+        if not (tracy / 'lib' / 'libTracyClient.so').is_file():
+            sys.exit('build-linux: --tracy needs NX2NAVI_TRACY_PREFIX (the nixpkgs tracy store path; the flake sets it)')
+    ninja = write_ninja(src, out, lift, gen, a.cpu, a.exe, tracy)
+    run(['ninja', '-C', out, '-f', ninja.name, f'-j{a.jobs}'])
     step_copy(src, out)
-    print(f'\nbuild-linux: {out / "nx2navi"} ({(out / "nx2navi").stat().st_size / 1e6:.0f} MB)')
+    print(f'\nbuild-linux: {out / a.exe} ({(out / a.exe).stat().st_size / 1e6:.0f} MB)')
 
 
 if __name__ == '__main__':

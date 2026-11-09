@@ -85,9 +85,10 @@ extract:
 xlate:
     cd "{{src}}" && {{dev}} env GIT_CEILING_DIRECTORIES="{{src}}" {{py}} tools/build_xlate.py
 
-# Lift (the kit, with its bring-up fixes), glue, compile and link build/{{ver}}/nx2navi (a CPU without AVX2: just game v2)
-game cpu="v3":
-    cd "{{src}}" && {{dev}} python3 -I "{{flake}}/build-linux.py" --src "{{src}}" --extracted "{{work}}/extracted/{{ver}}" --out "build/{{ver}}" --cpu {{cpu}}
+# Lift (the kit, with its bring-up fixes), glue, compile and link build/{{ver}}/nx2navi (a CPU without AVX2: just game v2).
+# tracy=1 builds build/{{ver}}/nx2navi.tracy with the Tracy profiler client instead (README "Profiling with Tracy")
+game cpu="v3" tracy="":
+    cd "{{src}}" && {{dev}} python3 -I "{{flake}}/build-linux.py" --src "{{src}}" --extracted "{{work}}/extracted/{{ver}}" --out "build/{{ver}}" --cpu {{cpu}} {{ if tracy != "" { "--tracy --exe nx2navi.tracy" } else { "" } }}
 
 # Prepare every shader of the game files and warm the GPU driver's cache (opens a window: run from the desktop session)
 shaders: && fmzpow

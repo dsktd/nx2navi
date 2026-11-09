@@ -217,7 +217,7 @@ distribution). After `just update`, `build` may need a rebase onto the new upstr
   <interval> <out> tools/lab-run ...` reads the CPU counters of that game through `/proc/<pid>/mem` on the same clock
   (the update object's +0xd50/+0xd58 found through the callback record, the time manager through its pointer chain).
   Built into `nx2navi.new` (not swapped).
-- `0023-Tracy-profiler-zones-rt_tracy.h-opt-in-with-build-l.patch`: #137 tooling for #132. `runtime/rt_tracy.h` wraps the
+- `0023-Tracy-profiler-zones-rt_tracy.h-opt-in-with-build-li.patch`: #137 tooling for #132. `runtime/rt_tracy.h` wraps the
   Tracy C API (`RT_ZONE`, `RT_FRAME_MARK`, ...; every macro empty without `TRACY_ENABLE`) and zones sit where perf.c
   already times: the present (frame mark), `nvn submit` and `submit finish wait` (nvnQueueSubmitCommands), `shadow sync`,
   `write-back compare` and `write-back` (0008 area), `bind pipeline`, `texture upload` (text `re-upload`), `released
@@ -272,6 +272,9 @@ runtime objects in `obj/runtime-tracy`, `-DTRACY_ENABLE`, linked to nixpkgs trac
 objects are shared with the plain build). The plain `nx2navi` has no Tracy code at all: the `RT_*` macros of
 `runtime/rt_tracy.h` compile to nothing. The client listens on port 8086 from the first frame and keeps a ring of events
 until a server connects; no `NX2NAVI_*` switch is needed. No GPU zones yet: TracyVk is C++ only and the Vulkan code is C.
+Known: the prebuilt client installs its own crash handlers when a profiler connects and would abort on the guest's
+first write-watch SIGSEGV (seen at frame ~1240 of the lab replay); `RT_TRACY_FRAME()` in perf_present puts the
+runtime's handlers back for the 300 presents after each connection (`plat_fault_reinstall`).
 
 On the host, Cal runs the profiler GUI and connects to the game's port, which the container must relay (Nushell):
 

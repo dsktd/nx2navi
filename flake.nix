@@ -62,6 +62,8 @@
           python312
           python314
           vulkanWrapper
+          # Tracy profiler: the client library for `just game tracy=1` and tracy-capture (README "Profiling with Tracy")
+          tracy
         ];
         env = {
           # uv uses the two interpreters above, never a downloaded python-build-standalone
@@ -71,6 +73,8 @@
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (with pkgs; [ vulkan-loader sdl3 libopus libvpx dav1d zstd stdenv.cc.cc.lib zlib ]);
           # build-linux.py: the directory holding vk_mem_alloc.h
           NX2NAVI_VMA_INCLUDE = "${pkgs.vulkan-memory-allocator}/include";
+          # build-linux.py --tracy: headers and libTracyClient.so
+          NX2NAVI_TRACY_PREFIX = "${pkgs.tracy}";
           VK_LAYER_PATH = "${pkgs.vulkan-validation-layers}/share/vulkan/explicit_layer.d";
           # .NET without the first-run chatter and telemetry
           DOTNET_CLI_TELEMETRY_OPTOUT = "1";
