@@ -6,3 +6,4 @@ latest-frame.png
 .lab-profile-*/
 perf*.data
 !.claude/
+lab-profile-*/
