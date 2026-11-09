@@ -130,7 +130,7 @@ Field, HDR10 native through niri-spicy, 240 Hz panel. Since the 2026-11-08 morni
 - Defaults: `NX2NAVI_PIPE_SKIP=any`, `NX2NAVI_HDR=native`, `REPLAY_ASYNC=1`, `VK_RECORDER=1`, `TEX_RELEASED_MIB=3072`.
 - AO: the event-waits ordering (v3, patch 0016) fixes AO's one-frame lag in the lab but is off (one residual dip, a
   device loss at the castle spot).
-- Open: #128 intro speed (second lab pass 2026-11-09: the narration voice slots start 2.5-4x faster per wall second at 240 than at 60 while the time manager and the update's +0xd58 step are patched correctly; the update's +0xd50 counter runs per present; the consumer is still unknown; third pass: the slots are started by atk's sound thread itself, the decider is one hop further, a watch on the StreamSound start flag, NOTES "#128 third lab pass"; tools/voice-watch.gdb, tools/gdbwrap), #138 gray close-LOD bushes (cleared so far: mesh path, alpha test, render
+- Open: #128 intro speed (second lab pass 2026-11-09: the narration voice slots start 2.5-4x faster per wall second at 240 than at 60 while the time manager and the update's +0xd58 step are patched correctly; the update's +0xd50 counter runs per present; the consumer is still unknown; third pass: the slots are started by atk's sound thread itself; fourth pass: no separate start command, the start is a side effect of atk's per-frame update main+0x36d1440 (two callers), stream reader entries and ring objects located, NOTES "#128 fourth lab pass"; tools/voice-{watch,scan,queue,stream}.gdb, tools/gdbwrap), #138 gray close-LOD bushes (cleared so far: mesh path, alpha test, render
   conditions, vertex formats (0018), occlusion-query culls (0020's `NX2NAVI_OQ_FORCE`), the shared vs c6 block; the vertex
   textures' data (round 3: the 512x512 rgba16f one is a live ping-ponged push/bend field written by compute every other
   frame); round 4: the leaf cards are not drawn at all at the near spot (every vegetation draw is inst 1, skipping the card vertex shaders changes nothing), so the cause is the game's LOD/cull decision before the draw list; next: the lifted actor code's LOD selection, NOTES "Gray close-LOD bushes" round 4), AO flicker (above), the mesh-stage c0 overflow upstream (worked around by 0006).
@@ -217,6 +217,11 @@ distribution). After `just update`, `build` may need a rebase onto the new upstr
   <interval> <out> tools/lab-run ...` reads the CPU counters of that game through `/proc/<pid>/mem` on the same clock
   (the update object's +0xd50/+0xd58 found through the callback record, the time manager through its pointer chain).
   Built into `nx2navi.new` (not swapped).
+- `0023-Tracy-profiler-zones-rt_tracy.h-opt-in-with-build-l.patch`: #137 tooling for #132. `runtime/rt_tracy.h` wraps the
+  Tracy C API (`RT_ZONE`, `RT_FRAME_MARK`, ...; every macro empty without `TRACY_ENABLE`) and zones sit where perf.c
+  already times: the present (frame mark), `nvn submit` and `submit finish wait` (nvnQueueSubmitCommands), `shadow sync`,
+  `write-back compare` and `write-back` (0008 area), `bind pipeline`, `texture upload` (text `re-upload`), `released
+  sweep` (0019), `audio mix`. Built only by `just game tracy=1` (see "Profiling with Tracy"); the plain binary is untouched.
 - `0020-vk_exec_xfer-NX2NAVI_OQ_FORCE-forces-every-samples-p.patch`: debugging the game's CPU-side occlusion culls (#138):
   `NX2NAVI_LOG_OQ=1` logs every samples-passed report (address, queries, sum, count), `NX2NAVI_OQ_FORCE=<n>` makes each
   report write n (0 = off). Built into `nx2navi.new` (not swapped). A/B at the castle: forced counts do not restore the leaves.
@@ -259,6 +264,42 @@ Both are opt-in environment variables for `tools/lab-run` (see its header):
   `LAB_VALIDATE_SETTINGS="key=value;..."` help to bisect the layer; `LAB_EXE=nx2navi.new` replays another binary in the game dir.
 - `LAB_HANG=1`: `RADV_DEBUG=nogpl,hang`; the `radv_dumps_*` hang reports land in `.lab/<label>/hang`. Known: replays to frame 1100 hit `radv: GPU hang detected`, then radv crashes
   (libvulkan_radeon.so+0xfae0c) before writing a report.
+
+## Profiling with Tracy
+
+Opt-in, patch 0023. `just game tracy=1` builds `build/v111/nx2navi.tracy` (`build-linux.py --tracy --exe nx2navi.tracy`:
+runtime objects in `obj/runtime-tracy`, `-DTRACY_ENABLE`, linked to nixpkgs tracy's `libTracyClient.so`; the lifted
+objects are shared with the plain build). The plain `nx2navi` has no Tracy code at all: the `RT_*` macros of
+`runtime/rt_tracy.h` compile to nothing. The client listens on port 8086 from the first frame and keeps a ring of events
+until a server connects; no `NX2NAVI_*` switch is needed. No GPU zones yet: TracyVk is C++ only and the Vulkan code is C.
+
+On the host, Cal runs the profiler GUI and connects to the game's port, which the container must relay (Nushell):
+
+```nu
+tally port add 8086                      # once; host 127.0.0.1:8086 -> the container's 8086
+nix shell nixpkgs#tracy -c tracy -a 127.0.0.1 -p 8086
+```
+
+A game started on the host (`just play`) is on the host's loopback already, no relay needed. Or capture to a file first
+and open it later with `tracy <file>`:
+
+```nu
+nix shell nixpkgs#tracy -c tracy-capture -o run.tracy -a 127.0.0.1 -p 8086 -f
+```
+
+Lab recipe in the container (`-f` overwrites; capture starts first, retries until the game listens, and writes the file
+when the game ends):
+
+```sh
+nix shell nixpkgs#tracy -c tracy-capture -o .lab/zones.tracy -a 127.0.0.1 -p 8086 -f &
+LAB_EXE=nx2navi.tracy tools/lab-run NX2navi/build/v111/logs/input-20261108-213627.txt 1500 tracy-zones \
+  NX2NAVI_REPLAY_ASYNC=1 NX2NAVI_VK_RECORDER=1 NX2NAVI_TEX_RELEASED_MIB=3072
+nix shell nixpkgs#tracy -c tracy-csvexport .lab/zones.tracy | head     # zone statistics without the GUI
+```
+
+Zones: `nvn submit`, `submit finish wait`, `shadow sync`, `write-back compare`, `write-back`, `bind pipeline`,
+`texture upload` (zone text `re-upload` for a re-upload, value = bytes), `released sweep`, `audio mix`; frames are marked
+at the present. Overhead: see Status (2026-11-09, measured against `nx2navi.new` on the same replay).
 
 ## Flatpak build kit (Steam Deck)
 

@@ -522,3 +522,25 @@ thread, whose bt is the decider. Ways to get the object: (a) from the buffer add
 hold it, and the player is embedded in the StreamSound; (b) statically from `f_70036d52d0`'s callees down to the voice
 start, back to the sound-object loop and its flag read. Heap addresses are deterministic across runs (disable-randomization),
 so the object found once serves a second run with the watch. Budget: 2 gdb runs (~3 min each) plus the static reading.
+
+## #128 fourth lab pass (2026-11-09 18:25-19:25 UTC, GPU): the start is decided inside atk's per-frame update, no separate start command
+
+Runs i128p4-240 (heap scan at the slot-21 start, `tools/voice-scan.gdb`, dump of the 174 MB heap mapping 0x1a302e000-0x1ade37000 in
+`scratchpad/i128/scan/`), i128p4q-240 (`tools/voice-queue.gdb`), i128p4s-240 (`tools/voice-stream.gdb`); empty profile, `newgame.txt`,
+240 fps. **No decider yet, no patch 0023.** Established:
+- The sound thread's frame function main+0x36d52d0 pops three lock-free MPMC queues at `[[this]+0x1b8]+0x80000` + 0x340 / 0x3b0 /
+  0x3e8 (each {cap, buf, head, tail}: pops main+0x36d7040 / 0x36d71f0 / 0x36e0f40, the item runs through main+0x11dd60), then
+  RequestUpdate. Between the slot-20 and slot-21 starts the two tails were pushed 137 times (per update), all from atk's update
+  main+0x36d14d0 -> 0x36d5920: 89 from the sound-update thread (f_7000dd2680 -> 0x5fe10 -> 0x5fe60 -> 0x415300 -> 0x415860) and 48
+  from the game thread's actor tree (f_7000f28c30 -> 0x9467b0 -> 0x346c680 -> 0x2cabd0 -> 0x2cacc0 x4 -> 0x50b20 -> 0x5fe60 ->
+  0x415300). There is no distinct "start this sound" push: the voice start is a side effect of the per-frame update.
+- Heap at the slot-21 start: the buffer 0x1ac7f3000 sits in the guest audren voice params (0x1ac68bb90), in a stream ring object
+  0x1ade21d58 (vtable main+0x4c1a598, four 0x1000 B buffers at +0x18..+0x30, one of a pool of 0x1d8 B objects from 0x1ade20e98) and
+  is referenced from a table of 0x240 B stream-reader entries at 0x1ac784f20 + k*0x240 (vtables main+0x4c1a7e8 / 0x4c1a838; +0x20 ring,
+  +0x30 open flag, +0x40 data handle, +0x58 size). Entry 0x1ac7855e0 served the music beds (voices 8-13) and then slot 21. All its
+  writes (open at +0x30, ring refill at ring+0x18) come from atk's stream loader main+0x6cb2d0 / 0x6caf50 under the update
+  main+0x36d1440 -> 0x36cadb0 -> 0x36cefd0, on either of the two update callers above; the first-frame stall of a watch hit is 7 s.
+- So the per-sound "please start" state is set by game code before atk's update sees it, and atk's update (main+0x36d1440 and its
+  sound list) reads it. Next: inside main+0x36d1440's descendants find the per-sound list walk and the state/flag read that leads
+  to 0x36cadb0 (the stream player's prepare/start), take that flag's address at the slot-21 case (gdb breakpoint on the call
+  into 0x36cadb0 with `x19`/`x20`), and hw-watch it in one more run: the writer is the game thread's StartSound caller, the decider.
