@@ -165,6 +165,15 @@ distribution). After `just update`, `build` may need a rebase onto the new upstr
   flickers full screen. Cause not found yet: suspects are queue-carried state across the cut (`OP_EXEC_STATE`), or
   CPU-side ordering (uniform snapshots, mirrors, game polling event values). Next: a dump with it on vs off.
 
+- `0016-nvn-event-waits-v3-wait-on-the-cut-s-own-event-cut-t.patch`: event waits v3 (still **off**). v2's held parts were
+  released in the same submit call (ew_drain looked for a wait *after* the cut), so v2 only split submissions and AO
+  still read last frame's depth. v3 holds until the cut's own event is signalled, cuts the signalling submission right after
+  its signal so the released queues run before the rest of it, keeps the uniform snapshot across a cut, and returns a
+  split submission's last fence. Lab (input-20261108-131323, frames 1100-1290): AO now reads this frame's half-res depth
+  (passes.txt order), and brightness dips fell from ~15 to 0-1 per 190 frames (off: 0). Not default: one dip remains, and
+  at the Hyrule Field castle spot (lab-profile-flicker) a waits=1 replay lost the device (`upload submit failed (-4)`).
+  `NX2NAVI_EVENT_WAITS=trace` logs every submission's event ops and queue syncs.
+
 - `0014-input-prefer-Steam-Input-s-virtual-pad-at-once-and-i.patch`: a "Steam Virtual Gamepad" or "Steam Deck
   Controller" (Steam Input) becomes the game's pad as soon as it is open, and the raw "Steam Controller" beside it is
   never followed on a press while the virtual pad exists. Other pads still take over on their first press.
@@ -195,7 +204,12 @@ yakin quick-menu item (add it to the `[menu] items` of your yakin config yoursel
 Both are opt-in environment variables for `tools/lab-run` (see its header):
 
 - `LAB_VALIDATE=1`: Khronos validation layer from nixpkgs plus synchronization validation. Messages go to `.lab/<label>/validation.log`, at most 3 per message ID. Slow.
-- `LAB_HANG=1`: `RADV_DEBUG=nogpl,hang`; the `radv_dumps_*` hang reports land in `.lab/<label>/hang`.
+  `LAB_VALIDATE=core` drops synchronization validation. Known (2026-11-09): sync validation, and core checks together with
+  `check_shaders`, stall the game at boot (every thread in a futex wait); lab-run leaves check_shaders off
+  (`LAB_VALIDATE_SHADERS=true` turns it on), so only `LAB_VALIDATE=core` gets through. `LAB_VALIDATE_THREADS`, `LAB_VALIDATE_FGL`,
+  `LAB_VALIDATE_SETTINGS="key=value;..."` help to bisect the layer; `LAB_EXE=nx2navi.new` replays another binary in the game dir.
+- `LAB_HANG=1`: `RADV_DEBUG=nogpl,hang`; the `radv_dumps_*` hang reports land in `.lab/<label>/hang`. Known: replays to frame 1100 hit `radv: GPU hang detected`, then radv crashes
+  (libvulkan_radeon.so+0xfae0c) before writing a report.
 
 ## Flatpak build kit (Steam Deck)
 

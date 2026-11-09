@@ -1,0 +1,353 @@
+From 5892c89d8fb33c8ecec6630306665773b81996b3 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Sun, 8 Nov 2026 23:19:55 -0500
+Subject: [PATCH] nvn: event waits v3: wait on the cut's own event, cut the
+ signaller after its signal, keep the uniform snapshot across a cut (still
+ off)
+
+ew_drain looked for a wait after the cut, so every held part was issued in
+the same submit call: v2 only cut submissions and AO still read the previous
+frame's depth. Held parts now wait for the cut's own event. The signalling
+submission is cut right after its signal, so the released queues run before
+the rest of it (as beside it on the GPU); issued after all of it, their work
+ran behind the frame's composite (dark frames). A resumed part binds the
+uniform snapshot of its submit, and a split submission returns its last
+part's fence. NX2NAVI_EVENT_WAITS=trace logs submissions with their event
+ops and queue syncs.
+---
+ runtime/nvn_api.h      |  1 +
+ runtime/nvn_api_cmd.c  | 85 ++++++++++++++++++++++++++++++++++--------
+ runtime/nvn_api_core.c |  7 ++++
+ runtime/vk.h           |  2 +
+ runtime/vk_exec.c      |  9 +++++
+ runtime/vk_usnap.c     | 31 +++++++++++++++
+ 6 files changed, 119 insertions(+), 16 deletions(-)
+
+diff --git a/runtime/nvn_api.h b/runtime/nvn_api.h
+index 0884114..1b79488 100644
+--- a/runtime/nvn_api.h
++++ b/runtime/nvn_api.h
+@@ -94,6 +94,7 @@ typedef struct { int32_t bits, pad; } p_barrier;           // OP_BARRIER: NVNbar
+ typedef struct { volatile uint32_t *val; uint32_t mode, value; int32_t slot, pad; } p_wait_event;
+ typedef struct { int32_t slot, pad; } p_exec_state;      // OP_EXEC_STATE: the replay restores the state saved in slot
+ #define NVN_EXEC_SLOTS 16
++extern const void *volatile nvn_cut_after[NVN_EXEC_SLOTS];   // a signal op where the replay ends a part (slot = index)
+ typedef struct { uint64_t target; } p_jump;                // OP_JUMP / OP_CALL: next record / called recording
+ // OP_DRAW_IDX_IND: DrawElementsIndirect; ind = GPU address of {count, instances, first index, base vertex, base
+ // instance} (VkDrawIndexedIndirectCommand's layout), read by the GPU when the draw runs
+diff --git a/runtime/nvn_api_cmd.c b/runtime/nvn_api_cmd.c
+index ddfc1ba..aeb4a57 100644
+--- a/runtime/nvn_api_cmd.c
++++ b/runtime/nvn_api_cmd.c
+@@ -1283,6 +1283,7 @@ typedef struct {
+     int n;
+     uint64_t *h;          // handles; h[0] resumes at at0 when at0 != NULL
+     const op_hdr *at0;    // the op after the cut in h[0]
++    const p_wait_event *blk;   // the wait it was cut at (held until met), or NULL: held behind its queue
+     int slot;             // state saved at the cut, or -1
+     uint64_t since;       // nsubmits when it was held
+ } ew_held;
+@@ -1291,7 +1292,8 @@ static ew_event ew_ev[EW_EVENTS];
+ static int ew_nev, ew_on = -1, ew_next_slot, ew_logged;
+ static ew_held ew_q[EW_HELD];
+ static volatile int32_t ew_n;
+-static uint64_t ew_cuts, ew_signalled, ew_forced;
++static uint64_t ew_cuts, ew_signalled, ew_forced, ew_sig_cuts;
++const void *volatile nvn_cut_after[NVN_EXEC_SLOTS];   // vk_exec.c walk: the part ends after this signal op
+ // Synthetic resume recordings: BEGIN, EXEC_STATE, JUMP into the held copy; freed once replayed
+ typedef struct { uint64_t done_at; uint8_t rec[40]; } ew_resume;
+ static ew_resume *ew_res[64];
+@@ -1321,7 +1323,18 @@ static int ew_met(const void *q, const p_wait_event *w) {
+ 
+ // Walks the ops that will be issued from (handles, at0): notes their signals, clears stale cuts, and returns the handle
+ // index of the first wait not met (its op in *cut), or -1. force: no cut.
+-static int ew_scan(const void *q, const uint64_t *h, int n, const op_hdr *at0, int force, op_hdr **cut) {
++static void ew_drain(const void *only, int force);
++
++// A signal that meets the wait another queue's held part was cut at.
++static int ew_releases(const void *q, const p_signal_event *s) {
++    for (int k = 0; k < ew_n; k++)
++        if (ew_q[k].q != q && ew_q[k].blk && ew_q[k].blk->val == s->val && ew_met(ew_q[k].q, ew_q[k].blk)) return 1;
++    return 0;
++}
++
++// *sig: the cut is after a signal that releases held work (ew_releases), not at a wait.
++static int ew_scan(const void *q, const uint64_t *h, int n, const op_hdr *at0, int force, op_hdr **cut, int *sig) {
++    *sig = 0;
+     for (int i = 0; i < n; i++) {
+         op_hdr *o = (op_hdr *)(i == 0 && at0 ? at0 : nvn_op_first(h[i]));
+         for (; o->op != OP_END; o = (op_hdr *)nvn_op_next(o)) {
+@@ -1331,6 +1344,13 @@ static int ew_scan(const void *q, const uint64_t *h, int n, const op_hdr *at0, i
+                 if (s->mode == 0) e->value = s->value;
+                 else e->other = 1;
+                 e->sq = q;
++                // The GPU runs the released queues beside the rest of this submission: issue them right after the
++                // signal, before what follows it (issued after all of this submission, the queues' work ran behind
++                // the frame's composite, which reads it: dark frames, 2026-11-09). Nothing to cut after a last op.
++                if (!force && ew_releases(q, s) && !(i == n - 1 && nvn_op_next(o)->op == OP_END)) {
++                    *cut = o, *sig = 1;
++                    return i;
++                }
+             } else if (o->op == OP_WAIT_EVENT) {
+                 p_wait_event *w = (p_wait_event *)nvn_op_payload(o);
+                 w->slot = -1;
+@@ -1379,7 +1399,7 @@ static uint64_t ew_issue(const uint64_t *h, int n, const op_hdr *at0, int slot)
+     return f;
+ }
+ 
+-static void ew_hold(const void *q, const uint64_t *h, int n, const op_hdr *at0, int slot) {
++static void ew_hold(const void *q, const uint64_t *h, int n, const op_hdr *at0, int slot, const p_wait_event *blk) {
+     if (ew_n == EW_HELD) rt_fatal("nvn: event waits: %d submissions held", EW_HELD);
+     uint64_t *c = malloc(sizeof *c * (size_t)(n ? n : 1));
+     if (!c) rt_fatal("nvn: out of memory (held submission)");
+@@ -1387,7 +1407,7 @@ static void ew_hold(const void *q, const uint64_t *h, int n, const op_hdr *at0,
+     plat_mutex_lock(&copy_lock);   // held copies outlive a release of their control memory (release_copies)
+     for (int i = 0; i < n; i++) __atomic_store_n(&((copy_prefix *)(uintptr_t)h[i] - 1)->used_at, UINT64_MAX, __ATOMIC_RELAXED);
+     plat_mutex_unlock(&copy_lock);
+-    ew_q[ew_n] = (ew_held){q, n, c, at0, slot, __atomic_load_n(&nsubmits, __ATOMIC_RELAXED)};
++    ew_q[ew_n] = (ew_held){q, n, c, at0, blk, slot, __atomic_load_n(&nsubmits, __ATOMIC_RELAXED)};
+     __atomic_store_n(&ew_n, ew_n + 1, __ATOMIC_RELEASE);
+ }
+ 
+@@ -1401,10 +1421,20 @@ static int ew_queue_held(const void *q, int before) {
+ // nothing) and holds the rest under queue q.
+ static uint64_t ew_run(const void *q, const uint64_t *h, int n, const op_hdr *at0, int slot, int force) {
+     op_hdr *cut = NULL;
+-    int i = ew_scan(q, h, n, at0, force, &cut);
++    int sig, i = ew_scan(q, h, n, at0, force, &cut, &sig);
+     if (i < 0) return n ? ew_issue(h, n, at0, slot) : 0;
++    if (sig) {   // issue up to the signal, then the queues it releases, then the rest
++        int s = ew_next_slot;
++        ew_next_slot = (ew_next_slot + 1) % NVN_EXEC_SLOTS;
++        __atomic_store_n(&nvn_cut_after[s], (const void *)cut, __ATOMIC_RELEASE);
++        uint64_t f = ew_issue(h, i + 1, at0, slot);
++        ew_sig_cuts++;
++        ew_drain(NULL, 0);
++        uint64_t f2 = ew_run(q, h + i, n - i, nvn_op_next(cut), s, force);
++        return f2 ? f2 : f;
++    }
+     ew_cuts++;
+-    if (ew_on == 2 && ew_cuts <= 300) {
++    if (ew_on >= 2 && ew_cuts <= 300) {
+         const p_wait_event *w = nvn_op_payload(cut);
+         rt_log("nvn: event waits: cut on queue %p handle %d of %d: event %p mode %u value %u now %u last %u from %p",
+                q, i, n, (void *)w->val, w->mode, w->value, *w->val, ew_find(w->val, 0)->value, ew_find(w->val, 0)->sq);
+@@ -1418,14 +1448,14 @@ static uint64_t ew_run(const void *q, const uint64_t *h, int n, const op_hdr *at
+     // the held rest resumes with the state it would have had.
+     const op_hdr *start = i == 0 && at0 ? at0 : i == 0 ? nvn_op_next(nvn_op_first(h[0])) : NULL;
+     if (start == cut) {
+-        ew_hold(q, h, n, nvn_op_next(cut), i == 0 && at0 ? slot : -1);
++        ew_hold(q, h, n, nvn_op_next(cut), i == 0 && at0 ? slot : -1, nvn_op_payload(cut));
+         return 0;
+     }
+     int s = ew_next_slot;
+     ew_next_slot = (ew_next_slot + 1) % NVN_EXEC_SLOTS;
+     ((p_wait_event *)nvn_op_payload(cut))->slot = s;
+     uint64_t f = ew_issue(h, i + 1, at0, slot);
+-    ew_hold(q, h + i, n - i, nvn_op_next(cut), s);
++    ew_hold(q, h + i, n - i, nvn_op_next(cut), s, nvn_op_payload(cut));
+     return f;
+ }
+ 
+@@ -1440,21 +1470,25 @@ static void ew_drain(const void *only, int force) {
+             uint64_t age = __atomic_load_n(&nsubmits, __ATOMIC_RELAXED) - e.since;
+             if (age > 32) all = 1;   // submit numbers: about two per submission
+             if (!all) {   // look without side effects first: is its next wait met?
+-                int met = 1;
+-                for (const op_hdr *x = e.at0; x && x->op != OP_END; x = nvn_op_next(x))
+-                    if (x->op == OP_WAIT_EVENT) { met = ew_met(e.q, nvn_op_payload(x)); break; }
+-                if (!met) continue;
++                // The wait it was cut at (at0 is the op after it: looking from there released every held part in
++                // the same call, before its signal, 2026-11-09), else its first wait.
++                const p_wait_event *w = e.blk;
++                for (int j = 0; !w && j < e.n; j++)
++                    for (const op_hdr *x = j == 0 && e.at0 ? e.at0 : nvn_op_first(e.h[j]); x->op != OP_END; x = nvn_op_next(x))
++                        if (x->op == OP_WAIT_EVENT) { w = nvn_op_payload(x); break; }
++                if (w && !ew_met(e.q, w)) continue;
+             }
+             memmove(ew_q + k, ew_q + k + 1, sizeof *ew_q * (size_t)(ew_n - k - 1));
+             __atomic_store_n(&ew_n, ew_n - 1, __ATOMIC_RELEASE);
+             if (all) ew_forced++;
+             else ew_signalled++;
+-            if (ew_on == 2 && ew_cuts <= 300)
++            if (ew_on >= 2 && ew_cuts <= 300)
+                 rt_log("nvn: event waits: held part of queue %p issued %s (age %llu)", e.q, all ? "FORCED" : "on its signal",
+                        (unsigned long long)age);
+             if ((ew_signalled + ew_forced) % 3000 == 0)
+                 rt_log("nvn: event waits: %llu cuts, %llu held parts issued on their signal, %llu forced (present, CPU wait, "
+-                       "fence, age)", (unsigned long long)ew_cuts, (unsigned long long)ew_signalled, (unsigned long long)ew_forced);
++                       "fence, age), %llu cuts after a signal", (unsigned long long)ew_cuts, (unsigned long long)ew_signalled, (unsigned long long)ew_forced,
++                       (unsigned long long)ew_sig_cuts);
+             ew_run(e.q, e.h, e.n, e.at0, e.slot, all);
+             free(e.h);
+             progress = 1;
+@@ -1473,24 +1507,43 @@ static void ew_prepare(const uint64_t *h, int n, uint64_t *hs) {
+ uint64_t nvn_submit_ordered(const void *q, const uint64_t *h, int n) {
+     if (ew_on < 0) {
+         const char *e = cfg_get("NX2NAVI_EVENT_WAITS");
+-        ew_on = e && !strcmp(e, "log") ? 2 : e && atoi(e) == 1;   // off by default: experimental
++        ew_on = e && !strcmp(e, "trace") ? 3 : e && !strcmp(e, "log") ? 2 : e && atoi(e) == 1;   // off by default: experimental
+         rt_log("nvn: event waits %s (NX2NAVI_EVENT_WAITS)", ew_on == 2 ? "ordered across queues, cuts logged" : ew_on ? "ordered across queues" : "off");
+     }
+     uint64_t local[32], *hs = n <= 32 ? local : malloc(sizeof *hs * (size_t)n);
+     if (!hs) rt_fatal("nvn: out of memory (submit of %d handles)", n);
+     plat_mutex_lock(&ew_lock);
++    if (ew_on == 3) {   // NX2NAVI_EVENT_WAITS=trace (debug): every submission's queue and event ops, a while from the start
++        static int traced;
++        if (traced++ < 4000) {
++            char ops[160];
++            int k = 0;
++            for (int i = 0; i < n && k < 140; i++)
++                for (const op_hdr *o = nvn_op_first(h[i]); o->op != OP_END && k < 140; o = nvn_op_next(o))
++                    if (o->op == OP_SIGNAL_EVENT || o->op == OP_WAIT_EVENT) {
++                        const p_wait_event *w = nvn_op_payload(o);   // val first in both payloads
++                        k += snprintf(ops + k, sizeof ops - (size_t)k, " %s%llx", o->op == OP_SIGNAL_EVENT ? "S" : "W",
++                                      (unsigned long long)(uintptr_t)w->val & 0xfffff);
++                    }
++            ops[k] = 0;
++            rt_log("nvn: ew trace: submit %d q %p n %d%s", traced, q, n, ops);
++        }
++    }
+     ew_prepare(h, n, hs);
+     uint64_t f;
+     if (!ew_on) {
+         f = ew_issue(hs, n, NULL, -1);
+     } else if (ew_queue_held(q, ew_n)) {   // behind its queue's held work
+-        ew_hold(q, hs, n, NULL, -1);
++        ew_hold(q, hs, n, NULL, -1, NULL);
+         f = 0;
+         ew_drain(NULL, 0);
+     } else {
+         f = ew_run(q, hs, n, NULL, -1, 0);
+         if (ew_n) ew_drain(NULL, 0);
+     }
++    // A submission issued in parts: its fence is its last part's, not the first one's (the first submission of a frame
++    // waits for its fence, nvnQueueSubmitCommands; the first part's alone let the frame-start work run late).
++    if (ew_on && f && !ew_queue_held(q, ew_n)) f = nvn_fence_last();
+     plat_mutex_unlock(&ew_lock);
+     if (hs != local) free(hs);
+     return f;
+diff --git a/runtime/nvn_api_core.c b/runtime/nvn_api_core.c
+index 5710588..3cf36d7 100644
+--- a/runtime/nvn_api_core.c
++++ b/runtime/nvn_api_core.c
+@@ -43,6 +43,11 @@ uint64_t nvn_new_serial(void) {
+ }
+ 
+ static uint64_t last_fence;
++static int rt_trace_ew(void) {   // NX2NAVI_EVENT_WAITS=trace: the first 4000 queue sync calls are logged
++    static int on = -1, n;
++    if (on < 0) on = cfg_get("NX2NAVI_EVENT_WAITS") && !strcmp(cfg_get("NX2NAVI_EVENT_WAITS"), "trace");
++    return on && n++ < 4000;
++}
+ uint64_t nvn_fence_last(void) { return __atomic_load_n(&last_fence, __ATOMIC_ACQUIRE); }
+ void nvn_fence_note(uint64_t f) {
+     uint64_t prev = __atomic_load_n(&last_fence, __ATOMIC_RELAXED);
+@@ -499,6 +504,7 @@ NVN_API(nvnSyncFinalize) { ((sync_t *)arg_p(c, 0))->magic = 0; }
+ // the queue so far has completed"
+ NVN_API(nvnQueueFenceSync) {
+     sync_t *s = arg_p(c, 1);
++    if (rt_trace_ew()) rt_log("nvn: ew trace: QueueFenceSync q %p sync %p", arg_p(c, 0), (const void *)s);
+     if (nvn_wait_pending()) {   // the sync covers work held back for an event wait: issue it first
+         NVN_BLOCKING();
+         nvn_wait_flush(arg_p(c, 0));
+@@ -512,6 +518,7 @@ NVN_API(nvnQueueFenceSync) {
+ // another queue fences it; that ordering cannot be expressed here and is logged once.
+ NVN_API(nvnQueueWaitSync) {
+     const sync_t *s = arg_p(c, 1);
++    if (rt_trace_ew()) rt_log("nvn: ew trace: QueueWaitSync q %p sync %p", arg_p(c, 0), (const void *)s);
+     if (s && !s->fenced) {
+         static volatile int32_t logged;
+         if (!plat_xchg32(&logged, 1)) rt_log("nvn: QueueWaitSync on a sync not fenced yet: not waited for");
+diff --git a/runtime/vk.h b/runtime/vk.h
+index 68365c2..5dba77a 100644
+--- a/runtime/vk.h
++++ b/runtime/vk.h
+@@ -263,6 +263,8 @@ void vk_mem_gpu_wrote_shader(const VkMemSpan *sp, uint64_t size);
+ // it records, ubo bindings take the copy (0: not copied, bind memory), GPU writes of the replay drop the copies they touch.
+ void vk_usnap_begin(const uint64_t *handles, int n, uint64_t fence);
+ void vk_usnap_end(uint64_t fence);
++void vk_usnap_save(int slot);      // a cut submission (vk_exec.c state_save): keep this snapshot for its resumed part
++void vk_usnap_restore(int slot);   // the resumed part binds the snapshot of its submit again
+ int vk_usnap_find(uint64_t addr, uint64_t n, uint64_t align, VkDescriptorBufferInfo *out);
+ const uint8_t *vk_usnap_map(void);   // a host copy of the current arena, at the offsets vk_usnap_find gives
+ const uint8_t *vk_usnap_bytes(uint64_t addr, uint64_t n);   // the copy of [addr, addr+n) as of the submit, NULL: none
+diff --git a/runtime/vk_exec.c b/runtime/vk_exec.c
+index 082f918..d6d009a 100644
+--- a/runtime/vk_exec.c
++++ b/runtime/vk_exec.c
+@@ -870,6 +870,7 @@ static void state_save(VkExec *ex, int slot) {
+     if (slot >= NVN_EXEC_SLOTS) rt_fatal("vk: state slot %d", slot);
+     if (!exec_slots[slot] && !(exec_slots[slot] = malloc(sizeof *ex))) rt_fatal("vk: out of memory (state slot)");
+     *exec_slots[slot] = *ex;
++    vk_usnap_save(slot);
+ }
+ static void state_restore(VkExec *ex, int slot) {
+     if (slot >= NVN_EXEC_SLOTS || !exec_slots[slot]) rt_fatal("vk: state slot %d was never saved", slot);
+@@ -886,6 +887,7 @@ static void state_restore(VkExec *ex, int slot) {
+     ex->tex_serial = cur.tex_serial + 1, ex->pass_serial = cur.pass_serial + 1;
+     ex->dirty = VK_EXEC_DIRTY_ALL;
+     ex->rt_resolved = 0;
++    vk_usnap_restore(slot);
+ }
+ 
+ static void walk(VkExec *ex, const op_hdr *h, int depth) {
+@@ -970,6 +972,13 @@ static void walk(VkExec *ex, const op_hdr *h, int depth) {
+         case OP_SIGNAL_EVENT: case OP_REPORT_COUNTER: case OP_RESET_COUNTER: case OP_RENDER_ENABLE: case OP_RENDER_COND:
+         case OP_CLEAR_BUF:
+             vk_exec_op_xfer(ex, h->op, a);
++            if (h->op == OP_SIGNAL_EVENT)   // a cut after a signal (nvn_api_cmd.c ew_run): this part ends here
++                for (int s = 0; s < NVN_EXEC_SLOTS; s++)
++                    if (__atomic_load_n(&nvn_cut_after[s], __ATOMIC_ACQUIRE) == (const void *)h) {
++                        __atomic_store_n(&nvn_cut_after[s], NULL, __ATOMIC_RELAXED);
++                        state_save(ex, s);
++                        return;
++                    }
+             break;
+         default: rt_fatal("vk: op %s has no replay handler", nvn_op_name(h->op));
+         }
+diff --git a/runtime/vk_usnap.c b/runtime/vk_usnap.c
+index 5bc0d24..b6aa1f3 100644
+--- a/runtime/vk_usnap.c
++++ b/runtime/vk_usnap.c
+@@ -348,6 +348,37 @@ void vk_usnap_end(uint64_t fence) {
+     U.on = 0, U.gen++;
+ }
+ 
++// A submission cut at an event wait (nvn_api_cmd.c "event waits"; vk_exec.c state_save) resumes later in a recording
++// of its own. Its snapshot, taken where the first part started, already covers the whole submission (collect walks
++// past the cut) and holds the bytes as of that submit; the resumed part keeps using it instead of a new copy taken when
++// the held part is issued, by which time the game may have rewritten the blocks for its next frame. Bindings made
++// before the cut and carried over in the replay state are covered as well, where a fresh snapshot of the resumed ops
++// alone would miss them and bind live memory.
++static struct { Arena *arena; Reg *reg; int nreg, on, ncam; uint64_t cam[8]; } saved[NVN_EXEC_SLOTS];
++
++void vk_usnap_save(int slot) {
++    if (slot < 0 || slot >= NVN_EXEC_SLOTS) return;
++    if (saved[slot].arena) vk_completion_add(U.fence, arena_done, saved[slot].arena);   // never resumed
++    saved[slot].arena = NULL, saved[slot].on = 0;
++    if (!U.on || !U.arena) return;
++    free(saved[slot].reg);
++    if (!(saved[slot].reg = malloc(sizeof *U.reg * (size_t)(U.nreg ? U.nreg : 1)))) rt_fatal("vk_usnap: out of memory");
++    memcpy(saved[slot].reg, U.reg, sizeof *U.reg * (size_t)U.nreg);
++    saved[slot].nreg = U.nreg, saved[slot].on = 1, saved[slot].arena = U.arena;
++    saved[slot].ncam = U.ncam, memcpy(saved[slot].cam, U.cam, sizeof U.cam);
++    U.arena = NULL;   // freed after the resumed part instead (vk_usnap_restore, vk_usnap_end)
++}
++
++void vk_usnap_restore(int slot) {
++    if (slot < 0 || slot >= NVN_EXEC_SLOTS || !saved[slot].on) return;
++    if (U.arena) vk_completion_add(U.fence, arena_done, U.arena);
++    while (U.creg < saved[slot].nreg) U.reg = grow(U.reg, &U.creg, sizeof *U.reg);
++    memcpy(U.reg, saved[slot].reg, sizeof *U.reg * (size_t)saved[slot].nreg);
++    U.nreg = saved[slot].nreg, U.arena = saved[slot].arena, U.on = 1, U.gen++;
++    U.ncam = saved[slot].ncam, memcpy(U.cam, saved[slot].cam, sizeof U.cam);
++    saved[slot].arena = NULL, saved[slot].on = 0;
++}
++
+ // First region whose end is above a.
+ static int first_above(uint64_t a) {
+     int lo = 0, hi = U.nreg;
+-- 
+2.56.0
+

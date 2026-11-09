@@ -207,3 +207,27 @@ Proper fix: a translator patch in the justfile's patch series honouring Fmz in F
 - Fix: patches/0004 (build f33ed65): skip only submitted parts' ranges that the next part does not write again.
 - Stopgap meanwhile: tools/cas-reset.py --abs 32,33,34,35 on a806b657 (live with cas-nan-guard; guarded copies in
   build/v111/reload-bak/guarded). Remove both after the fix is verified: restore build/v111/reload-bak/*.spv.
+
+## Validation sweep and AO event waits v3 (2026-11-09, overnight lab)
+
+- Validation (#134): `LAB_VALIDATE=1` (sync) never gets past boot: the game stalls with every thread in futex. Bisected:
+  each check alone passes, and core + check_shaders stalls too, so lab-run now defaults check_shaders off. Sync validation
+  still stalls on its own, so no SYNC-HAZARD data yet. `LAB_VALIDATE=core`, 131323 to frame 1100 and the castle spot
+  (frame 1500 via load-slot01.txt, which works): only two IDs, 6 messages each:
+  1. `VUID-vkCmdCopyImageToBuffer-srcImageLayout-00189`: copy from an image in GENERAL that the layer last saw in
+     ATTACHMENT_FEEDBACK_LOOP_OPTIMAL (feedback-loop layout is not transitioned back before a readback copy).
+  2. `VUID-VkImageViewCreateInfo-usage-02275`: R8G8B8A8_SRGB views inherit STORAGE usage that the format can't support
+     (needs a usage-list view or no STORAGE on sRGB views).
+  Earlier spirv-val errors with check_shaders on: missing StorageImageReadWithoutFormat capability, and fs inputs at
+  locations 9/11/13 that the vs never writes (`VUID-RuntimeSpirv-OpEntryPoint-08743`).
+- `LAB_HANG=1` to 1100: `radv: GPU hang detected` at about 27 s, then radv segfaults (+0xfae0c) and writes no report.
+  Without hang mode the same replay runs cleanly, so this is probably a syncshaders timeout, not a real hang.
+- AO v2's flicker: ew_drain checked the first wait *after* the cut (at0 = op after the wait), so every held part was
+  released in the same call (log: `age 0`). v2 only cut submissions. Per frame, three queues (5eb, 640, 6aa) wait on
+  event c8000, which queue 134133020's last submission signals; that submission itself waits on 38000/38004
+  (alternating, double-buffered, no recorded signaller) before it signals.
+- v3 (patch 0016): held parts wait on their own cut, and the signaller is cut after its signal. Dark frames (whole scene
+  about 7% darker, HUD unchanged; not AO: skipping 561cf523 kept them) went from ~15 to 0-1 per 190 frames. AO reads the
+  current depth (pass 0243 depth, then 0249 AO; off: AO 0199 before depth 0259). It is still off: one residual dip, and a
+  device lost at the castle spot with waits=1. Next: trace the castle spot (`NX2NAVI_EVENT_WAITS=trace`) for a wait or
+  signal inside a called command buffer (the walk only ends a part at depth 0).
