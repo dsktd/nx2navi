@@ -18,6 +18,11 @@ busy=$(for p in /proc/[0-9]*; do [ "${p#/proc/}" = $$ ] && continue
   a=(); mapfile -d '' a < $p/cmdline 2>/dev/null || continue
   [ "${a[0]##*/}" = nx2navi ] && echo ${p#/proc/} && continue
   [ "${a[0]##*/}" = gdb ] && [[ " ${a[*]} " == *"/nx2navi "* ]] && echo ${p#/proc/}; done)
+# Cal's game runs on the host, invisible to /proc here: refuse while its play log is being written (a GPU fault in a
+# replay resets the GPU and takes his game down with it, 2026-11-08). LAB_FORCE=1 overrides.
+hostlog=$(ls -t "$ROOT"/NX2navi/build/v111/logs/play-*.log 2>/dev/null | head -1)
+[ -z "${LAB_FORCE:-}" ] && [ -n "$hostlog" ] && [ $(( $(date +%s) - $(stat -c %Y "$hostlog") )) -lt 120 ] && {
+  echo "lab-run: Cal's game is running (${hostlog##*/} written <2 min ago); refusing" >&2; exit 3; }
 [ -n "$busy" ] && { echo "lab-run: another nx2navi game is running (pid $busy); refusing" >&2; exit 3; }
 rm -rf "$OUT"; mkdir -p "$OUT"
 case $rec in /*) ;; *) rec=$PWD/$rec;; esac
