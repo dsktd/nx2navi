@@ -231,3 +231,26 @@ Proper fix: a translator patch in the justfile's patch series honouring Fmz in F
   current depth (pass 0243 depth, then 0249 AO; off: AO 0199 before depth 0259). It is still off: one residual dip, and a
   device lost at the castle spot with waits=1. Next: trace the castle spot (`NX2NAVI_EVENT_WAITS=trace`) for a wait or
   signal inside a called command buffer (the walk only ends a part at depth 0).
+
+## Gray close-LOD bushes (#138), 2026-11-09 night
+
+Symptom: bushes and topiaries show bare gray branches up close; green from afar in Hyrule Field. Earlier cleared: the
+mesh path (NX2NAVI_MESH=0, trap procs never called), the alpha test (discard removed from the 5 prepass alpha-test
+shaders: still bare), render-condition skips (NX2NAVI_LOG_RCOND=1: draws skipped 0 at the castle frames), pipeline skips.
+
+- The field frame (castle spot, frame 2400, `NX2NAVI_DUMP_DRAWS=1`, patch 0017) issues **no indirect draws at all**
+  (memory traffic class "indirect" 0.000 in every pool class) and almost no instanced ones, so a GPU-built instance
+  list or indirect count is not the mechanism. The 14 "0x0x0" dispatches are indirect *compute* (op_dispatch_ind).
+- Cal's current slot save (`build/v111/profile`, copied) loads in the Hyrule Castle courtyard with a bare arched
+  topiary 15 m ahead (frame 1500) and a conical one beside the fence after a backward walk (frame 2000): both bare at
+  15-40 m. In Hyrule Field the trees at 50-100 m are bare and the ones at the castle (~300 m) have foliage.
+- Candidate cause (patch 0018, untested): `vk_pipeline.c`'s vertex format table had no entry for the RGBX family
+  (0x6D-0x78), 8-bit sRGB (0x37/0x38) and BGRX8; an attribute with such a format read the zero binding (0, 0, 0, 1)
+  silently, which collapses leaf cards (corner offsets/sizes) while the branch mesh (common formats) draws fine. The
+  patch maps them and logs an attribute still without a mapping.
+- Blocked: from 00:00 every lab replay lost the device ~26 s after start, the game's and the gpu-display compositor's
+  contexts both "innocent", also with the stock binary, RADV syncshaders and core validation, and regardless of the
+  frame reached (time-based, not content). 23:44-23:58 seven castle/field replays in a row had passed. Not understood.
+- Replay housekeeping: a killed replay leaves `pipeline-cache.bin.<pid>.<tid>.tmp` (4 GB each) in build/v111; 80 stale
+  ones were removed. Scripted sticks are ±32767 (LSTICK 0 30000 = forward); ticks run ~290 ahead of presents by 1500.
+- Scratch: input scripts and shots in the session scratchpad `bush/` (walk*.txt, back1.txt, cal1/, back1/).

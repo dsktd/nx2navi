@@ -1,0 +1,54 @@
+#!/usr/bin/env python3
+"""dump-draws: read the per-draw lines a NX2NAVI_DUMP_DRAWS=1 dump writes (patch 0017).
+
+  dump-draws list <passes.txt> <pass>            every draw of that pass with its pipe's textures
+  dump-draws diff <A/passes.txt> <B/passes.txt> [area]   draws (vs, fs, ib, count, kind) only in A or only in B,
+                                                  over the render passes of that area (default 1920x1080)
+"""
+import re, sys
+from collections import Counter
+
+def passes(path):
+    cur = None
+    for line in open(path, errors='replace'):
+        m = re.match(r'pass (\d+): (render pass, draws (\d+), area (\S+)|dispatch)', line)
+        if m:
+            cur = (int(m.group(1)), m.group(4) if m.group(3) else None)
+            continue
+        if cur: yield cur, line
+
+def list_pass(path, want):
+    pipes, draws, pipe = {}, [], None
+    for (n, _), line in passes(path):
+        if n != want: continue
+        m = re.match(r'  pipe (\d+) \(draws (\d+)\): vs (\w+) fs (\w+) prog (\d+)', line)
+        if m:
+            pipe = int(m.group(1)); pipes[pipe] = {'prog': m.group(5), 'tex': []}; continue
+        m = re.match(r'    (vs|fs) tex slot (\d+) decl \w+: tex (\d+) \S+ (\d+x\d+x\d+)', line)
+        if m and pipe is not None:
+            pipes[pipe]['tex'].append(f"{m.group(1)}{m.group(2)}:t{m.group(3)}/{m.group(4)}"); continue
+        m = re.match(r'    draw (\d+): pipe (\d+) vs (\w+) fs (\w+) (.*)', line)
+        if m: draws.append((int(m.group(1)), int(m.group(2)), m.group(3), m.group(4), m.group(5).strip()))
+    for d in draws:
+        p = pipes.get(d[1], {})
+        print(f"draw {d[0]:4d} pipe {d[1]:3d} vs {d[2]} fs {d[3]} prog {p.get('prog', '?'):>6} {d[4]} | {' '.join(p.get('tex', []))}")
+
+def draw_set(path, area):
+    c = Counter()
+    for (_, a), line in passes(path):
+        m = re.match(r'    draw \d+: pipe \d+ vs (\w+) fs (\w+) (\w+) .*?count (\d+) .*?ib (\S+)', line)
+        if m and a == area: c[(m.group(1), m.group(2), m.group(5), m.group(4), m.group(3))] += 1
+    return c
+
+def diff(a_path, b_path, area):
+    a, b = draw_set(a_path, area), draw_set(b_path, area)
+    for name, x, y in (("only in A", a, b), ("only in B", b, a)):
+        print(f"{name}:")
+        for k, n in sorted(x.items()):
+            if k not in y: print(f"  {n}x vs {k[0]} fs {k[1]} ib {k[2]} count {k[3]} {k[4]}")
+    print(f"shared: {len(set(a) & set(b))}")
+
+if __name__ == '__main__':
+    if len(sys.argv) >= 4 and sys.argv[1] == 'list': list_pass(sys.argv[2], int(sys.argv[3]))
+    elif len(sys.argv) >= 4 and sys.argv[1] == 'diff': diff(sys.argv[2], sys.argv[3], sys.argv[4] if len(sys.argv) > 4 else '1920x1080')
+    else: sys.exit(__doc__)

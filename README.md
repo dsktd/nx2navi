@@ -179,6 +179,17 @@ distribution). After `just update`, `build` may need a rebase onto the new upstr
   never followed on a press while the virtual pad exists. Other pads still take over on their first press.
 - `0015-Mark-this-moment-F9-an-L3-R3-hold-or-mark.req-log-a-.patch`: mark this moment (#133), see below.
 
+- `0017-vk_dump-NX2NAVI_DUMP_DRAWS-1-lists-every-draw-of-a-p.patch`: `NX2NAVI_DUMP_DRAWS=1` lists every draw of a pass in
+  the dump's passes.txt (pipe, shaders, kind, count, instances, base vertex/instance, index or argument buffer), so two
+  frames' draw lists can be diffed (`tools/dump-draws` summarises or diffs them).
+- `0018-vk_pipeline-map-the-RGBX-sRGB-and-BGRX-vertex-format.patch`: **candidate, not yet A/B tested** (#138 gray bushes).
+  A vertex attribute whose NVN format had no table entry (RGBX8/16/32, 8-bit sRGB, BGRX8) read the zero binding
+  (0, 0, 0, 1) silently, collapsing any shape with such an attribute; they now read as the 4-component format, and an
+  attribute still without a mapping is logged once (`vk_pipeline: vertex attribute ... without a vertex format`). The
+  lab replays of 2026-11-09 lost the GPU ~26 s into every run from 00:00 on (innocent context, time-based, also with
+  the stock binary and RADV syncshaders), so the near-bush A/B (castle courtyard, Cal's slot save, frame 1500) is still
+  open; `build/v111/nx2navi.new` carries 0017+0018 and was **not** swapped in.
+
 ## Mark this moment
 
 When a glitch shows, mark it with one of: **F9** (game window focused), **L3+R3 held 0.5 s** (both stick clicks;
