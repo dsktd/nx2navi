@@ -130,9 +130,10 @@ Field, HDR10 native through niri-spicy, 240 Hz panel. Since the 2026-11-08 morni
 - Defaults: `NX2NAVI_PIPE_SKIP=any`, `NX2NAVI_HDR=native`, `REPLAY_ASYNC=1`, `VK_RECORDER=1`, `TEX_RELEASED_MIB=3072`.
 - AO: the event-waits ordering (v3, patch 0016) fixes AO's one-frame lag in the lab but is off (one residual dip, a
   device loss at the castle spot).
-- Open: #128 intro speed (not started), #138 gray close-LOD bushes (patch 0018, the vertex-format candidate, is in
-  the binary but changes nothing at the castle topiary: cleared), AO flicker (above), the mesh-stage c0 overflow
-  upstream (worked around by 0006).
+- Open: #128 intro speed (not started), #138 gray close-LOD bushes (cleared so far: mesh path, alpha test, render
+  conditions, vertex formats (0018), occlusion-query culls (0020's `NX2NAVI_OQ_FORCE`), the shared vs c6 block; open
+  lead: the vegetation vertex shaders sample a 512x512 rgba16f texture that no pass writes at the castle, NOTES
+  "Gray close-LOD bushes" round 2), AO flicker (above), the mesh-stage c0 overflow upstream (worked around by 0006).
 - Flatpak build kit for the Steam Deck (`flatpak/`, private CI artifact), untested on a Deck.
 - The 2026-11-09 00:00 device losses (every lab replay, stock binary too) were a degraded amdgpu; a host reboot
   cleared them, replays pass again since the morning. `nx2navi` is the 00:28 build (patches through 0019);
@@ -210,6 +211,9 @@ distribution). After `just update`, `build` may need a rebase onto the new upstr
 - `0019-vk_texture-NX2NAVI_TEX_RELEASED_MIB-caps-the-own-mem.patch`: `NX2NAVI_TEX_RELEASED_MIB=<n>` (default 0 = off) caps the
   VRAM held by released textures kept for take-back (RELEASED_MAX 2048 entries, 7-8 GiB of render targets in the heavy field
   scene), dropping the oldest past the cap. `just play` sets 3072 since 2026-11-09 (Status has the lab numbers) (#132).
+- `0020-vk_exec_xfer-NX2NAVI_OQ_FORCE-forces-every-samples-p.patch`: debugging the game's CPU-side occlusion culls (#138):
+  `NX2NAVI_LOG_OQ=1` logs every samples-passed report (address, queries, sum, count), `NX2NAVI_OQ_FORCE=<n>` makes each
+  report write n (0 = off). Built into `nx2navi.new` (not swapped). A/B at the castle: forced counts do not restore the leaves.
 - `0018-vk_pipeline-map-the-RGBX-sRGB-and-BGRX-vertex-format.patch`: vertex-format correctness fix (A/B cleared as the #138 bush cause).
   A vertex attribute whose NVN format had no table entry (RGBX8/16/32, 8-bit sRGB, BGRX8) read the zero binding
   (0, 0, 0, 1) silently, collapsing any shape with such an attribute; they now read as the 4-component format, and an

@@ -255,6 +255,30 @@ shaders: still bare), render-condition skips (NX2NAVI_LOG_RCOND=1: draws skipped
   ones were removed. Scripted sticks are ±32767 (LSTICK 0 30000 = forward); ticks run ~290 ahead of presents by 1500.
 - Scratch: input scripts and shots in the session scratchpad `bush/` (walk*.txt, back1.txt, cal1/, back1/).
 
+Round 2 (2026-11-09 midday, lab, Cal's slot save at frame 1500 = castle courtyard, bare arched topiary 15 m ahead):
+- Cleared: **occlusion culls.** The game resets/reports SAMPLES_PASSED 3-8 times a frame and its CPU reads the counts
+  back (vk_exec_xfer.c: a 0 culls what the proxy tested). Patch 0020 adds `NX2NAVI_LOG_OQ=1` (one line per report:
+  address, queries, sum, running count; at this spot 201k of 327k reports are 0, the rest 1/118/122/1638...) and
+  `NX2NAVI_OQ_FORCE=<n>` (every report writes n). With OQ_FORCE=100000 the frame gains 5 passes (the culled objects
+  come back; the butterflies vanish, which the force also changes) but the topiary stays bare.
+- Cleared: the 0x4240 `c6` block at 0x25e92d300 shared by the vegetation vertex shaders (dumped with
+  `NX2NAVI_DUMP_BUF=0x25e92d300:0x4240`): no NaN/inf, plausible values (c6[42] = 15, 0.625, 10.4, 0).
+- Cleared earlier today: patch 0018 (vertex formats). Texture bindings of the alpha-tested prepass pipes look sane
+  (BC1 sRGB RGBA = vk 134, BC3 138, BC4 139, BC7 146; swizzle 2345 identity; mirrored 1, uploads 1).
+- Open lead: the vegetation vertex shaders (vs 5d33dc481e2771ac, fc33005113f12654, dbfce8684f95af3b; fs 099b152e1f417577
+  and 7bd626f1f68fd3ff, pass 0138 pipes 4-6, 8-10 at frame 1500) sample **two vertex textures**: a BC4 512x512 noise
+  (tex 2388) and a **512x512 rgba16f texture at 0x2642f3000 (tex 856) that nothing writes in the castle frames**
+  (`mirrored 0 gpu_owned 0 uploads 0` at frames 1500 and 2000; 14 indirect compute dispatches read it too). In the
+  field frame 2400 the same texture is the target of a 512x512 render pass (pass 0154, 3 draws, vs ef1a2c82 fs
+  5b540a50) and has `gpu_owned 1`. Its sample feeds the card positions (vs5d33 lines 680-700: c6[36]-derived
+  coordinates, NaN-guarded, Lod 0). `init_image` zero-clears a new non-aliased image when `NX2NAVI_FIX_ZERO` is on
+  (default), but an image aliasing pool memory is not cleared, so this one may hold other textures' bytes here while
+  the hardware memory is whatever the game put there. Next: dump the image (bind it as a dump target, or
+  `NX2NAVI_WATCH=0x2642f3000:0x200000`), check whether it aliases pool memory, and A/B a forced zero clear of it; and
+  find why the 512x512 pass does not run at the castle (the far castle trees have foliage, the 50-100 m ones do not,
+  so the texture alone may not be the whole story).
+- Lab output of this round: `.lab/bush-near2`, `bush-oqlog`, `bush-oqforce`, `bush-c6` (dumps with draw lists).
+
 ## VRAM pressure in the heavy field scene (#132), 2026-11-09 night, log analysis only
 
 Cal's play-20261108-195849.log, frames 10500-11300 (36-46 fps, `vram 16414-17034 of 16378 MiB`, re-uploads 300-425
