@@ -131,9 +131,9 @@ Field, HDR10 native through niri-spicy, 240 Hz panel. Since the 2026-11-08 morni
 - AO: the event-waits ordering (v3, patch 0016) fixes AO's one-frame lag in the lab but is off (one residual dip, a
   device loss at the castle spot).
 - Open: #128 intro speed (first lab pass 2026-11-09: audio envelopes at 60/120/240 put the voice energy earlier at higher rates while the music onsets stay; counters not sampled yet, NOTES "#128 first lab pass"), #138 gray close-LOD bushes (cleared so far: mesh path, alpha test, render
-  conditions, vertex formats (0018), occlusion-query culls (0020's `NX2NAVI_OQ_FORCE`), the shared vs c6 block; open
-  lead: the vegetation vertex shaders sample a 512x512 rgba16f texture that no pass writes at the castle, NOTES
-  "Gray close-LOD bushes" round 2), AO flicker (above), the mesh-stage c0 overflow upstream (worked around by 0006).
+  conditions, vertex formats (0018), occlusion-query culls (0020's `NX2NAVI_OQ_FORCE`), the shared vs c6 block; the vertex
+  textures' data (round 3: the 512x512 rgba16f one is a live ping-ponged push/bend field written by compute every other
+  frame); next: the fragment side of the LOD pipes and the leaf cards' draw/instance counts, NOTES "Gray close-LOD bushes" round 3), AO flicker (above), the mesh-stage c0 overflow upstream (worked around by 0006).
 - Flatpak build kit for the Steam Deck (`flatpak/`, private CI artifact), untested on a Deck.
 - The 2026-11-09 00:00 device losses (every lab replay, stock binary too) were a degraded amdgpu; a host reboot
   cleared them, replays pass again since the morning. `nx2navi` is the 00:28 build (patches through 0019);

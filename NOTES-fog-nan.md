@@ -279,6 +279,30 @@ Round 2 (2026-11-09 midday, lab, Cal's slot save at frame 1500 = castle courtyar
   so the texture alone may not be the whole story).
 - Lab output of this round: `.lab/bush-near2`, `bush-oqlog`, `bush-oqforce`, `bush-c6` (dumps with draw lists).
 
+Round 3 (2026-11-09 13:25-14:00 UTC, lab, live profile, `load-slot01.txt` frame 1500 = the same courtyard; `.lab/bush-r3-castle`,
+`bush-r3-castlelog`, `bush-r3-field`):
+- **The round 2 lead is closed: the 512x512 rgba16f vertex texture (0x2642f3000, tex 856) is live and valid at the castle.**
+  Dumped with `NX2NAVI_DUMP_TEX=856`: `pass_0002_tex856_512x512x1_97_rgba16f.png` is a top-down map of the courtyard
+  (x -0.12..0.13, y -0.02..0.25, z = w = 0, 255k distinct values, no NaN), not zeros and not another texture's bytes.
+  `NX2NAVI_WATCH=0x2642f3000:0x200000` logged no CPU write, fill or write-back in 1500 frames: the GPU owns it.
+- Its writer is **compute, not a render pass**: `NX2NAVI_DUMP_LOG=1` (every pass from frame 1 to the dump frame) shows cs
+  `27b283823816c23a` (64x64x1, img slot 2 store) writing 0x2642f3000 on every **odd** frame and 0x2648f6000 on even frames
+  (ping-pong; slot 0 reads the other, slot 1 an rg16f 512x512, slot 3 a third rgba16f), first filled by cs `a56a8e3741233d71`
+  at frame 785 (after the area load). Round 2 dumped frame 1500 (even) and so saw only the read. The dump's
+  `gpu_owned 0 written-since 0` flags do not count compute image stores, so they are no evidence of "never written".
+- What vs 5d33 does with it (SPIR-V, `scratchpad/vs5d33.dis`): samples xy only (`%406` shuffle 0 1), bend amount
+  `x*x + y*y` (`%583`) and the two components scaled by `%143` under a flag: a push/bend field (grass bending under Link),
+  so even a stale or zero texture would only straighten the cards, never remove the leaves.
+- Replays drift again: `input-20261108-131323.txt` (the 11-08 field recording) on the live profile loads the castle slot and
+  lands at the castle gate at frame 2400 (`bush-r3-field/final.png`); its frame 2400 has no 512x512 render pass either and
+  tex 856 holds the same kind of map. A field reference needs the 11-08 profile copy (`lab-profile-flicker`;
+  not run this round: the lab lock was held by a #128 replay).
+- Where this leaves #138: cleared are the mesh path, alpha test, render conditions, vertex formats (0018), occlusion culls
+  (0020), the c6 block and now the vertex textures' data. Not yet looked at: the **fragment** side of the LOD pipes (fs
+  099b152e / 7bd626f1: alpha-test threshold vs. the sampled BC4 alpha, `discard` paths), the per-pipe draw counts of pass
+  0138 against a field frame with leaves (`tools/dump-draws diff`), and whether the close-LOD leaf cards are drawn at all
+  (an instance count or indirect count of 0 from one of the 14 indirect compute dispatches that read tex 856).
+
 ## VRAM pressure in the heavy field scene (#132), 2026-11-09 night, log analysis only
 
 Cal's play-20261108-195849.log, frames 10500-11300 (36-46 fps, `vram 16414-17034 of 16378 MiB`, re-uploads 300-425
