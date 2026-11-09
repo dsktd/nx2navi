@@ -23,7 +23,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: flatpak/.flatpak-builder
-          key: fpb-${{ hashFiles('flatpak/**', 'patches/**', 'build-linux.py', 'runtime-linux/**') }}
+          key: fpb-${{ hashFiles('flatpak/*', 'patches/**', 'build-linux.py', 'runtime-linux/**') }}
           restore-keys: fpb-
       - name: install flatpak-builder
         run: |
