@@ -142,7 +142,7 @@ play *args:
     printf '{"name":"nx2navi","log":"%s","since":%s,"progress":{"regex":"frame (?P<done>[0-9]+):"},"pid":%s}\n' "$PWD/$log" "$(date +%s)" "$$" > "$job"
     trap 'rm -f "$job"' EXIT
     ulimit -c unlimited || true
-    {{dev}} env {{radv}} NX2NAVI_HDR=${NX2NAVI_HDR:-native} NX2NAVI_REPLAY_ASYNC=${NX2NAVI_REPLAY_ASYNC:-1} NX2NAVI_VK_RECORDER=${NX2NAVI_VK_RECORDER:-1} NX2NAVI_TEX_RELEASED_MIB=${NX2NAVI_TEX_RELEASED_MIB:-3072} NX2NAVI_INPUT_RECORD="build/{{ver}}/logs/input-$ts.txt" {{wrapper}} "build/{{ver}}/nx2navi" {{args}} 2>&1 | tee "$log" | grep -a -v -E "no such proc|preparation progress|PushComputeConstants"
+    {{dev}} env {{radv}} NX2NAVI_HDR=${NX2NAVI_HDR:-native} NX2NAVI_REPLAY_ASYNC=${NX2NAVI_REPLAY_ASYNC:-1} NX2NAVI_VK_RECORDER=${NX2NAVI_VK_RECORDER:-1} NX2NAVI_TEX_RELEASED_MIB=${NX2NAVI_TEX_RELEASED_MIB:-3072} NX2NAVI_INPUT_RECORD="build/{{ver}}/logs/input-$ts.txt" {{wrapper}} "build/{{ver}}/nx2navi${NX2NAVI_EXE:+.$NX2NAVI_EXE}" {{args}} 2>&1 | tee "$log" | grep -a -v -E "no such proc|preparation progress|PushComputeConstants"
 
 # Play under gdb like `debug`, and record every input to NX2navi/build/{{ver}}/logs/input-<time>.txt: the recording
 # replays with `just replay <file>` (Tally runs it from the container to reproduce a crash)
