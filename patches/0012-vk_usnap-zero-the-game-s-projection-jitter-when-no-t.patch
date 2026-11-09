@@ -1,0 +1,132 @@
+From e39f00c798c5f8f48fa6ced803746d866d45af8c Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Sun, 8 Nov 2026 19:12:19 -0500
+Subject: [PATCH 2/2] vk_usnap: zero the game's projection jitter when no
+ temporal upscaler runs
+
+Ocarina's scene context block (0x3500) carries a per-frame sub-pixel jitter in
+the projection (rows 7 and 8, column 2) for its own temporal upscaler, a
+tensor-core network that runs as a plain scale here. Unresolved, the jitter
+makes distant edges and shadow boundaries shimmer. NX2NAVI_UNJITTER
+(auto|0|1|log) zeroes the two terms in the uniform snapshot; auto when
+vk_dlaa_available is false.
+---
+ runtime/cfg.c      |  2 +-
+ runtime/vk_usnap.c | 50 +++++++++++++++++++++++++++++++++++++++++++++-
+ 2 files changed, 50 insertions(+), 2 deletions(-)
+
+diff --git a/runtime/cfg.c b/runtime/cfg.c
+index a5a12b0..1227aa2 100644
+--- a/runtime/cfg.c
++++ b/runtime/cfg.c
+@@ -58,7 +58,7 @@ static const char *const known[] = {
+     "SHADER_MEMO", "SHADER_RELOAD", "SHADOW_COMPARE", "SHADOW_RANGE", "SHADOW_RES", "SHADOW_SCALE", "SHARED_FONTS", "SHARPNESS", "SHOTS", "SHOTS_DIR",
+     "SHOTS_FULL", "SPEED_PROBE", "SPIN", "SPIN_HANDOFF_US", "SPLIT_DRAWS", "SPLIT_US", "STICK_DEADZONE", "STICK_SENS",
+     "SWKBD_ANSWER",
+-    "SWKBD_TEST", "TAA", "TEST_PAD", "TEST_PAD_AT", "TEST_PREPARE_SHADERS", "TEX_ALIAS", "TEX_MEMO", "TEX_VRAM_PRESSURE", "TIMER_1MS", "TRACE", "TXD_TRANSPOSE", "UBO_SNAPSHOT", "UPSCALER", "VK_DYN_A2C", "VK_DYN_VERTEX", "VK_NOOPT", "VK_NO_FLOAT64",
++    "SWKBD_TEST", "TAA", "TEST_PAD", "TEST_PAD_AT", "TEST_PREPARE_SHADERS", "TEX_ALIAS", "TEX_MEMO", "TEX_VRAM_PRESSURE", "TIMER_1MS", "TRACE", "TXD_TRANSPOSE", "UBO_SNAPSHOT", "UNJITTER", "UPSCALER", "VK_DYN_A2C", "VK_DYN_VERTEX", "VK_NOOPT", "VK_NO_FLOAT64",
+     "VK_PRESENT", "VK_RECORDER", "VK_SSBO_ALIGN", "VK_SUBGROUP", "VK_SUBGROUP_PIN", "VK_VALIDATION", "VOLUME", "VRAM_HEADROOM", "VS_OUTS",
+     "WALK_KEY", "WALK_SCALE", "WB_EXACT", "WB_FENCE_LIMIT", "WB_MERGE", "WINDOW_SIZE", "XLATE", "XLATE_ID", "XLATE_KEEP", "XLATE_PROCS",
+     "ZSTD_CHECK", "ZSTD_NATIVE",
+diff --git a/runtime/vk_usnap.c b/runtime/vk_usnap.c
+index 28bc001..5bc0d24 100644
+--- a/runtime/vk_usnap.c
++++ b/runtime/vk_usnap.c
+@@ -14,9 +14,11 @@
+ // - The arena goes back to a free list once the submission's fence is done (completion thread).
+ // The copy is taken where vk_exec_record starts: at the submit call when the replay runs on the submitting thread, later
+ // with NX2NAVI_REPLAY_ASYNC. NX2NAVI_UBO_SNAPSHOT=0 binds live memory as before; =ab alternates (NX2NAVI_AB).
++#include <math.h>
+ #include <stdlib.h>
+ #include <string.h>
+ 
++#include "cfg.h"
+ #include "host.h"
+ #include "nvn_api.h"
+ #include "vk.h"
+@@ -56,6 +58,8 @@ static struct {
+     int nwr, cwr;
+     // since the last summary
+     uint64_t subs, regions, bytes, copy_ns, hits, drops, inflight, refused, off_subs;
++    uint64_t cam[8];            // Ocarina's scene context blocks this submission binds (unjitter)
++    int ncam;
+ } U;
+ 
+ static Arena *free_arenas;
+@@ -109,6 +113,44 @@ static void arena_done(void *arg) {   // completion thread: the GPU has read it
+     plat_mutex_unlock(&free_lock);
+ }
+ 
++// Ocarina's scene context block (vk_dlaa.c OCAM_BLOCK): rows 7-10 are the projection its scene vertex shaders use.
++// The game offsets it each frame by a sub-pixel jitter (clip x and y += jitter * w, in its column 2 of rows 7 and 8)
++// for its own temporal upscaler, a tensor-core network that runs as a plain scale (vk_exec_draw.c
++// untranslated_dispatch_fallback). Nothing then resolves the jitter, and every edge and shadow boundary in the
++// distance shimmers. NX2NAVI_UNJITTER (auto|0|1|log): auto zeroes the two terms in the snapshot when no temporal
++// upscaler of ours runs (vk_dlaa_available); terms over UNJITTER_MAX (a few pixels) are left: an off-centre view.
++#define OCAM_BLOCK 0x3500u
++#define UNJITTER_MAX 0.01f
++static int first_above(uint64_t a);
++
++static int unjitter_mode(void) {   // 0 off, 1 zero the jitter, 2 also log it
++    static int m = -1;
++    if (m < 0) {
++        const char *v = cfg_get("NX2NAVI_UNJITTER");
++        if (v && !strcmp(v, "log")) m = 2;
++        else if (v && (!strcmp(v, "0") || !strcmp(v, "1"))) m = *v - '0';
++        else m = !vk_dlaa_available();
++        rt_log("vk_usnap: unjitter %s", m == 2 ? "on, logged" : m ? "on (no temporal upscaler)" : "off");
++    }
++    return m;
++}
++
++static void unjitter(uint8_t *dst) {
++    int m = unjitter_mode();
++    if (!m) return;
++    static uint64_t logged, zeroed, kept;
++    for (int c = 0; c < U.ncam; c++) {
++        uint64_t a = U.cam[c] + 7 * 16 + 2 * 4;   // row 7, column 2; row 8 column 2 is 16 bytes on
++        int i = first_above(a);
++        if (i >= U.nreg || a < U.reg[i].lo || a + 20 > U.reg[i].hi) continue;
++        float *x = (float *)(dst + U.reg[i].off + (a - U.reg[i].lo)), *y = x + 4;
++        if (m == 2 && logged < 600) logged++, rt_log("vk_usnap: unjitter %#llx: %.6g %.6g", (unsigned long long)U.cam[c], *x, *y);
++        if (fabsf(*x) < UNJITTER_MAX && fabsf(*y) < UNJITTER_MAX) *x = *y = 0, zeroed++;
++        else if (!kept++) rt_log("vk_usnap: unjitter left an off-centre projection (%.6g %.6g)", *x, *y);
++    }
++    (void)zeroed;
++}
++
+ static void collect(const op_hdr *h, int depth) {
+     for (;;) {
+         if (h->size < sizeof *h || (h->size & 7) || h->op >= OP_COUNT_)
+@@ -123,6 +165,11 @@ static void collect(const op_hdr *h, int depth) {
+         if (h->op == OP_BIND_UBO) {
+             const p_bind_buf *b = a;
+             if (b->addr && b->size) {
++                if (b->size == OCAM_BLOCK && U.ncam < 8) {
++                    int k = 0;
++                    while (k < U.ncam && U.cam[k] != b->addr) k++;
++                    if (k == U.ncam) U.cam[U.ncam++] = b->addr;
++                }
+                 uint64_t n = b->size < MAX_RANGE ? b->size : MAX_RANGE;
+                 // the vertex stage's object and bone blocks: also the game's other copy on either side, which still
+                 // holds last frame's (vk_mvprev.c)
+@@ -254,7 +301,7 @@ void vk_usnap_begin(const uint64_t *handles, int n, uint64_t fence) {
+         return;
+     }
+     uint64_t t0 = kern_now_ns();
+-    U.ncol = 0;
++    U.ncol = 0, U.ncam = 0;
+     for (int i = 0; i < n; i++)
+         if (handles[i]) collect(nvn_op_first(handles[i]), 0);
+     sort_col();
+@@ -289,6 +336,7 @@ void vk_usnap_begin(const uint64_t *handles, int n, uint64_t fence) {
+     }
+     for (int i = 0; i < U.nreg; i++)
+         memcpy(dst + U.reg[i].off, (const void *)(uintptr_t)U.reg[i].lo, U.reg[i].hi - U.reg[i].lo);
++    unjitter(dst);
+     if (dst != U.arena->map) memcpy(U.arena->map, dst, total);   // one sequential write into the device copy
+     vmaFlushAllocation(vk_ctx()->vma, U.arena->alloc, 0, total);   // a no-op on coherent memory
+     U.on = 1;
+-- 
+2.56.0
+

@@ -1,0 +1,88 @@
+From 0e21c5f29b3894668e95a5b8f202ba1786136a18 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Sun, 8 Nov 2026 19:11:37 -0500
+Subject: [PATCH 1/2] vk_dump: NX2NAVI_DUMP_REQ=1 dumps the frame after a
+ dump.req file appears
+
+A file dump.req beside the shader cache asks for a dump of the next frame into
+<dump dir>/f<frame>, so a running game can be dumped on request, more than once.
+---
+ runtime/cfg.c     |  2 +-
+ runtime/vk_dump.c | 20 ++++++++++++++++++--
+ 2 files changed, 19 insertions(+), 3 deletions(-)
+
+diff --git a/runtime/cfg.c b/runtime/cfg.c
+index 346cf85..a5a12b0 100644
+--- a/runtime/cfg.c
++++ b/runtime/cfg.c
+@@ -40,7 +40,7 @@ static const char *const known[] = {
+     "BIND_SKIP", "BIND_STATS", "BIND_UP", "BIND_X", "BIND_Y",
+     "BIND_ZL", "BIND_ZR", "BLOCK_VIEWS_3D", "CLOTH_REALTIME", "COLOR_BRIGHTNESS", "COLOR_CONTRAST", "COLOR_GAMMA",
+     "COLOR_PRESET", "COLOR_SATURATION", "CONTACT_DEBUG", "CONTACT_SHADOWS", "CORE_DIAG", "CRIT", "CRIT_OUT",
+-    "DESC_TEMPLATE", "DEVICE_PROFILE", "DISCORD_APP_ID", "DISCORD_IMAGE", "DISCORD_RPC", "DLAA", "DLAA_JITTER", "DLAA_MV", "DLAA_MASKDEBUG", "DLAA_MVDEBUG", "DLAA_OBJMV", "DLAA_SURVEY", "DLAA_TIMES", "DLSS", "DLSS_CHAR_MASK", "DLSS_PRESET", "DLSS_REACTIVE", "DUMP", "DUMP_BUF", "DUMP_DIR",
++    "DESC_TEMPLATE", "DEVICE_PROFILE", "DISCORD_APP_ID", "DISCORD_IMAGE", "DISCORD_RPC", "DLAA", "DLAA_JITTER", "DLAA_MV", "DLAA_MASKDEBUG", "DLAA_MVDEBUG", "DLAA_OBJMV", "DLAA_SURVEY", "DLAA_TIMES", "DLSS", "DLSS_CHAR_MASK", "DLSS_PRESET", "DLSS_REACTIVE", "DUMP", "DUMP_BUF", "DUMP_DIR", "DUMP_REQ",
+     "DUMP_LOG", "LOG_CS_BINDS", "LOG_TEX_FLAGS", "LOG_MESH", "MESH", "POOL", "NATIVE_TENSOR", "LOG_RCOND", "LOG_RT_SIZES", "DUMP_WHITE", "DUMP_AFTER", "SUBMIT_FINISH", "ACQUIRE_WAIT", "CS_FALLBACK", "EXEFS", "FEEDBACK", "FIX_C0", "FIX_ZERO", "FLIGHT", "FLIGHT_AT", "FLIGHT_DIR", "FLIGHT_FRAMES",
+     "FLIGHT_SPIKE_MS", "FLIGHT_THUMBS", "FLUSH_SPAN", "FOV", "FOV_PATCH", "FG_HUDLESS_SHOW", "FPS60", "FPS_LIMIT", "FRAMEGEN", "FREEZE_IDLE", "FREE_CORES",
+     "FULLSCREEN", "FXAA", "GAME_ASPECT", "GAME_RES", "GPA", "GPA_EMPTY", "GPA_TWIN", "GPL", "GPL_DRAW_BUILD", "GPU", "GPU_INDEX", "GPU_NAME", "HDR", "HDR_GAME_NITS", "HDR_HUE",
+diff --git a/runtime/vk_dump.c b/runtime/vk_dump.c
+index ee0dd4a..52486ba 100644
+--- a/runtime/vk_dump.c
++++ b/runtime/vk_dump.c
+@@ -56,6 +56,8 @@ static uint64_t white_last;            // NX2NAVI_DUMP_WHITE: the frame dumped l
+ static int white_tries, white_caught;
+ static uint64_t dump_after;             // NX2NAVI_DUMP_AFTER
+ static FILE *passes_f, *images_f;
++static int dump_req;                   // NX2NAVI_DUMP_REQ=1: a file dump.req beside the shader cache dumps the next frame
++static char req_path[600];
+ static int seq, finished, copied;      // copied: passes and dispatches of the dump frame whose images were copied
+ static int skip_runs, dump_ubo;        // NX2NAVI_DUMP_SKIP_RUNS, NX2NAVI_DUMP_UBO (vec4 per block, 0 for none)
+ static uint32_t want_tex[16][2];       // NX2NAVI_DUMP_TEX: slot id and 0, or width and height
+@@ -953,7 +955,11 @@ void vk_dump_init(void) {
+     // (a target drawn once, at an area load)
+     const char *da = cfg_get("NX2NAVI_DUMP_AFTER");
+     dump_after = da && *da ? strtoull(da, NULL, 0) : 0;
+-    if (dump_white || dump_after) {
++    const char *dr = cfg_get("NX2NAVI_DUMP_REQ");
++    dump_req = dr && atoi(dr) == 1 && gfx_shader_beside_cache("dump.req", req_path, sizeof req_path);
++    if (dump_req && !dump_white && !dump_after) {
++        dump_frame = UINT64_MAX;
++    } else if (dump_white || dump_after) {
+         dump_frame = UINT64_MAX;
+         vk_thumbs_enable(16);
+     } else if (!e || !*e || !(dump_frame = strtoull(e, NULL, 10))) return;
+@@ -976,7 +982,7 @@ void vk_dump_init(void) {
+     snprintf(base_dir, sizeof base_dir, "%s", d && *d ? d : "dump");
+     snprintf(dir, sizeof dir, "%s", base_dir);
+     char path[600];
+-    if (!dump_white) open_files();
++    if (!dump_white && !dump_req) open_files();
+     const char *bf = cfg_get("NX2NAVI_DUMP_BUF");
+     if (bf && *bf) {
+         char *q;
+@@ -1031,6 +1037,14 @@ void vk_dump_present(uint64_t frame) {
+         white_last = 0;
+     }
+     if (dump_white && !white_caught && !white_last && dump_frame == UINT64_MAX) white_check(frame);
++    if (dump_req && dump_frame == UINT64_MAX && plat_file_exists(req_path)) {   // asked for: dump the next frame
++        plat_file_delete(req_path);
++        dump_frame = frame + 1;
++        snprintf(dir, sizeof dir, "%s/f%llu", base_dir, (unsigned long long)dump_frame);
++        open_files();
++        rt_log("vk_dump: dump.req: frame %llu goes to %s", (unsigned long long)dump_frame, dir);
++        return;
++    }
+     if (frame != dump_frame) return;
+     plat_mutex_lock(&rec_lock);
+     finished = 1;
+@@ -1047,6 +1061,8 @@ void vk_dump_present(uint64_t frame) {
+            (unsigned long long)(png_bytes >> 20), dir);
+     if (dump_white) {   // ready for another attempt (vk_dump_present checks this one's thumbnail 3 presents on)
+         white_last = frame;
++    }
++    if (dump_white || dump_req) {
+         plat_mutex_lock(&rec_lock);
+         seq = copied = 0, last_targets = 0, pass_skip = NULL, png_bytes = 0;
+         nluts = nluts_done = nents = ents_over = pass_draws = 0;
+-- 
+2.56.0
+
