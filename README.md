@@ -378,7 +378,11 @@ tools/rdc info .lab/rdoc-castle/nx2navi_capture.rdc
 cached after; the replay runs on the GPU through the flake's `nixVulkanIntel` like lab-run, so not while Cal plays,
 and it holds lab-run's lock `/tmp/nx2navi-lab.lock` for its run: one GPU job at a time, a replay beside a lab run
 ended that run in `VK_ERROR_DEVICE_LOST` on 2026-11-09. The Python module must not be preceded by a `RTLD_GLOBAL`
-dlopen of `librenderdoc.so`: its exported layer entry points then shadow the loader's and the replay segfaults):
+dlopen of `librenderdoc.so`: its exported layer entry points then shadow the loader's and the replay segfaults).
+Known hazard (2026-11-09): replaying the 10 GB castle capture under VRAM pressure crashed the replayer itself (null
+dereference inside `librenderdoc.so`, host dmesg) minutes before the device loss. Keep captures small (capture only
+the present you need; a frame dump of a later frame, not the same one) and run `rdc` only with the lab lock held and
+nothing else on the GPU:
 
 - `tools/rdc info x.rdc`: frame number, draw/dispatch/pass counts, file sizes, every pipeline with its draw count,
   first event and shader hashes (sha1 of the SPIR-V, first 10 hex digits).
