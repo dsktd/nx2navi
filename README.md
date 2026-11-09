@@ -190,23 +190,39 @@ keys; the game is built on the device from your own dump.
 - CI: `.github/workflows/flatpak.yml` (manual dispatch, `kit-*` tags, pushes touching the kit or patches) uploads the
   bundle as an Actions artifact kept 3 days. Nothing else.
 
-On first run the launcher copies the kit's sources to `~/.var/app/io.github.dsktd.NX2navi/data/nx2navi/NX2navi`, then
-extracts the `.nup` (`make_game.py --until romfs`), lifts and compiles (`build-linux.py --cpu v3`, Zen 2 has AVX2),
-runs `prepare_shaders.py` (it opens a window) and plays. Each step leaves a stamp in `.../nx2navi/state/`, so a stopped
-build resumes; `flatpak run io.github.dsktd.NX2navi status` lists them. Saves (`build/v111/profile`), `nx2navi.ini`,
+Without a built game the launcher opens the setup screen (`flatpak/setup.c`, SDL3 from the runtime): fullscreen,
+D-pad, A and B only, so it works in Steam Deck Game Mode. It offers two routes:
+
+- **Build from my game file (.nup)**, on the device itself. It scans the app data dir, `~/Downloads`, `~/Desktop`,
+  the home dir and SD cards under `/run/media` (`--filesystem=home:ro` and `/run/media:ro`; portal choosers are
+  unreliable in gamescope, so the portal is only an extra entry). Steps: unpack (`make_game.py --until romfs`),
+  translate and compile (`build-linux.py --cpu v3 --jobs 6`: 6 compile jobs, one link, within the Deck's 16 GB),
+  prepare shaders (`prepare_shaders.py`, which opens its own window). The progress screen shows the step, percent
+  (ninja's count) with an ETA, the log's last line, a stay-plugged-in warning, and keeps the screen on. Each step
+  leaves a stamp in `data/nx2navi/state/`, so quitting or sleeping resumes where it stopped. **Estimate on the Deck
+  (Zen 2, 4c/8t), not measured: 3 to 5 hours in all**: about 30 min unpacking, 2 to 4 h compiling, 30 to 60 min shaders.
+- **Import a prebuilt game (fast)**: a `*.nx2navi.tar.zst` made by `flatpak run io.github.dsktd.NX2navi export` on
+  another machine (game folder, extracted ExeFS/RomFS and shader cache; no saves, logs or `nx2navi.ini`; about 30 GB).
+  The import checks the export's kit id (same patches, glue and so runtime ABI), the game version, AVX2 for `cpu v3`,
+  and that the binary and `romfs.bin` are there; this device's saves and settings stay.
+
+With a game the launcher plays at once; `flatpak run io.github.dsktd.NX2navi setup` (or `setup` as Steam launch
+option) shows the screen again, to rebuild or import. Terminal routes: `build [game.nup]`, `import <file>`,
+`export [file]`, `status`.
+
+Saves (`build/v111/profile`), `nx2navi.ini`,
 the shader and pipeline caches and logs all live in that data dir, writable. A new kit re-copies the sources and
 rebuilds the game; a new `.nup` re-extracts. Play defaults are the justfile's: `RADV_DEBUG=nogpl`,
 `NX2NAVI_PIPE_SKIP=any`, `NX2NAVI_HDR=native`, `NX2NAVI_REPLAY_ASYNC=1`, `NX2NAVI_VK_RECORDER=1`, each overridable.
 Permissions: Wayland (X11 fallback), `--device=all` (GPU and the Deck's pad), PulseAudio, `/sys/class/dmi/id` read-only
-(Deck detection), no network, no host files.
+(Deck detection), home and `/run/media` read-only (the scan), no network.
 
 ### Steam Deck
 
-1. Desktop Mode. Copy `nx2navi-kit.flatpak` to the Deck (USB stick, `scp`).
-2. Konsole: `flatpak install --user nx2navi-kit.flatpak` (pulls the 26.08 runtime from Flathub).
-3. Put your own Ocarina of Time 1.1.1 `.nup` into `~/.var/app/io.github.dsktd.NX2navi/data/nx2navi/` (create the folder),
-   or hand it in once: `flatpak run --file-forwarding io.github.dsktd.NX2navi @@ /path/game.nup @@`. Allow about 60 GB.
-4. First run from Konsole, `flatpak run io.github.dsktd.NX2navi build`, and watch it (an hour or more; it resumes if
-   stopped). The shader step opens a window: stay in Desktop Mode.
-5. Steam, "Add a Non-Steam Game", pick NX2navi. In Game Mode it then launches straight into the game, with the Deck
-   device profile (1280x800, 40 fps) the runtime picks itself.
+1. Copy `nx2navi-kit.flatpak` to the Deck. In Desktop Mode, Konsole: `flatpak install --user nx2navi-kit.flatpak`
+   (pulls the 26.08 runtime from Flathub).
+2. Copy your own Ocarina of Time 1.1.1 `.nup` (or an export from the desktop) to `~/Downloads` or an SD card. Allow
+   about 60 GB for a build, 30 GB for an import.
+3. Steam: "Add a Non-Steam Game", pick NX2navi. Start it in Game Mode, plugged in: the setup screen lists the files it
+   found; choose one with the D-pad and A. A build takes hours (estimate 3 to 5); quitting resumes later.
+4. When it is done the same entry starts the game directly, with the Deck device profile (1280x800, 40 fps).

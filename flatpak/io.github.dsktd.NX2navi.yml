@@ -24,8 +24,10 @@ finish-args:
   - --device=all          # /dev/dri plus the Steam Deck's gamepad (hidraw, uinput)
   - --socket=pulseaudio
   - --filesystem=/sys/class/dmi/id:ro   # the runtime's Steam Deck detection (cfg.c on_steam_deck)
-  # no --share=network and no host filesystem: the data dir is the app's own; a .nup elsewhere comes in through
-  # `flatpak run --file-forwarding ... @@ <file> @@` (document portal) or is copied into the data dir
+  # read-only places the setup screen scans for a .nup or an export (portal choosers are unreliable in gamescope);
+  # no --share=network
+  - --filesystem=home:ro
+  - --filesystem=/run/media:ro
 build-options:
   append-path: /usr/lib/sdk/llvm22/bin:/usr/lib/sdk/dotnet10/bin
   prepend-ld-library-path: /usr/lib/sdk/llvm22/lib:/usr/lib/sdk/dotnet10/lib
@@ -64,6 +66,15 @@ modules:
       - type: archive
         url: https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/archive/refs/tags/v3.3.0.tar.gz
         sha256: c4f6bbe6b5a45c2eb610ca9d231158e313086d5b1a40c9922cb42b597419b14e
+
+  # The setup screen: SDL3 (from the Sdk), fullscreen, pad-driven, for Steam Deck Game Mode
+  - name: nx2navi-setup
+    buildsystem: simple
+    build-commands:
+      - cc -O2 -Wall -o /app/bin/nx2navi-setup setup.c $(pkg-config --cflags --libs sdl3)
+    sources:
+      - type: file
+        path: setup.c
 
   # The upstream checkout at the commit our `build` branch sits on, plus our private patches (patches/, the same
   # commits as `build`; 0002 is a translator patch only build-xlate-private.py uses, so it is left out here).
