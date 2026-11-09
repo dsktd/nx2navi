@@ -12,3 +12,4 @@ flatpak/.build/
 flatpak/.repo/
 flatpak/.flatpak-builder/
 flatpak/*.flatpak
+REPORT-*.md

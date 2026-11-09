@@ -254,3 +254,58 @@ shaders: still bare), render-condition skips (NX2NAVI_LOG_RCOND=1: draws skipped
 - Replay housekeeping: a killed replay leaves `pipeline-cache.bin.<pid>.<tid>.tmp` (4 GB each) in build/v111; 80 stale
   ones were removed. Scripted sticks are ±32767 (LSTICK 0 30000 = forward); ticks run ~290 ahead of presents by 1500.
 - Scratch: input scripts and shots in the session scratchpad `bush/` (walk*.txt, back1.txt, cal1/, back1/).
+
+## VRAM pressure in the heavy field scene (#132), 2026-11-09 night, log analysis only
+
+Cal's play-20261108-195849.log, frames 10500-11300 (36-46 fps, `vram 16414-17034 of 16378 MiB`, re-uploads 300-425
+per 60 frames at 60-80 MiB and 23-37 ms, "texture 7-9%" of the render thread). The `mem: vram frame 10800` line
+says what fills the card: VMA blocks 15894 MiB (allocations 15160: 730 MiB fragmentation), of which textures live
+7769 = 6503 MiB, **textures released 2004 = 7226 MiB**, mirrors 331 = 925 MiB; the rest (~500 MiB) is buffers,
+and the ~600 MiB over the VMA total is the driver's and the compositor's. Pipeline and shader caches live in RAM
+(`ram working set 8.6 GiB`), not VRAM. The mirrors are small; the "stays imported" fallback hit only 4 pools at
+frames 1800-2400 (14.1-15.1 GiB in use), so pools are not the problem either.
+
+The released list is the filler: `vk_texture.c` keeps up to RELEASED_MAX 2048 released entries (FIFO) for take-back,
+and a released entry averages 3.6 MiB (live ones 0.84 MiB): these are render targets and large decoded textures. The
+VRAM-pressure sweep (`NX2NAVI_TEX_VRAM_PRESSURE`, 90%, 32 per 8 submits) only drops *mirrored* entries the GPU never
+wrote, so it cannot touch those render targets; it drops the small sampled textures instead (181-448 per 60 frames),
+which the game binds again a few frames later: that is the re-upload storm (309 re-uploads, 81 MiB, 34 ms at frame
+10800) while the released count stays pinned at ~2000 and 7-8 GiB. From frame 6600 on the released set is 7.3-8.2 GiB
+for the rest of the session. In short: the pressure sweep evicts the cheap-to-keep things and keeps the expensive ones.
+
+Fix (patch 0019, build 187857e, in `nx2navi.new`, **not swapped**, default off): `NX2NAVI_TEX_RELEASED_MIB=<n>` caps
+the own memory of the released list; past it, each release drops the oldest entries, exactly what RELEASED_MAX already
+does by count (so a dropped render target that the game takes back comes back empty, the same as today past 2048
+entries; the pressure sweep's black-flash caveat is about dropping *recent* ones). Suggested first value: 3072 (a 3 GiB
+released set leaves ~4 GiB headroom, so the 90% sweep should rarely trigger and the re-uploads should fall to the
+10-30 of frames 1200-6000). Check in the log: `released textures kept` (count), `mem: vram frame` released MiB,
+`texture re-uploads`, `vram N of 16378`. If the heavy scene then shows black flashes or "left uninitialised" aliases
+rising, raise the value (4096) or make the cap skip entries released fewer than N submits ago (not built).
+Alternative not built: let the pressure sweep drop non-mirrored entries older than a few frames.
+
+## fmz-pow after f33ed65: verdict (static, 2026-11-09)
+
+What `tools/fmz-pow.py` guards: pow(x, y) with a variable y, compiled as Log2 -> OpFMul -> Exp2; it rewrites the
+multiply to (a == 0 || b == 0) ? 0 : a * b, so pow(0, 0) = 1 and pow(0, y) = 1 instead of NaN (-inf * 0). The cache
+holds 23,649 `.orig` files = the shaders it touched. Where the NaN came from: pass 93's SH projection
+(cs a806b657, `pow(clamp(x), c3[2].y)`) fed NaN into the sky-SH block 0x25a4c7f00 **once**, and the block then kept it
+because the shadow sync skipped the CPU's per-frame zeroing of that block (the real bug, fixed by patch 0004 /
+f33ed65). With the zeroing in place a NaN frame is flushed the next frame, so the permanent black/white-out is gone
+either way. What fmz-pow still changes: any frame in which pow(0, 0) is really evaluated (an SH weight exactly 0
+with exponent 0) renders that frame's affected pixels/froxels black or NaN-clamped. Whether such frames exist at
+all is the open question: the translator FMZ patch was a no-op (no game shader carries FMZ), so the hardware's
+pow(0, 0) = 1 must come from MUFU.LG2/EX2 semantics or a lowering detail, which the fix does not model. Verdict:
+**probably obsolete as a stopgap for the permanent fault, not proven harmless to remove**: a fresh cache was only
+tried before f33ed65 (black world at frames 700/820/1100), never after.
+
+Test plan (GPU back, Cal not playing): no live cache is touched.
+1. `cp -r --reflink=auto build/v111/shader-cache /path/scratch/cache-fresh`, then `find /path/scratch/cache-fresh -name '*.orig' | while read o; do mv "$o" "${o%.orig}"; done` (the originals back: unpatched SPIR-V, no re-translation needed). Keep `in/`.
+2. Replay A (patched, current): `tools/lab-run input-20261108-131323.txt 1100 fmz-on` and the castle slot
+   `load-slot01.txt 1500 fmz-on-castle` (both with `LAB_EXE=nx2navi`, the running binary, patches 0001-0016).
+3. Replay B (fresh): the same two with `NX2NAVI_SHADER_CACHE=/path/scratch/cache-fresh` in the env (lab-run passes
+   env through; add it to `envs`), plus 2000 frames of the castle walk (`bush/back1.txt`) for a longer soak.
+4. Compare: the dump's NaN count (`tools/nan-probe.py`-style scan of the dumped targets, or the lab's `dump` summary),
+   the opaque target min/mean, the ground brightness metric from the Deku-web bisect (49 vs 234), and the shots side by
+   side. Pass = no NaN, same picture within noise at both frames and no darkening over the soak.
+5. If B passes: drop `fmzpow` from `just shaders` and move fmz-pow.py to the obsolete list; if B fails at a single
+   frame only, keep fmz-pow and note the shader (the test shows which pass goes NaN).

@@ -112,19 +112,39 @@ only so `just nanguard restore` (and each tool's `.orig` restore) can undo what 
 
 ## Status
 
-2026-11-08: built in the Manager's container (lift 297,414 functions, 680 objects, 318 MB `build/v111/nx2navi`),
-then run from the container on the RX 6900 XT through `/dev/dri` and the host's Wayland socket: intro movies, title
-loop and the in-game menu for 12,600 frames without a fault. `--selftest` passes except one check that assumes the
-other game's 3.3 GB pool. Open: the menu finds no system fonts in the container; Cal saw a rendering band on the
-"Fullscreen" row; play with a pad is tested on the host (`just run`, yakin's pad).
+2026-11-09 (morning). The game is played daily on the host (`just play`): Cal's save is in Hyrule Castle / Hyrule
+Field, HDR10 native through niri-spicy, 240 Hz panel. Since the 2026-11-08 morning build:
+
+- Lighting fixed at the source: the shadow sync skipped the CPU's per-frame zeroing of the sky-SH block, so the GPU
+  kept adding into stale (or NaN) sums (patch 0004, build f33ed65). The pow NaN stopgaps are obsolete; `fmzpow` is still
+  run until a fresh-cache test proves it unneeded (NOTES "fmz-pow after f33ed65").
+- Performance 52 -> 64 fps in the haze replay: changed-page write-back (0001), the page compare outside shadow_lock
+  (0008), compact freshness arrays (0009), neighbouring-pool queries (0010), async replay and recorder thread on by
+  default. Heavy field scenes still drop to 36-46 fps under VRAM pressure (#132): the released-texture list holds
+  7-8 GiB of render targets while small textures are evicted and re-uploaded (NOTES "VRAM pressure"); patch 0019's
+  byte cap is built, off by default, untested.
+- Debug and play features: shader hot-reload and on-request shots (0003), dump.req (0011), mark this moment (0015,
+  F9 / L3+R3), draw lists in dumps (0017), Steam Input pad preferred (0014), projection unjitter (0012).
+- Defaults: `NX2NAVI_PIPE_SKIP=any`, `NX2NAVI_HDR=native`, `REPLAY_ASYNC=1`, `VK_RECORDER=1`.
+- AO: the event-waits ordering (v3, patch 0016) fixes AO's one-frame lag in the lab but is off (one residual dip, a
+  device loss at the castle spot).
+- Open: #128 intro speed (not started), #138 gray close-LOD bushes (candidate patch 0018 in `nx2navi.new`, A/B
+  untested), AO flicker (above), the mesh-stage c0 overflow upstream (worked around by 0006).
+- Flatpak build kit for the Steam Deck (`flatpak/`, private CI artifact), untested on a Deck.
+- Blocker since 2026-11-09 00:00: every lab replay loses the GPU device about 26 s in, with the stock binary too;
+  the kernel driver looks degraded after the earlier resets. Needs a dmesg check and probably a reboot; no replays,
+  swaps or live tests until then.
 
 ## What was verified
 
-In the container (no GPU, no game files): the shell enters with clang 23.1.3, lld, ninja, make, dotnet 10.0.403,
-Python 3.12.15 and 3.14.8, uv 0.13.5, SDL3 3.4.18 and Vulkan 1.4.363; a test program links with upstream's Linux link
-line (`-lvulkan -lSDL3 -lopus -lvpx -lzstd -l:libstdc++.a`) and runs; `uv` resolves both requirement files as wheels
-for the Nix interpreters; `nixVulkanIntel` builds and points `VK_ICD_FILENAMES` at Mesa 26.2.6. Not verified: the real
-game build and play.
+- Build: the whole pipeline in the Manager's container (lift 297,414 functions, 318 MB binary), rebuilds of
+  `nx2navi.new` from the `build` branch with `ninja -f build/v111/build.new.ninja`.
+- Play on the host: hours of play across Kokiri Forest, the Deku Tree, Hyrule Field and the castle with pad, HDR10,
+  60 fps outdoors (240 Hz panel, frame limit by the game), logs in `build/v111/logs/play-*.log`.
+- Lab (container, RX 6900 XT through `/dev/dri` and the gpu-display compositor) until 2026-11-08 23:58: replays of
+  Cal's recordings and slot save to fixed frames, with dumps, shots, core validation (two VUIDs, NOTES "Validation
+  sweep") and A/B of patches 0004, 0008-0010, 0016.
+- Not verified: patches 0018 and 0019 (built, not swapped), the Flatpak kit on a Deck, fmz-pow's removal.
 
 ## Private local patches
 
@@ -182,6 +202,9 @@ distribution). After `just update`, `build` may need a rebase onto the new upstr
 - `0017-vk_dump-NX2NAVI_DUMP_DRAWS-1-lists-every-draw-of-a-p.patch`: `NX2NAVI_DUMP_DRAWS=1` lists every draw of a pass in
   the dump's passes.txt (pipe, shaders, kind, count, instances, base vertex/instance, index or argument buffer), so two
   frames' draw lists can be diffed (`tools/dump-draws` summarises or diffs them).
+- `0019-vk_texture-NX2NAVI_TEX_RELEASED_MIB-caps-the-own-mem.patch`: `NX2NAVI_TEX_RELEASED_MIB=<n>` (default 0 = off) caps the
+  VRAM held by released textures kept for take-back (RELEASED_MAX 2048 entries, 7-8 GiB of render targets in the heavy field
+  scene), dropping the oldest past the cap. Built into `nx2navi.new`, not swapped, untested; suggested first value 3072 (#132).
 - `0018-vk_pipeline-map-the-RGBX-sRGB-and-BGRX-vertex-format.patch`: **candidate, not yet A/B tested** (#138 gray bushes).
   A vertex attribute whose NVN format had no table entry (RGBX8/16/32, 8-bit sRGB, BGRX8) read the zero binding
   (0, 0, 0, 1) silently, collapsing any shape with such an attribute; they now read as the 4-component format, and an

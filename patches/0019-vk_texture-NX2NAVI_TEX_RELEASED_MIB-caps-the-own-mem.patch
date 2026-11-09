@@ -1,0 +1,79 @@
+From 187857e9121616ebc8060921e8354219554542cd Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Mon, 9 Nov 2026 00:28:52 -0500
+Subject: [PATCH] vk_texture: NX2NAVI_TEX_RELEASED_MIB caps the own memory held
+ by released textures (off by default)
+
+---
+ runtime/vk_texture.c | 25 ++++++++++++++++++++++++-
+ 1 file changed, 24 insertions(+), 1 deletion(-)
+
+diff --git a/runtime/vk_texture.c b/runtime/vk_texture.c
+index c2ab751..81dd830 100644
+--- a/runtime/vk_texture.c
++++ b/runtime/vk_texture.c
+@@ -89,6 +89,11 @@ static int nsslots;
+ static nvn_hmap samplers = {.klen = sizeof(samp_par)};
+ static int nreleased;
+ static Tex *rel_head, *rel_tail;   // released entries in release order (sweep_released drops from the head)
++static uint64_t rel_bytes;         // own memory of the released entries (rel_add / rel_drop)
++// NX2NAVI_TEX_RELEASED_MIB (default 0: no byte cap): past this much own memory in released entries, each release
++// drops the oldest ones until under it, as RELEASED_MAX does for the count. Released entries are mostly render targets
++// of a few MiB each, so the count cap alone held 6 to 8 GiB on a 16 GiB card.
++static int64_t rel_cap = -1;
+ static uint64_t n_uploads, n_reuploads;
+ // Re-uploads since the last perf line (tex_lock): all, and those of textures a WriteTexels wrote since their last upload.
+ static uint64_t ru_n, ru_bytes, ru_ns, ru_wt_n, ru_wt_bytes, ru_wt_ns;
+@@ -609,7 +614,16 @@ static void own_remove(Tex *e) {
+     plat_mutex_unlock(&owned_lock);
+ }
+ 
++static uint64_t own_bytes(const Tex *e) {
++    VkCtx *c = vk_ctx();
++    if (!e->alloc || !c) return 0;
++    VmaAllocationInfo ai;
++    vmaGetAllocationInfo(c->vma, e->alloc, &ai);
++    return ai.size;
++}
++
+ static void rel_append(Tex *e) {
++    rel_bytes += own_bytes(e);
+     e->rel_next = NULL;
+     e->rel_prev = rel_tail;
+     if (rel_tail) rel_tail->rel_next = e;
+@@ -618,6 +632,8 @@ static void rel_append(Tex *e) {
+ }
+ 
+ static void rel_unlink(Tex *e) {
++    uint64_t b = own_bytes(e);
++    rel_bytes = rel_bytes > b ? rel_bytes - b : 0;
+     if (e->rel_prev) e->rel_prev->rel_next = e->rel_next;
+     else rel_head = e->rel_next;
+     if (e->rel_next) e->rel_next->rel_prev = e->rel_prev;
+@@ -652,7 +668,14 @@ static void destroy_tex(Tex *e) {
+ // frames every 40-50 s on a GTX 1050 Ti, then the textures still in use were created and uploaded again.
+ #define RELEASED_MAX 2048
+ static void sweep_released(void) {
++    if (rel_cap < 0) {
++        const char *s = cfg_get("NX2NAVI_TEX_RELEASED_MIB");
++        rel_cap = s && *s ? (int64_t)atoll(s) * 1048576 : 0;
++        if (rel_cap < 0) rel_cap = 0;
++        if (rel_cap) rt_log("vk: released textures: own memory capped at %lld MiB", (long long)(rel_cap / 1048576));
++    }
+     while (nreleased > RELEASED_MAX && rel_head) destroy_tex(rel_head);
++    while (rel_cap && rel_bytes > (uint64_t)rel_cap && rel_head) destroy_tex(rel_head);
+ }
+ 
+ // NX2NAVI_TEX_VRAM_PRESSURE (percent of the device-local budget, default 90; 0 = off): above it, each submit drops up to
+@@ -2261,7 +2284,7 @@ void vk_texture_shutdown(void) {
+     by_addr = (nvn_hmap){.klen = 8};
+     samplers = (nvn_hmap){.klen = sizeof(samp_par)};
+     free(tslots), free(sslots);
+-    tslots = NULL, sslots = NULL, ntslots = nsslots = 0, nreleased = 0;
++    tslots = NULL, sslots = NULL, ntslots = nsslots = 0, nreleased = 0, rel_bytes = 0;
+     rel_head = rel_tail = NULL;
+     if (sinfo) memset(sinfo, 0, sizeof *sinfo << 20), memset(sce, 0, sizeof *sce << 20);   // no slot is registered: tokens 0
+     unlock();
+-- 
+2.56.0
+
