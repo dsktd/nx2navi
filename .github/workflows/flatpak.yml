@@ -20,10 +20,12 @@ jobs:
           sudo docker image prune -af >/dev/null 2>&1 || true
           df -h / | tail -1
       - uses: actions/checkout@v4
+      - id: key
+        run: echo "key=fpb-$(cat flatpak/* patches/* build-linux.py runtime-linux/* 2>/dev/null | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v4
         with:
           path: flatpak/.flatpak-builder
-          key: fpb-${{ hashFiles('flatpak/*', 'patches/**', 'build-linux.py', 'runtime-linux/**') }}
+          key: ${{ steps.key.outputs.key }}
           restore-keys: fpb-
       - name: install flatpak-builder
         run: |
