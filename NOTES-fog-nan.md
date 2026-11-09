@@ -544,3 +544,35 @@ Runs i128p4-240 (heap scan at the slot-21 start, `tools/voice-scan.gdb`, dump of
   sound list) reads it. Next: inside main+0x36d1440's descendants find the per-sound list walk and the state/flag read that leads
   to 0x36cadb0 (the stream player's prepare/start), take that flag's address at the slot-21 case (gdb breakpoint on the call
   into 0x36cadb0 with `x19`/`x20`), and hw-watch it in one more run: the writer is the game thread's StartSound caller, the decider.
+
+## Horizon bands (2026-11-09 evening, lab paused before any A/B)
+
+- Artefact (Cal, play-20261109-174705, binary with patches through 0026): `logs/shot-21152.png`, also marks 19882-21113
+  and the sunset `shot-horizon-tiles-20261109-1752.png`. Measured on the 2560x1440 shot: thin bright vertical lines
+  every 80 px (32 columns across the picture, 60 px at the 1920x1080 scene size), broken at one horizontal seam, only
+  over the hazy mid-distance ground; a screen-space tile grid (about 32x18), not world geometry. Shot 19882 (same spot,
+  30 s earlier) shows none at 960 px wide (not checked at full size).
+- Not reproduced in the lab yet, so **no toggle result** (GPU_WAIT, DIFF_THREADS, EVENT_WAITS all untested) and the
+  pass is a candidate only. The 174705 replay is not repeatable late: three runs to presents 19000-22300 ended at the
+  cliff by the Kakariko steps (two runs, camera away from the field) and in the load menu (one run); the marks' view
+  never came up. Lab frame 21152 itself (cliff, a strip of field at the left) shows no lines.
+- Replay traps: without the `just play` defaults the replay dies near present 8000 (`radv/amdgpu: Not enough memory for
+  command submission`, device fault); pass `NX2NAVI_REPLAY_ASYNC=1 NX2NAVI_VK_RECORDER=1 NX2NAVI_TEX_RELEASED_MIB=3072`.
+  `shot.req` shots land in the shared `logs/` under the present number and overwrote an older `shot-19607.png`; use
+  `NX2NAVI_SHOTS=lo-hi:step NX2NAVI_SHOTS_DIR=<dir>` instead (thumbnails kept in `.lab/hb-scan-shots`, every 125
+  presents from 1500).
+- Usable frames from that scan: presents 3250-3500 stand still facing the field in daylight (the bridge view, same
+  direction as the marks), 8500-10000 face the sun at sunset by the dead tree. Both are early enough to repeat.
+- Candidates from the frame-21152 dump (`.lab/hb-base/dump/passes.txt`, 257 passes; images deleted):
+  - 20-group compute dispatches that read the 1920x1080 depth and write a storage range at 0x25e90d000 (span 0x6000):
+    pass 0137 cs 9ede2d20f7fb5655, 0157 cs 0e78a76c1688cda4, 0205 cs 8248c934d151cfb3 (callers main+0x65c488/0x65da5c);
+    18-group ones 0135 cs 371fc95ff99eb169 and 0158 cs 6c14e31272b511bf; 0158 reads 0x25e90d000 and writes 0x25e903000
+    (span 0x4000), which the next frame's first passes (0000 cs 293d4f8b, 0015, the froxel pass 0103 6x9x12) read.
+    That is a GPU-written, CPU-visible buffer consumed one frame later through the shadow write-back: the shape 0024
+    could disturb (the frame's first submission is no longer held until the write-back has landed).
+  - The froxel chain is 0103 (6x9x12, cs 626050d9324b5fac) and 0105 (12x9x11, cs 758cfce40008b5f0, the density
+    injection); 12 or 6 columns do not match 32, so the fog volume itself is the less likely source.
+  - Nothing here is 32 wide on screen except five 32x32 dispatches (0017-0023, cs 4fef610ffb423be2), unexamined.
+- Next, when the lab is free: dump present 3400, look for the lines in final.png; if absent try 9000 (sunset). At the
+  frame that shows them: `NX2NAVI_GPU_WAIT=0`, `NX2NAVI_DIFF_THREADS=1`, both, `NX2NAVI_EVENT_WAITS=1`, then a
+  binary without 0024-0026. If the lab never shows them, ask Cal for one run with `NX2NAVI_GPU_WAIT=0` in the field.

@@ -153,6 +153,7 @@ Field, HDR10 native through niri-spicy, 240 Hz panel. Since the 2026-11-08 morni
 - Defaults: `NX2NAVI_PIPE_SKIP=any`, `NX2NAVI_HDR=native`, `REPLAY_ASYNC=1`, `VK_RECORDER=1`, `TEX_RELEASED_MIB=3072`.
 - AO: the event-waits ordering (v3, patch 0016) fixes AO's one-frame lag in the lab but is off (one residual dip, a
   device loss at the castle spot).
+- Horizon bands (2026-11-09, open): thin vertical lines every 80 px over the hazy mid-distance field (Cal's shot-21152, binary through 0026); not reproduced in the lab yet, no toggle tested; NOTES "Horizon bands" has the candidates and the next replay.
 - Open: #128 intro speed (second lab pass 2026-11-09: the narration voice slots start 2.5-4x faster per wall second at 240 than at 60 while the time manager and the update's +0xd58 step are patched correctly; the update's +0xd50 counter runs per present; the consumer is still unknown; third pass: the slots are started by atk's sound thread itself; fourth pass: no separate start command, the start is a side effect of atk's per-frame update main+0x36d1440 (two callers), stream reader entries and ring objects located, NOTES "#128 fourth lab pass"; tools/voice-{watch,scan,queue,stream}.gdb, tools/gdbwrap), #138 gray close-LOD bushes (cleared so far: mesh path, alpha test, render
   conditions, vertex formats (0018), occlusion-query culls (0020's `NX2NAVI_OQ_FORCE`), the shared vs c6 block; the vertex
   textures' data (round 3: the 512x512 rgba16f one is a live ping-ponged push/bend field written by compute every other
