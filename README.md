@@ -171,3 +171,42 @@ Both are opt-in environment variables for `tools/lab-run` (see its header):
 
 - `LAB_VALIDATE=1`: Khronos validation layer from nixpkgs plus synchronization validation. Messages go to `.lab/<label>/validation.log`, at most 3 per message ID. Slow.
 - `LAB_HANG=1`: `RADV_DEBUG=nogpl,hang`; the `radv_dumps_*` hang reports land in `.lab/<label>/hang`.
+
+## Flatpak build kit (Steam Deck)
+
+`flatpak/` packages a **build kit**, not the game: the toolchain (clang/lld 22, Python 3.12 and 3.14 venvs with the
+requirements, the prebuilt shader translator), the upstream checkout at the commit `build` sits on with
+`patches/*.patch` applied (0002 left out: only `build-xlate-private.py` uses it), `build-linux.py`, `runtime-linux/`
+and the launcher `flatpak/nx2navi.sh`. Runtime: `org.freedesktop.Sdk//26.08` (it compiles at run time; SDL3, opus,
+vpx, dav1d, zstd and the Vulkan loader come with it) and its GL extension for Mesa/RADV, so no nixGL.
+
+**License: for Cal's own devices only.** Build it locally or take the private CI artifact and install with
+`flatpak install --user`. Never publish it to Flathub, a remote, a release or a page. It holds no game files and no
+keys; the game is built on the device from your own dump.
+
+- `just flatpak` builds `flatpak/nx2navi-kit.flatpak` (needs network: pip wheels, NuGet for the translator).
+  In a container without `/dev/fuse` add `--disable-rofiles-fuse` to the flatpak-builder line.
+- `just flatpak-install` installs it for this user.
+- CI: `.github/workflows/flatpak.yml` (manual dispatch, `kit-*` tags, pushes touching the kit or patches) uploads the
+  bundle as an Actions artifact kept 3 days. Nothing else.
+
+On first run the launcher copies the kit's sources to `~/.var/app/io.github.dsktd.NX2navi/data/nx2navi/NX2navi`, then
+extracts the `.nup` (`make_game.py --until romfs`), lifts and compiles (`build-linux.py --cpu v3`, Zen 2 has AVX2),
+runs `prepare_shaders.py` (it opens a window) and plays. Each step leaves a stamp in `.../nx2navi/state/`, so a stopped
+build resumes; `flatpak run io.github.dsktd.NX2navi status` lists them. Saves (`build/v111/profile`), `nx2navi.ini`,
+the shader and pipeline caches and logs all live in that data dir, writable. A new kit re-copies the sources and
+rebuilds the game; a new `.nup` re-extracts. Play defaults are the justfile's: `RADV_DEBUG=nogpl`,
+`NX2NAVI_PIPE_SKIP=any`, `NX2NAVI_HDR=native`, `NX2NAVI_REPLAY_ASYNC=1`, `NX2NAVI_VK_RECORDER=1`, each overridable.
+Permissions: Wayland (X11 fallback), `--device=all` (GPU and the Deck's pad), PulseAudio, `/sys/class/dmi/id` read-only
+(Deck detection), no network, no host files.
+
+### Steam Deck
+
+1. Desktop Mode. Copy `nx2navi-kit.flatpak` to the Deck (USB stick, `scp`).
+2. Konsole: `flatpak install --user nx2navi-kit.flatpak` (pulls the 26.08 runtime from Flathub).
+3. Put your own Ocarina of Time 1.1.1 `.nup` into `~/.var/app/io.github.dsktd.NX2navi/data/nx2navi/` (create the folder),
+   or hand it in once: `flatpak run --file-forwarding io.github.dsktd.NX2navi @@ /path/game.nup @@`. Allow about 60 GB.
+4. First run from Konsole, `flatpak run io.github.dsktd.NX2navi build`, and watch it (an hour or more; it resumes if
+   stopped). The shader step opens a window: stay in Desktop Mode.
+5. Steam, "Add a Non-Steam Game", pick NX2navi. In Game Mode it then launches straight into the game, with the Deck
+   device profile (1280x800, 40 fps) the runtime picks itself.

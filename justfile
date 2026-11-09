@@ -33,7 +33,7 @@ wrapper := if gpu == "nvidia" { "nixVulkanNvidia" } else { "nixVulkanIntel" }
 # yakin owns it and presents the pad SDL sees
 # (NX2NAVI_FIX_C0=0 avoids the mesh-stage c0 overflow crash, upstream-issue-c0-mesh.md, but the picture goes black:
 # the shaders read zeros for their driver constants. Not usable; the fix has to land upstream.)
-radv := "SDL_VIDEODRIVER=wayland SDL_JOYSTICK_HIDAPI_STEAM=0 " + (if mesa == "stable" { "" } else { "RADV_DEBUG=nogpl " }) + "NX2NAVI_PIPE_SKIP=" + pipeskip
+radv := "SDL_VIDEODRIVER=" + env("SDL_VIDEODRIVER", "wayland") + " SDL_JOYSTICK_HIDAPI_STEAM=0 " + (if mesa == "stable" { "" } else { "RADV_DEBUG=nogpl " }) + "NX2NAVI_PIPE_SKIP=" + pipeskip
 dev := "NX2NAVI_NVIDIA=" + (if gpu == "nvidia" { "1" } else { "0" }) + " nix develop " + impure + " " + flake + shellname + " --command"
 py := ".venv/bin/python"
 py314 := ".venv-py314/bin/python"
@@ -180,3 +180,15 @@ update: && xlate game shaders
 # Open the shell itself
 shell:
     cd "{{src}}" && NX2NAVI_NVIDIA={{ if gpu == "nvidia" { "1" } else { "0" } }} nix develop {{impure}} "{{flake}}"
+
+# The build kit as a Flatpak bundle (flatpak/README.md): toolchain, patched sources, launcher; no game files, no
+# game binary. For Cal's own devices only: never publish it. Writes flatpak/nx2navi-kit.flatpak.
+flatpak:
+    cd "{{flake}}/flatpak" && nix shell nixpkgs#flatpak nixpkgs#flatpak-builder -c bash -c '\
+        flatpak --user remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo && \
+        flatpak-builder --user --install-deps-from=flathub --force-clean --ccache --repo=.repo .build io.github.dsktd.NX2navi.yml && \
+        flatpak build-bundle --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo .repo nx2navi-kit.flatpak io.github.dsktd.NX2navi'
+
+# Install the bundle for this user (the runtime comes from Flathub)
+flatpak-install:
+    nix shell nixpkgs#flatpak -c flatpak install --user -y "{{flake}}/flatpak/nx2navi-kit.flatpak"

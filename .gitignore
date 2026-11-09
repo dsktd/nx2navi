@@ -7,3 +7,8 @@ latest-frame.png
 perf*.data
 !.claude/
 lab-profile-*/
+.flatpak-user/
+flatpak/.build/
+flatpak/.repo/
+flatpak/.flatpak-builder/
+flatpak/*.flatpak

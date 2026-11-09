@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Private build kit for Cal's own devices. Not for Flathub or any remote: upstream forbids redistribution. -->
+<component type="desktop-application">
+  <id>io.github.dsktd.NX2navi</id>
+  <name>NX2navi</name>
+  <summary>Build kit for a private Linux build of NX2navi</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>LicenseRef-proprietary</project_license>
+  <description>
+    <p>Builds the NX2navi static recompilation from the user's own Ocarina of Time 1.1.1 dump on first run, then plays it. Contains no game files.</p>
+  </description>
+  <launchable type="desktop-id">io.github.dsktd.NX2navi.desktop</launchable>
+  <content_rating type="oars-1.1"/>
+</component>

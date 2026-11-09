@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=NX2navi
+Comment=Builds and plays your own Ocarina of Time (Switch 2) dump, recompiled for Linux
+Exec=nx2navi
+Icon=io.github.dsktd.NX2navi
+Terminal=false
+Categories=Game;

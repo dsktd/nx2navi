@@ -1,0 +1,147 @@
+# NX2navi build kit as a Flatpak, for Cal's own devices only (desktop, Steam Deck).
+#
+# It holds no game files and no game binary: it carries the toolchain, the upstream checkout at the pinned commit with
+# our private patches, our build glue and the launcher. On first run the launcher extracts the user's own .nup, lifts,
+# compiles and prepares shaders into ~/.var/app/io.github.dsktd.NX2navi/data/nx2navi.
+#
+# LICENSE: upstream's additions forbid redistribution. Build it locally (`just flatpak`) or take the private CI
+# artifact; install with `flatpak install --user <bundle>`. NEVER publish it to Flathub, a remote, a release or a page.
+app-id: io.github.dsktd.NX2navi
+# The Sdk, not the Platform: the kit compiles at run time and needs headers, libc dev files, cmake, git, python3.14,
+# SDL3, opus, vpx, dav1d, zstd and the Vulkan loader, all of which 26.08 carries. The GL extension (Mesa, RADV) is
+# mounted for the Sdk as for the Platform.
+runtime: org.freedesktop.Sdk
+runtime-version: '26.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.llvm22
+  - org.freedesktop.Sdk.Extension.dotnet10
+command: nx2navi
+finish-args:
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+  - --device=all          # /dev/dri plus the Steam Deck's gamepad (hidraw, uinput)
+  - --socket=pulseaudio
+  - --filesystem=/sys/class/dmi/id:ro   # the runtime's Steam Deck detection (cfg.c on_steam_deck)
+  # no --share=network and no host filesystem: the data dir is the app's own; a .nup elsewhere comes in through
+  # `flatpak run --file-forwarding ... @@ <file> @@` (document portal) or is copied into the data dir
+build-options:
+  append-path: /usr/lib/sdk/llvm22/bin:/usr/lib/sdk/dotnet10/bin
+  prepend-ld-library-path: /usr/lib/sdk/llvm22/lib:/usr/lib/sdk/dotnet10/lib
+  env:
+    DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+    DOTNET_NOLOGO: '1'
+    DOTNET_ROOT: /usr/lib/sdk/dotnet10/lib
+modules:
+  # clang, lld and the LLVM tools for the run-time compile (copied: an Sdk extension is only mounted while building)
+  - name: llvm
+    buildsystem: simple
+    build-commands:
+      - mkdir -p /app/llvm
+      - cp -a /usr/lib/sdk/llvm22/bin /usr/lib/sdk/llvm22/lib /usr/lib/sdk/llvm22/libexec /usr/lib/sdk/llvm22/include /app/llvm/
+
+  # Python 3.12 for the lifter (tools/requirements.txt); 3.14 comes with the Sdk
+  - name: python3.12
+    config-opts:
+      - --enable-shared
+      - --with-ensurepip=install
+      - --without-static-libpython
+      - LDFLAGS=-Wl,-rpath,/app/lib
+    sources:
+      - type: archive
+        url: https://www.python.org/ftp/python/3.12.12/Python-3.12.12.tar.xz
+        sha256: fb85a13414b028c49ba18bbd523c2d055a30b56b18b92ce454ea2c51edc656c4
+    cleanup:
+      - /share/man
+
+  # vk_mem_alloc.h (header only; build-linux.py reads NX2NAVI_VMA_INCLUDE)
+  - name: vma
+    buildsystem: simple
+    build-commands:
+      - install -Dm644 include/vk_mem_alloc.h /app/include/vk_mem_alloc.h
+    sources:
+      - type: archive
+        url: https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/archive/refs/tags/v3.3.0.tar.gz
+        sha256: c4f6bbe6b5a45c2eb610ca9d231158e313086d5b1a40c9922cb42b597419b14e
+
+  # The upstream checkout at the commit our `build` branch sits on, plus our private patches (patches/, the same
+  # commits as `build`; 0002 is a translator patch only build-xlate-private.py uses, so it is left out here).
+  # Built here, with network (local builds and CI only): the two venvs and the shader translator (NativeAOT),
+  # so neither .NET nor the network is needed at run time.
+  - name: nx2navi-kit
+    buildsystem: simple
+    build-options:
+      build-args:
+        - --share=network
+      env:
+        GIT_CEILING_DIRECTORIES: /run/build
+    build-commands:
+      - python3.12 -m venv /app/venv312
+      - /app/venv312/bin/pip install -q -r tools/requirements.txt zbic
+      - python3.14 -m venv /app/venv314
+      - /app/venv314/bin/pip install -q -r tools/requirements-py314.txt
+      - ln -s /app/venv312 .venv && ln -s /app/venv314 .venv-py314
+      # no refs/ (tools/fetch_refs.sh): the desktop build runs without it (prepare_shaders --no-list), and its pinned
+      # MacNativeGames copy differs from tools/vendor/ryujinx in TitleIDs.cs, which stops build_xlate.py
+      - .venv/bin/python tools/build_xlate.py
+      - rm -rf build/xlate/ryujinx .venv .venv-py314
+      - mkdir -p /app/src && cp -a . /app/src/NX2navi
+      - install -Dm644 kit/build-linux.py /app/kit/build-linux.py
+      - cp -a kit/runtime-linux /app/kit/runtime-linux
+      - install -Dm755 kit/nx2navi.sh /app/bin/nx2navi
+      - install -Dm644 kit/io.github.dsktd.NX2navi.desktop /app/share/applications/io.github.dsktd.NX2navi.desktop
+      - install -Dm644 kit/io.github.dsktd.NX2navi.metainfo.xml /app/share/metainfo/io.github.dsktd.NX2navi.metainfo.xml
+      - install -Dm644 kit/io.github.dsktd.NX2navi.svg /app/share/icons/hicolor/scalable/apps/io.github.dsktd.NX2navi.svg
+      # the kit's identity: a new kit re-copies the sources into the data dir and rebuilds the game
+      - cat /app/kit/build-linux.py patches.list | sha256sum | cut -c1-16 > /app/kit/id
+    sources:
+      - type: git
+        url: https://github.com/tangerineturtle1/NX2navi.git
+        commit: 5b28da3a065c56914848438503dd767c9a85afcf
+      - type: patch
+        path: ../patches/0001-shadow-write-back-changed-pages.patch
+      - type: patch
+        path: ../patches/0003-shader-hot-reload.patch
+      - type: patch
+        path: ../patches/0004-shadow-sync-next-part-writes.patch
+      - type: patch
+        path: ../patches/0005-watch-range-log.patch
+      - type: patch
+        path: ../patches/0006-vk_exec_draw-clamp-the-mesh-stage-s-c0-storage-table.patch
+      - type: patch
+        path: ../patches/0007-Screenshots-take-the-window-crop-the-present-shows-n.patch
+      - type: patch
+        path: ../patches/0008-vk_memory-compare-the-write-back-pages-outside-shado.patch
+      - type: patch
+        path: ../patches/0009-vk_texture-the-pool-s-per-submit-freshness-check-rea.patch
+      - type: patch
+        path: ../patches/0010-vk_memory-the-shadow-sync-queries-neighbouring-pools.patch
+      - type: patch
+        path: ../patches/0011-vk_dump-NX2NAVI_DUMP_REQ-1-dumps-the-frame-after-a-d.patch
+      - type: patch
+        path: ../patches/0012-vk_usnap-zero-the-game-s-projection-jitter-when-no-t.patch
+      - type: patch
+        path: ../patches/0013-nvn-order-cross-queue-WaitEvent-in-the-replay-NX2NAV.patch
+      - type: script
+        dest-filename: patches.list
+        commands:
+          - 5b28da3a 0001 0003 0004 0005 0006 0007 0008 0009 0010 0011 0012 0013
+      - type: file
+        path: ../build-linux.py
+        dest: kit
+      - type: dir
+        path: ../runtime-linux
+        dest: kit/runtime-linux
+      - type: file
+        path: nx2navi.sh
+        dest: kit
+      - type: file
+        path: io.github.dsktd.NX2navi.desktop
+        dest: kit
+      - type: file
+        path: io.github.dsktd.NX2navi.metainfo.xml
+        dest: kit
+      - type: file
+        path: io.github.dsktd.NX2navi.svg
+        dest: kit

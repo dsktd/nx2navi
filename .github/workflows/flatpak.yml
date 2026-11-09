@@ -1,0 +1,37 @@
+# Builds the NX2navi kit Flatpak (flatpak/) and keeps it ONLY as a short-lived Actions artifact of this private repo.
+# No release, registry, Pages or Flathub: upstream forbids redistribution. No game files or keys ever enter CI; the
+# kit has none (the game is built on the device from the user's own dump). Upstream comes from the manifest's pinned
+# commit plus patches/*.patch, since our `build` branch is never pushed.
+name: flatpak
+on:
+  workflow_dispatch:
+  push:
+    tags: ['kit-*']
+    paths: ['flatpak/**', 'patches/**', 'build-linux.py', 'runtime-linux/**', '.github/workflows/flatpak.yml']
+concurrency: { group: flatpak, cancel-in-progress: true }
+jobs:
+  kit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-26.08
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: flatpak/.flatpak-builder
+          key: fpb-${{ hashFiles('flatpak/**', 'patches/**', 'build-linux.py', 'runtime-linux/**') }}
+          restore-keys: fpb-
+      - name: build
+        working-directory: flatpak
+        run: |
+          flatpak --user remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          flatpak-builder --user --install-deps-from=flathub --force-clean --repo=.repo .build io.github.dsktd.NX2navi.yml
+          flatpak build-bundle --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo .repo nx2navi-kit.flatpak io.github.dsktd.NX2navi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nx2navi-kit
+          path: flatpak/nx2navi-kit.flatpak
+          retention-days: 3
+          compression-level: 0
