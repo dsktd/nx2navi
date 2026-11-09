@@ -1,0 +1,368 @@
+From ba7dd9e94a3d5395e17c73274f8a3aa2e7eb6bf3 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Sun, 8 Nov 2026 22:14:18 -0500
+Subject: [PATCH 15/15] Mark this moment: F9, an L3+R3 hold or mark.req log a
+ mark, save a shot (HDR10 too), arm a dump and write the thumbnail ring
+
+---
+ runtime/boot.c        | 81 +++++++++++++++++++++++++++++++++++++++++--
+ runtime/cfg.c         |  2 +-
+ runtime/flight.h      |  4 +++
+ runtime/gfx_present.c | 20 ++++++++++-
+ runtime/input.c       | 42 ++++++++++++++++++++++
+ runtime/input.h       |  4 +++
+ runtime/input_sdl.c   |  5 ++-
+ runtime/input_win.c   |  8 +++++
+ runtime/vk_backend.c  |  2 +-
+ 9 files changed, 161 insertions(+), 7 deletions(-)
+
+diff --git a/runtime/boot.c b/runtime/boot.c
+index 29849a1..dd95bcb 100644
+--- a/runtime/boot.c
++++ b/runtime/boot.c
+@@ -18,7 +18,9 @@
+ #include "fs.h"
+ #include "kernel.h"
+ #include "ipc.h"
++#include "flight.h"
+ #include "gfx.h"
++#include "input.h"
+ #include "mods.h"
+ #include "nvn_api.h"
+ #include "platform/platform.h"
+@@ -246,6 +248,8 @@ static void save_shot(const tex_t *t, const char *path) {
+ // pictures show what a player sees.
+ // crop: the window crop the present shows (x, y, w, h; zero size for the whole image), so the picture is what a player
+ // sees and not the whole swapchain texture the game renders a smaller frame into.
++static int shot_force;   // mark_poll: this present is saved like a shot.req, whatever NX2NAVI_SHADER_RELOAD says
++
+ static void series_shot(const tex_t *t, const int crop[4], uint64_t n) {
+     static int parsed;
+     static unsigned long long lo, hi, step, next;
+@@ -270,7 +274,8 @@ static void series_shot(const tex_t *t, const int crop[4], uint64_t n) {
+     if (reload < 0)
+         reload = cfg_get("NX2NAVI_SHADER_RELOAD") && atoi(cfg_get("NX2NAVI_SHADER_RELOAD")) == 1 &&
+                  gfx_shader_beside_cache("shot.req", req_path, sizeof req_path);
+-    int req = reload && plat_file_exists(req_path);
++    int req_file = reload && plat_file_exists(req_path), req = req_file || shot_force;
++    shot_force = 0;
+     if (req) {
+     } else if (world) {   // the first present at or after each step of the world clock
+         int64_t w = frame_step_world_us();
+@@ -281,7 +286,11 @@ static void series_shot(const tex_t *t, const int crop[4], uint64_t n) {
+     }
+     int fmt = t->d.format;
+     int bgra = fmt == NVN_FORMAT_BGRA8 || fmt == NVN_FORMAT_BGRA8_SRGB;
+-    if (!bgra && fmt != NVN_FORMAT_RGBA8 && fmt != NVN_FORMAT_RGBA8_SRGB) return;
++    int pq = fmt == NVN_FORMAT_RGB10A2;   // NX2NAVI_HDR=native: the game presents PQ Rec. 2020 (vk_hdr.c), decoded to sRGB
++    if (!bgra && !pq && fmt != NVN_FORMAT_RGBA8 && fmt != NVN_FORMAT_RGBA8_SRGB) {
++        if (req) rt_log("boot: shot of present %llu skipped: format %#x", (unsigned long long)n, fmt);
++        return;
++    }
+     int cx = 0, cy = 0;
+     uint32_t w = t->d.width, h = t->d.height;
+     if (crop && crop[2] > 0 && crop[3] > 0 && (uint32_t)(crop[0] + crop[2]) <= w && (uint32_t)(crop[1] + crop[3]) <= h)
+@@ -294,6 +303,7 @@ static void series_shot(const tex_t *t, const int crop[4], uint64_t n) {
+     NVNcopyRegion r = {.xoffset = cx, .yoffset = cy, .width = (int)w, .height = (int)h, .depth = 1};
+     if (gfx_replay_async()) gfx_backend()->finish();   // the presented frame may still be queued for the replay
+     gfx_backend()->read_texels(t, &view, &r, px, 4ull * w, 4ull * w * h);
++    if (pq) vk_hdr_to_srgb8(px, px, (size_t)w * h, 0);   // in place: each pixel is read before it is written
+     for (uint32_t y = 0; y < oh; y++)
+         for (uint32_t x = 0; x < ow; x++) {
+             uint32_t x0 = x * w / ow, x1 = (x + 1) * w / ow, y0 = y * h / oh, y1 = (y + 1) * h / oh;
+@@ -315,7 +325,8 @@ static void series_shot(const tex_t *t, const int crop[4], uint64_t n) {
+         gfx_shader_beside_cache(name, path, sizeof path);
+     }
+     rt_write_png(path, out, ow, oh);
+-    if (req) plat_file_delete(req_path), rt_log("boot: shot.req: present %llu written to %s", (unsigned long long)n, path);
++    if (req_file) plat_file_delete(req_path);
++    if (req) rt_log("boot: shot: present %llu written to %s", (unsigned long long)n, path);
+     free(out);
+     free(px);
+ }
+@@ -323,8 +334,72 @@ static void series_shot(const tex_t *t, const int crop[4], uint64_t n) {
+ // A --seconds run ends at the first present after the world clock (game time since the save's first frame,
+ // frame_step_world_us) passed S seconds, so a run covers the same game time at any frame rate; any other frame is
+ // counted by the back end only.
++// Mark this moment: F9, the gamepad chord (input.c, NX2NAVI_MARK_CHORD, default L3+R3 held 0.5 s) or a file mark.req
++// beside the shader cache folder (any tool: `touch build/v111/mark.req`). A mark logs "mark N at present P", saves this
++// present as logs/shot-<P>.png, touches dump.req when NX2NAVI_DUMP_REQ=1 (vk_dump.c dumps the next frame), and with
++// NX2NAVI_MARK_RING=1 writes the thumbnail ring's last MARK_RING_N frames (320x180, blitted on the GPU each present:
++// gfx_present.c) to logs/mark-<N>/f<frame>.png on a background thread.
++#define MARK_RING_N 30
++int mark_ring_on;
++
++typedef struct { int no, n; uint64_t first; char dir[PLAT_PATH_MAX]; uint8_t px[]; } MarkRing;
++
++static void mark_ring_write(void *arg) {
++    MarkRing *m = arg;
++    plat_file_mkdir_p(m->dir);
++    for (int i = 0; i < m->n; i++) {
++        char path[PLAT_PATH_MAX + 32];
++        snprintf(path, sizeof path, "%s/f%llu.png", m->dir, (unsigned long long)(m->first + (uint64_t)i));
++        uint8_t *px = m->px + (size_t)i * FLIGHT_THUMB_W * FLIGHT_THUMB_H * 4;
++        if (px[3]) rt_write_png(path, px, FLIGHT_THUMB_W, FLIGHT_THUMB_H);   // alpha 0: the ring no longer held it
++    }
++    rt_log("mark %d: %d ring frames written to %s", m->no, m->n, m->dir);
++    free(m);
++}
++
++static void mark_poll(uint64_t n) {
++    static int init, dump_req, marks;
++    static char mark_req[PLAT_PATH_MAX], dump_path[PLAT_PATH_MAX];
++    if (!init) {
++        init = 1;
++        if (!gfx_shader_beside_cache("mark.req", mark_req, sizeof mark_req)) mark_req[0] = 0;
++        dump_req = cfg_get("NX2NAVI_DUMP_REQ") && atoi(cfg_get("NX2NAVI_DUMP_REQ")) == 1 &&
++                   gfx_shader_beside_cache("dump.req", dump_path, sizeof dump_path);
++        if (cfg_get("NX2NAVI_MARK_RING") && atoi(cfg_get("NX2NAVI_MARK_RING")) == 1) {
++            vk_thumbs_enable(MARK_RING_N + 2);   // NX2NAVI_FLIGHT's larger ring, when it came first, serves too
++            mark_ring_on = 1;
++        }
++    }
++    const char *why = input_mark_key() ? "F9" : input_mark_take() ? "gamepad chord" : NULL;
++    if (!why && mark_req[0] && n % 4 == 0 && plat_file_exists(mark_req)) why = "mark.req", plat_file_delete(mark_req);
++    if (!why) return;
++    rt_log("mark %d at present %llu (%s)", ++marks, (unsigned long long)n, why);
++    shot_force = 1;
++    if (dump_req) {
++        FILE *f = fopen(dump_path, "w");
++        if (f) fclose(f);
++    }
++    uint64_t last = mark_ring_on ? vk_thumbs_latest() : 0;
++    if (!last) return;
++    size_t one = (size_t)FLIGHT_THUMB_W * FLIGHT_THUMB_H * 4;
++    MarkRing *m = calloc(1, sizeof *m + one * MARK_RING_N);
++    if (!m) return;
++    m->no = marks, m->n = MARK_RING_N;
++    m->first = last >= MARK_RING_N ? last - MARK_RING_N + 1 : 1;
++    for (int i = 0; i < m->n; i++) {
++        uint8_t *px = m->px + one * (size_t)i;
++        if (!vk_thumbs_read(m->first + (uint64_t)i, px)) px[3] = 0;
++        else for (size_t k = 3; k < one; k += 4) px[k] = 255;
++    }
++    char name[64];
++    snprintf(name, sizeof name, "logs/mark-%d", marks);
++    if (!gfx_shader_beside_cache(name, m->dir, sizeof m->dir)) snprintf(m->dir, sizeof m->dir, "mark-%d", marks);
++    if (!plat_thread_spawn(mark_ring_write, m, "mark ring", 0)) mark_ring_write(m);
++}
++
+ void rt_frame_presented(const tex_t *t, const int crop[4], uint64_t n) {
+     const RtConfig *cfg = rt_config();
++    mark_poll(n);
+     series_shot(t, crop, n);
+     int64_t w = cfg->seconds ? frame_step_world_us() : -1;
+     if (w < 0 || (double)w < cfg->seconds * 1e6) return;
+diff --git a/runtime/cfg.c b/runtime/cfg.c
+index 1227aa2..17136ae 100644
+--- a/runtime/cfg.c
++++ b/runtime/cfg.c
+@@ -45,7 +45,7 @@ static const char *const known[] = {
+     "FLIGHT_SPIKE_MS", "FLIGHT_THUMBS", "FLUSH_SPAN", "FOV", "FOV_PATCH", "FG_HUDLESS_SHOW", "FPS60", "FPS_LIMIT", "FRAMEGEN", "FREEZE_IDLE", "FREE_CORES",
+     "FULLSCREEN", "FXAA", "GAME_ASPECT", "GAME_RES", "GPA", "GPA_EMPTY", "GPA_TWIN", "GPL", "GPL_DRAW_BUILD", "GPU", "GPU_INDEX", "GPU_NAME", "HDR", "HDR_GAME_NITS", "HDR_HUE",
+     "HDR_PEAK_NITS", "HDR_UI_NITS", "HIGHFPS_FIX", "INPUT", "INPUT_RECORD", "INPUT_SCRIPT", "LANG", "LIB_PREBUILD",
+-    "LIB_PREBUILD_KEEP", "LIB_PREBUILD_THREADS", "LOCALE", "LOD_GUARD", "LSTICK_DEADZONE", "MEMORY", "MENU_LANG", "MENU_SOUND_VOLUME", "MENU_TEST",
++    "LIB_PREBUILD_KEEP", "LIB_PREBUILD_THREADS", "LOCALE", "LOD_GUARD", "LSTICK_DEADZONE", "MARK_CHORD", "MARK_HOLD_MS", "MARK_RING", "MEMORY", "MENU_LANG", "MENU_SOUND_VOLUME", "MENU_TEST",
+     "MENU_CURSOR", "MENU_CURSOR_LOG", "MENU_TEST_DIR", "MENU_TEST_SET", "MINIMAL_LAYOUT", "MIRROR_GAP", "MODS_DIR", "MODS_DISABLED", "MODS_ORDER", "MODS_REBUILD", "MOTION", "MOUSE_MODE", "MOUSE_DIRECT_PATCH", "MOUSE_SENS", "MOVIE_HOST", "MOVIE_PACE",
+     "MVOBJ_ALL", "MVOBJ_BANKS", "MVOBJ_EQUAL", "MVOBJ_EXACT", "MVOBJ_EXEC", "MVOBJ_NOC4", "MVOBJ_ONLY", "MVOBJ_TIMES", "MVPREV_CHECK", "MVPREV_GROW", "MVPREV_SKIP", "MVPREV_TRUST", "MV_CHECK",
+     "MV_SURVEY",
+diff --git a/runtime/flight.h b/runtime/flight.h
+index 9ed9d47..2c6a9c7 100644
+--- a/runtime/flight.h
++++ b/runtime/flight.h
+@@ -21,3 +21,7 @@ void vk_thumbs_frame(uint64_t frame);    // the present thread names the frame o
+ // Copies frame's thumbnail as RGBA when the ring still holds it complete; 0 when it was never written, is still in
+ // flight or was overwritten. Takes the present lock for one slot copy (about 20 us); any thread.
+ int vk_thumbs_read(uint64_t frame, uint8_t *rgba);
++uint64_t vk_thumbs_latest(void);   // the newest frame the ring holds complete, 0 for none
++
++// NX2NAVI_MARK_RING=1 (boot.c): the thumbnail ring also runs for marks, which write its last frames out.
++extern int mark_ring_on;
+diff --git a/runtime/gfx_present.c b/runtime/gfx_present.c
+index b2c2e6b..dd409db 100644
+--- a/runtime/gfx_present.c
++++ b/runtime/gfx_present.c
+@@ -543,7 +543,7 @@ static void record_thumb(VkCommandBuffer cb, VkImage dst, unsigned fence_slot) {
+ }
+ 
+ int vk_thumbs_read(uint64_t frame, uint8_t *rgba) {
+-    int ok = 0;
++    int ok = 0, hdr = 0;
+     plat_rmutex_lock(&g_pl);
+     if (g_th_n && g_th_ptr && frame) {
+         unsigned ring = (unsigned)(frame % (uint64_t)g_th_n);
+@@ -552,9 +552,18 @@ int vk_thumbs_read(uint64_t frame, uint8_t *rgba) {
+             vmaInvalidateAllocation(c->vma, g_th_alloc, TH_BYTES * ring, TH_BYTES);
+             memcpy(rgba, g_th_ptr + TH_BYTES * ring, TH_BYTES);
+             ok = g_th_fmt == VK_FORMAT_B8G8R8A8_UNORM || g_th_fmt == VK_FORMAT_B8G8R8A8_SRGB ? 2 : 1;
++            hdr = g_sc_hdr;
+         }
+     }
+     plat_rmutex_unlock(&g_pl);
++    if (hdr)   // PQ code values in 8 bits (ensure_thumbs): widened to 10 and decoded like a capture
++        for (size_t i = 0; i < TH_BYTES; i += 4) {
++            uint32_t v = (uint32_t)rgba[i] * 1023 / 255 | ((uint32_t)rgba[i + 1] * 1023 / 255) << 10 |
++                         ((uint32_t)rgba[i + 2] * 1023 / 255) << 20;
++            uint8_t in[4];
++            memcpy(in, &v, 4);
++            vk_hdr_to_srgb8(in, rgba + i, 1, 0);
++        }
+     if (ok == 2)
+         for (size_t i = 0; i < TH_BYTES; i += 4) {
+             uint8_t t = rgba[i];
+@@ -563,6 +572,15 @@ int vk_thumbs_read(uint64_t frame, uint8_t *rgba) {
+     return ok != 0;
+ }
+ 
++uint64_t vk_thumbs_latest(void) {
++    uint64_t f = 0;
++    plat_rmutex_lock(&g_pl);
++    for (int i = 0; i < g_th_n; i++)
++        if (g_th_tag[i] > f) f = g_th_tag[i];
++    plat_rmutex_unlock(&g_pl);
++    return f;
++}
++
+ void vk_present_capture(int on) {
+     plat_rmutex_lock(&g_pl);
+     g_capture = on;
+diff --git a/runtime/input.c b/runtime/input.c
+index 2152db3..ab7747b 100644
+--- a/runtime/input.c
++++ b/runtime/input.c
+@@ -639,6 +639,47 @@ static int32_t shake_stick(int held) {
+     return (now - from) / SHAKE_SIDE_NS % 2 ? STICK_MAX : -STICK_MAX;
+ }
+ 
++// Mark this moment (boot.c): NX2NAVI_MARK_CHORD, gamepad buttons by name joined with '+' (default lstick+rstick; off or
++// empty: none), held together NX2NAVI_MARK_HOLD_MS (500) fires one mark per hold. While the whole chord is held its
++// buttons are hidden from the game; a button pressed alone still reaches it. Read again when the settings change.
++static uint8_t mark_chord[PAD_COUNT];
++static int mark_chord_n;
++static unsigned mark_chord_seen = ~0u;
++static uint64_t mark_hold_ns, mark_since;
++static int mark_fired;
++static volatile int32_t mark_pending;
++
++// Under lock: pd's chord buttons cleared while the whole chord is held; a mark is pending once it was held long enough.
++static void mark_chord_check(uint8_t pd[PAD_COUNT]) {
++    unsigned ver = cfg_version();
++    if (ver != mark_chord_seen) {
++        mark_chord_seen = ver;
++        memset(mark_chord, 0, sizeof mark_chord);
++        mark_chord_n = 0;
++        const char *c = cfg_get("NX2NAVI_MARK_CHORD");
++        char buf[128];
++        snprintf(buf, sizeof buf, "%s", c ? c : "lstick+rstick");
++        for (char *save, *tok = strtok_r(buf, "+ ", &save); tok; tok = strtok_r(NULL, "+ ", &save)) {
++            int found = 0;
++            for (int p = PAD_SOUTH; p < PAD_COUNT && !found; p++)
++                if (input_pad_name(p) && !strcasecmp(input_pad_name(p), tok)) found = 1, mark_chord_n += !mark_chord[p], mark_chord[p] = 1;
++            if (!found && strcasecmp(tok, "off")) rt_log("input: NX2NAVI_MARK_CHORD: no gamepad button \"%s\"", tok);
++        }
++        const char *h = cfg_get("NX2NAVI_MARK_HOLD_MS");
++        mark_hold_ns = (uint64_t)(h && *h ? strtoul(h, NULL, 10) : 500) * 1000000ull;
++    }
++    if (!mark_chord_n) return;
++    for (int p = PAD_SOUTH; p < PAD_COUNT; p++)
++        if (mark_chord[p] && !pd[p]) { mark_since = 0, mark_fired = 0; return; }
++    uint64_t now = plat_now_ns();
++    if (!mark_since) mark_since = now;
++    if (!mark_fired && now - mark_since >= mark_hold_ns) mark_fired = 1, plat_xchg32(&mark_pending, 1);
++    for (int p = PAD_SOUTH; p < PAD_COUNT; p++)
++        if (mark_chord[p]) pd[p] = 0;
++}
++
++int input_mark_take(void) { return plat_xchg32(&mark_pending, 0); }
++
+ // Under lock, state 1: the open gamepad's inputs by position (pd[PAD_*] != 0 held); 0 without a connected gamepad.
+ static int pad_physical(uint8_t pd[PAD_COUNT]) {
+     test_pad_tick();
+@@ -655,6 +696,7 @@ static int pad_physical(uint8_t pd[PAD_COUNT]) {
+         for (int p = PAD_SOUTH; p < PAD_COUNT && !pad_pressed_logged; p++)
+             if (pd[p]) pad_pressed_logged = 1, rt_log("input: gamepad \"%s\": first press (%s)", SDL_GetGamepadName(pad), input_pad_name(p));
+     }
++    mark_chord_check(pd);
+     return 1;
+ }
+ 
+diff --git a/runtime/input.h b/runtime/input.h
+index b1a596c..82fbcf1 100644
+--- a/runtime/input.h
++++ b/runtime/input.h
+@@ -63,6 +63,10 @@ int input_capture(int reset, int *id);
+ uint32_t input_key_char(int key);
+ // F8, the flight recorder's key (no KEY_ id), held while the game window is in front.
+ int input_flight_key(void);
++// Mark this moment (boot.c rt_frame_presented): input_mark_key, F9 pressed since the last call (once per press);
++// input_mark_take, the gamepad chord NX2NAVI_MARK_CHORD held NX2NAVI_MARK_HOLD_MS since the last call (once per hold).
++int input_mark_key(void);
++int input_mark_take(void);
+ 
+ // Mouse camera and cursor (input_win.c, Win32 window thread). The window procedure calls input_window_msg first for raw
+ // mouse input, cursor hiding and confinement; it returns 1 with *res set when the message is handled. input_cursor_suspend(1)
+diff --git a/runtime/input_sdl.c b/runtime/input_sdl.c
+index 03c8660..a0e067e 100644
+--- a/runtime/input_sdl.c
++++ b/runtime/input_sdl.c
+@@ -19,7 +19,7 @@
+ 
+ static SDL_Window *win;
+ static volatile uint8_t key_held[KEY_COUNT];
+-static volatile int32_t esc_held, f8_held, focused;
++static volatile int32_t esc_held, f8_held, f9_mark, focused;
+ static volatile int32_t mouse_dx, mouse_dy;   // relative motion since the last ikb_mouse_take, whole counts
+ static float rem_x, rem_y;                    // window thread: the fractions SDL reported beyond them
+ static volatile int32_t captured;             // relative mouse mode is on
+@@ -116,6 +116,8 @@ uint32_t input_key_char(int key) {
+ 
+ int input_flight_key(void) { return focused && f8_held; }
+ 
++int input_mark_key(void) { return plat_xchg32(&f9_mark, 0); }
++
+ // ---- the cursor (window thread)
+ static void cursor_apply(void) {
+     __atomic_store_n(&cur_pending, 0, __ATOMIC_RELAXED);
+@@ -176,6 +178,7 @@ void input_sdl_event(const SDL_Event *e) {
+             if (down && !e->key.repeat && !(cur_rel & CUR_REL)) plat_xchg32(&cur_rel, CUR_REL | CUR_ESC);
+         }
+         if (e->key.scancode == SDL_SCANCODE_F8) plat_xchg32(&f8_held, down);
++        if (e->key.scancode == SDL_SCANCODE_F9 && down && !e->key.repeat) plat_xchg32(&f9_mark, 1);   // mark this moment (boot.c)
+         int k = key_of_sc(e->key.scancode);
+         if (k) key_held[k] = (uint8_t)down;
+         break;
+diff --git a/runtime/input_win.c b/runtime/input_win.c
+index a6aa1e8..cbed869 100644
+--- a/runtime/input_win.c
++++ b/runtime/input_win.c
+@@ -193,6 +193,14 @@ int input_flight_key(void) {
+     return w && w == GetForegroundWindow() && key_down(VK_F8);
+ }
+ 
++int input_mark_key(void) {   // F9's press, once
++    static int was;
++    HWND w = gfx_window_handle();
++    int down = w && w == GetForegroundWindow() && key_down(VK_F9), fire = down && !was;
++    was = down;
++    return fire;
++}
++
+ // ---- input_wsys.h
+ int ikb_foreground(void) {
+     HWND w = gfx_window_handle();
+diff --git a/runtime/vk_backend.c b/runtime/vk_backend.c
+index 36e29d4..cea21df 100644
+--- a/runtime/vk_backend.c
++++ b/runtime/vk_backend.c
+@@ -58,7 +58,7 @@ static void present_main(void *arg) {
+         busy = 1;
+         plat_cond_broadcast(&pcv);
+         plat_mutex_unlock(&pl);
+-        if (flight_on || vk_dump_white) vk_thumbs_frame(j.frame);   // NX2NAVI_DUMP_WHITE reads them too
++        if (flight_on || vk_dump_white || mark_ring_on) vk_thumbs_frame(j.frame);   // NX2NAVI_DUMP_WHITE reads them too
+         vk_present_blit(j.image, VK_IMAGE_LAYOUT_GENERAL, j.format, j.w, j.h, j.has_crop ? j.crop : NULL);
+         uint64_t f = vk_sync_submit(NULL, 0);   // a timeline value after the blit: deferred destruction waits for the blit too
+         if (j.value && f != j.value)
+-- 
+2.56.0
+

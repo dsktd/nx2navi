@@ -165,6 +165,31 @@ distribution). After `just update`, `build` may need a rebase onto the new upstr
   flickers full screen. Cause not found yet: suspects are queue-carried state across the cut (`OP_EXEC_STATE`), or
   CPU-side ordering (uniform snapshots, mirrors, game polling event values). Next: a dump with it on vs off.
 
+- `0014-input-prefer-Steam-Input-s-virtual-pad-at-once-and-i.patch`: a "Steam Virtual Gamepad" or "Steam Deck
+  Controller" (Steam Input) becomes the game's pad as soon as it is open, and the raw "Steam Controller" beside it is
+  never followed on a press while the virtual pad exists. Other pads still take over on their first press.
+- `0015-Mark-this-moment-F9-an-L3-R3-hold-or-mark.req-log-a-.patch`: mark this moment (#133), see below.
+
+## Mark this moment
+
+When a glitch shows, mark it with one of: **F9** (game window focused), **L3+R3 held 0.5 s** (both stick clicks;
+hidden from the game while both are down), or `touch build/v111/mark.req` from any tool. Each mark:
+
+- logs `mark N at present P (why)` in the play log;
+- saves that present as `logs/shot-<P>.png` (also on HDR10: native HDR's PQ picture is decoded to sRGB);
+- touches `dump.req` when the game runs with `NX2NAVI_DUMP_REQ=1`, so the next frame is dumped;
+- with `NX2NAVI_MARK_RING=1`, writes the last 30 presents as 320x180 PNGs to `logs/mark-<N>/` (a GPU blit per present
+  into a 7 MB host-visible ring, the flight recorder's; written on a background thread). Off by default.
+
+Settings: `NX2NAVI_MARK_CHORD` (pad buttons joined by `+`: south east west north lstick rstick l r zl zr start back
+dpad_*; `off` for none; default `lstick+rstick`), `NX2NAVI_MARK_HOLD_MS` (500).
+
+yakin quick-menu item (add it to the `[menu] items` of your yakin config yourself), for a mark without the chord:
+
+```toml
+{ label = "Mark glitch", icon = "screenshot", target = "desktop:spawn:touch /home/purplg/claude/nx2navi/NX2navi/build/v111/mark.req" },
+```
+
 ## lab-run debug options
 
 Both are opt-in environment variables for `tools/lab-run` (see its header):

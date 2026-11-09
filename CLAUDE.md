@@ -19,7 +19,7 @@ Read `README.md` first: build steps, workarounds, private patches. The investiga
   - **No `lab-run` replays while he plays.** A GPU fault in a replay resets the GPU and crashes his game; `lab-run` refuses in that case.
   - Live work in his game is allowed when it was started with `NX2NAVI_SHADER_RELOAD=1`:
     - shader edits through hot-reload: write a temp file and rename it, keep backups in `build/v111/reload-bak/`, restore failed tests
-    - screenshots: `touch build/v111/shot.req`, and the shot lands in `logs/shot-N.png` (not yet working on HDR10 swapchains)
+    - screenshots: `touch build/v111/shot.req`, and the shot lands in `logs/shot-N.png` (HDR10 too since patch 0015); marks: `mark.req`, F9 or L3+R3 (README "Mark this moment")
     - dumps: `dump.req`, with `NX2NAVI_DUMP_REQ=1`
 - **Builds are allowed while he plays.** Renice the process group to 19; the container's base niceness is -4, so `nice -n 19` only reaches 15. Build to `build/v111/nx2navi.new` and swap the file whole (rename). Never overwrite the running binary.
 - **Never write to `profile/`.** Copy it for tests; `NX2NAVI_PROFILE_DIR` needs an absolute path (Nushell passes `~` through literally). Never write to the live shader cache except through the reload loop.

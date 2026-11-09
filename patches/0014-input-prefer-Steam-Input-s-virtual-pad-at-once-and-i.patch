@@ -1,0 +1,65 @@
+From b9891dc92e8dbd50fd8a9c69c6ccf380a77a5701 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Sun, 8 Nov 2026 22:14:18 -0500
+Subject: [PATCH 14/15] input: prefer Steam Input's virtual pad at once and
+ ignore the raw Steam Controller beside it
+
+---
+ runtime/input.c | 26 ++++++++++++++++++++++++--
+ 1 file changed, 24 insertions(+), 2 deletions(-)
+
+diff --git a/runtime/input.c b/runtime/input.c
+index 1305ee6..2152db3 100644
+--- a/runtime/input.c
++++ b/runtime/input.c
+@@ -430,6 +430,22 @@ static void pad_primary(SDL_Gamepad *p, const char *why) {
+            pad_east_a ? "labelled A" : "not labelled A");
+ }
+ 
++// Steam Input's virtual pad ("Steam Virtual Gamepad", "Steam Deck Controller") carries the player's Steam layout; the
++// raw "Steam Controller" beside it reads the same hands without it, so while a virtual pad is open it is preferred at
++// once and the raw one is never followed. Under lock: the index of the first open Steam Input pad, -1 without one.
++static int pad_steam_input(void) {
++    for (int i = 0; i < npads; i++) {
++        const char *n = SDL_GetGamepadName(pads[i]);
++        if (n && (strstr(n, "Steam Virtual Gamepad") || strstr(n, "Steam Deck Controller"))) return i;
++    }
++    return -1;
++}
++
++static int pad_steam_raw(SDL_Gamepad *p) {
++    const char *n = SDL_GetGamepadName(p);
++    return n && !strncmp(n, "Steam Controller", 16);
++}
++
+ // Under lock: closes the gamepads that went away and opens the ones that came; the primary falls back to the first
+ // open one when it left. Logs each change.
+ static void scan_pads(void) {
+@@ -456,7 +472,9 @@ static void scan_pads(void) {
+         if (pad) rt_log("input: gamepad \"%s\" connected (the game switches to it at its first press)", SDL_GetGamepadName(p));
+     }
+     SDL_free(ids);
+-    if (!pad && npads) pad_primary(pads[0], "in use");
++    int v = pad_steam_input();
++    if (v >= 0 && pads[v] != pad) pad_primary(pads[v], "in use (Steam Input, preferred)");
++    else if (!pad && npads) pad_primary(pads[0], "in use");
+ }
+ 
+ // Under lock: 1 when p has a button down, a trigger pulled or a stick past half way (a drifting stick does not count).
+@@ -471,8 +489,12 @@ static int pad_active(SDL_Gamepad *p) {
+ // Under lock: when the primary is idle and another open gamepad is pressed, that one becomes the primary.
+ static void pad_follow(void) {
+     if (npads < 2 || (pad && pad_active(pad))) return;
++    int steam = pad_steam_input() >= 0;
+     for (int i = 0; i < npads; i++)
+-        if (pads[i] != pad && pad_active(pads[i])) { pad_primary(pads[i], "in use (pressed)"); return; }
++        if (pads[i] != pad && !(steam && pad_steam_raw(pads[i])) && pad_active(pads[i])) {
++            pad_primary(pads[i], "in use (pressed)");
++            return;
++        }
+ }
+ 
+ // Under lock: the layout of the open gamepad, picked again when a setting or the gamepad changed; logs each change.
+-- 
+2.56.0
+
