@@ -1,0 +1,4 @@
+#!/bin/bash
+# tools/gdbwrap (#128): LAB_EXE wrapper, copy into the game dir as nx2navi.gdbwrap; GDB_SCRIPT selects the script. gdb is the
+# game's parent, so Yama lets it trace; the busy guard of lab-run only knows gdb --args .../nx2navi, not .new.
+exec nix shell nixpkgs#gdb -c gdb -q -batch -x ${GDB_SCRIPT:?} --args ./nx2navi.new

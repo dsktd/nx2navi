@@ -497,3 +497,28 @@ than the lines themselves, which supports a frame-counted wait rather than a pla
 step is a gdb awatch on the voice start path: break on the audren voice start (the first `counters: voice` of a narration
 slot comes from a guest StartVoice IPC) with a guest backtrace to the caller that decided the moment, then walk its
 wait up to the counter it compares.
+
+## #128 third lab pass (2026-11-09 17:30-18:15 UTC, GPU): the voice start is the sound thread's; the decider is one hop further
+
+Tools: `tools/gdbwrap` (copied to the game dir as `nx2navi.gdbwrap`, `LAB_EXE=nx2navi.gdbwrap GDB_SCRIPT=...`; gdb is the
+game's parent, so Yama allows it) and `tools/voice-watch.gdb` (hw `watch -l` on the server voice slots 20-22's `state`, set from
+the first `update_voice`; on a change: host `bt`, which shows the lifted frames as `f_<guest addr>` since every guest call is
+a host call, and `gwalk`, the guest fp chain from `kern_cpu()->x[29]`). Runs i128p3-240 and i128p3b-240 (empty profile,
+`newgame.txt`, 240 fps). A watch hit stalls the game for seconds the first time (7.6 s at the slot-20 start), so the
+first narration line's timing in such a run is void; later hits cost ~50 ms.
+
+Every narration slot start (20, 21, 22, state 0 -> 1) comes from the same guest stack, on the game's audio thread
+(host `thread_main` -> `rt_call` -> `f_700536eb00` thread entry): `f_7005367360` -> `f_7003482e50` -> `f_7000dd2680`
+(a sead delegate-list walk: vtable +0x70 on each node, node 0x1ade36838) -> `f_70036d51d0` (a thread loop on an `ldarb`
+run flag, waits an event, then `f_70036d52d0` once per audio frame; thread object 0x1ac6766f0) -> `f_7005430a20` ->
+`f_70053ed360` -> `f_700537fd00` = svc 0x21 SendSyncRequest (RequestUpdate). So `f_70036d52d0` is nn::atk's sound-frame
+process: it allocates the voice and sets its play state itself; the game thread only marks the StreamSound as started
+(atk's BasicSound::StartPrepared sets a flag that the sound frame reads). The decider is therefore not on this stack.
+The host bt is enough, the fp chain adds the saved callee registers (`x/80gx kern_cpu()->sp` in i128p3b-240 run.log).
+
+Next hop: the StreamSound/BasicSound object of a narration line and a hw watch on its start flag, hit on the game
+thread, whose bt is the decider. Ways to get the object: (a) from the buffer address the `counters: voice` line prints
+(0x1ac7f3000 for slot 21), scan the guest heap at the watch hit for that value: the atk StreamSoundPlayer's wave buffers
+hold it, and the player is embedded in the StreamSound; (b) statically from `f_70036d52d0`'s callees down to the voice
+start, back to the sound-object loop and its flag read. Heap addresses are deterministic across runs (disable-randomization),
+so the object found once serves a second run with the watch. Budget: 2 gdb runs (~3 min each) plus the static reading.
