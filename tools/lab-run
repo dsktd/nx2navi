@@ -22,6 +22,14 @@ OUT=$ROOT/.lab/$label; log=$OUT/run.log
 # lock shared with every other lab/investigation run (held by the game via fd 9, gone when it exits)
 [ $dry = 1 ] || {
 exec 9>/tmp/nx2navi-lab.lock; flock -w ${LAB_LOCK_WAIT:-3600} 9 || { echo "lab-run: lock busy" >&2; exit 3; }
+# VRAM guard (2026-11-09: two GPU jobs at once exhausted the 16 GiB card, amdgpu "Not enough memory for command
+# submission", device lost): wait until the card has room for a replay (LAB_VRAM_MIB free, default 10240)
+vram=$(ls /sys/class/drm/card*/device/mem_info_vram_used 2>/dev/null | head -1)
+if [[ -n $vram ]]; then need=$((${LAB_VRAM_MIB:-10240}*1048576)); total=$(cat "${vram%used}total")
+  for ((w=0; w<120; w++)); do used=$(cat "$vram"); ((total-used >= need)) && break
+    ((w==0)) && echo "lab-run: waiting for VRAM ($((used/1048576)) MiB in use)" >&2; sleep 5; done
+  ((total-used >= need)) || { echo "lab-run: VRAM still busy after 10 min" >&2; exit 5; }
+fi
 # guard: any other nx2navi game process (argv0 basename nx2navi, or gdb --args .../nx2navi)
 busy=$(for p in /proc/[0-9]*; do [ "${p#/proc/}" = $$ ] && continue
   a=(); mapfile -d '' a < $p/cmdline 2>/dev/null || continue; [ ${#a[@]} -gt 0 ] || continue   # the process may be gone
