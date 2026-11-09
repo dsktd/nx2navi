@@ -440,6 +440,24 @@ over the three `scratchpad/i128/out/a<rate>.raw` dumps (float32 stereo 48 kHz).
   /proc/<pid>/mem counter sampler; (3) shot.req shots every second between 15 and 45 s at 60 and 240 for the dialogue box.
 - lab-run: the process guard raced with a process exiting (`a[0]: unbound variable`, set -u); fixed to skip an empty cmdline.
 
+Round 4 (2026-11-09 17:30-18:10 UTC, lab, live profile, `load-slot01.txt` frame 1500; `.lab/bush-r3-castle` draw lists reused,
+`.lab/bush-r4-skipcards` (passes.txt + final.png kept), `bush-r4-field`/`bush-r4-far` (final.png + run.log only)):
+- **The close-LOD leaf cards are not drawn at all at the near spot.** Every draw of the vegetation shaders in frame 1500
+  is `inst 1`: prepass 0144 (depth-only, fs 1bea821e on the other pipes) has vs 5d33dc48 x1 count 111 (ib 0x596148b00,
+  base_vtx 341), dbfce868 x2 count 10224 (ib 0x58a765a4a) and 528, and three count 3/36 draws; the shadow passes 0175/0182
+  repeat the 111; the main pass 0210 draws the same three index buffers with vs 838ad0cd/fs f6c57a19 (111), vs 12fa7810/fs
+  f84a6511 (10224) and fs 9eb91494 (528). The frame has no indirect draws and no instanced draw that uses these shaders.
+- `NX2NAVI_SKIP_SHADERS=838ad0cd6a6448c2,5d33dc481e2771ac` (both card vertex shaders) changes nothing on the two topiaries
+  (crop diff `scratchpad/bush/r4-top-ab.png`: only butterflies differ), so the 37-triangle draw is not the missing foliage
+  either; what we see is only the 10224-index vine mesh. The fragment side (task 2: fs 099b152e = alpha >= c5[27].x
+  with a NaN-guarded perspective uv, else kill; fs f6c57a19 has no discard) is therefore moot for #138.
+- Cause moves upstream of the draw list: the game never submits the leaf geometry at 15-40 m. Next (task 3): the LOD or
+  cull decision in the lifted actor code: find who selects the vine-only mesh (object around ib 0x596148b00 / 0x58a765a4a,
+  the pass 0138 camera const block vs. a leafy frame), and whether the far foliage is the same object or an impostor.
+- No leafy reference by replay: `input-20261108-131323.txt` now lands at the Zora river entrance at frame 2400 on both
+  the 11-08 profile copy (`lab-profile-flicker`) and the round-1 copy (`scratchpad/bush/prof`), 77 s each. A leafy
+  reference needs a fresh recording from Cal (Hyrule Field facing the castle trees, with `NX2NAVI_DUMP_REQ=1`).
+
 ## #128 second lab pass (2026-11-09 13:25-14:05 UTC, GPU): the narration slots run per present; no CPU reader of the per-present counters
 
 Tools (patch 0022, `tools/counter-sample`, `tools/counter-watch.gdb`): `NX2NAVI_TRACE=counters` logs `counters: present N
