@@ -43,7 +43,7 @@ Long investigations report to `~/claude/.services/screensavers/feeds/nx2navi-lab
 
 ## Day-to-day
 
-- `just play` runs the game with the defaults: `PIPE_SKIP=any`, `HDR=native`, `REPLAY_ASYNC=1`, `VK_RECORDER=1`. Any of them can be overridden from the environment.
+- `just play` runs the game with the defaults: `PIPE_SKIP=any`, `HDR=native`, `REPLAY_ASYNC=1`, `VK_RECORDER=1`, `TEX_RELEASED_MIB=3072`. Any of them can be overridden from the environment.
 - After `just update` (an upstream pull), rebase `build` and rebuild with `just xlate game shaders`, then re-check the private patches.
 - `just shaders` re-runs `fmzpow`, a pow NaN stopgap that is probably obsolete since `f33ed65` but not yet proven so.
 - State of record: the tracker in `dsktd/context` (#128 is 240 fps, #132 is performance), plus git history and the notes.

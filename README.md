@@ -121,19 +121,22 @@ Field, HDR10 native through niri-spicy, 240 Hz panel. Since the 2026-11-08 morni
 - Performance 52 -> 64 fps in the haze replay: changed-page write-back (0001), the page compare outside shadow_lock
   (0008), compact freshness arrays (0009), neighbouring-pool queries (0010), async replay and recorder thread on by
   default. Heavy field scenes still drop to 36-46 fps under VRAM pressure (#132): the released-texture list holds
-  7-8 GiB of render targets while small textures are evicted and re-uploaded (NOTES "VRAM pressure"); patch 0019's
-  byte cap is built, off by default, untested.
+  7-8 GiB of render targets while small textures are evicted and re-uploaded (NOTES "VRAM pressure"). Patch 0019's
+  byte cap is the `just play` default since 2026-11-09 (`NX2NAVI_TEX_RELEASED_MIB=3072`): in the lab replay of the
+  19:58 play recording to frame 5000, VRAM stays at 12.8 GiB instead of 17.6 of 16.4 GiB, pressure drops 761 -> 0,
+  59.6 vs 58.0 fps mean and p99 18.6 vs 27.6 ms over frames 3000-4000, no texture artefacts in 9 shots.
 - Debug and play features: shader hot-reload and on-request shots (0003), dump.req (0011), mark this moment (0015,
   F9 / L3+R3), draw lists in dumps (0017), Steam Input pad preferred (0014), projection unjitter (0012).
-- Defaults: `NX2NAVI_PIPE_SKIP=any`, `NX2NAVI_HDR=native`, `REPLAY_ASYNC=1`, `VK_RECORDER=1`.
+- Defaults: `NX2NAVI_PIPE_SKIP=any`, `NX2NAVI_HDR=native`, `REPLAY_ASYNC=1`, `VK_RECORDER=1`, `TEX_RELEASED_MIB=3072`.
 - AO: the event-waits ordering (v3, patch 0016) fixes AO's one-frame lag in the lab but is off (one residual dip, a
   device loss at the castle spot).
-- Open: #128 intro speed (not started), #138 gray close-LOD bushes (candidate patch 0018 in `nx2navi.new`, A/B
-  untested), AO flicker (above), the mesh-stage c0 overflow upstream (worked around by 0006).
+- Open: #128 intro speed (not started), #138 gray close-LOD bushes (patch 0018, the vertex-format candidate, is in
+  the binary but changes nothing at the castle topiary: cleared), AO flicker (above), the mesh-stage c0 overflow
+  upstream (worked around by 0006).
 - Flatpak build kit for the Steam Deck (`flatpak/`, private CI artifact), untested on a Deck.
-- Blocker since 2026-11-09 00:00: every lab replay loses the GPU device about 26 s in, with the stock binary too;
-  the kernel driver looks degraded after the earlier resets. Needs a dmesg check and probably a reboot; no replays,
-  swaps or live tests until then.
+- The 2026-11-09 00:00 device losses (every lab replay, stock binary too) were a degraded amdgpu; a host reboot
+  cleared them, replays pass again since the morning. `nx2navi` is the 00:28 build (patches through 0019);
+  `nx2navi.prev` is the 22:14 build (through 0015).
 
 ## What was verified
 
@@ -143,8 +146,10 @@ Field, HDR10 native through niri-spicy, 240 Hz panel. Since the 2026-11-08 morni
   60 fps outdoors (240 Hz panel, frame limit by the game), logs in `build/v111/logs/play-*.log`.
 - Lab (container, RX 6900 XT through `/dev/dri` and the gpu-display compositor) until 2026-11-08 23:58: replays of
   Cal's recordings and slot save to fixed frames, with dumps, shots, core validation (two VUIDs, NOTES "Validation
-  sweep") and A/B of patches 0004, 0008-0010, 0016.
-- Not verified: patches 0018 and 0019 (built, not swapped), the Flatpak kit on a Deck, fmz-pow's removal.
+  sweep") and A/B of patches 0004, 0008-0010, 0016. 2026-11-09 morning, after the reboot: the swapped-in build passes
+  the castle spot (frame 1500) and the crash spot (frame 1700); `mark.req` during a replay logs `mark 1 at present
+  832`, writes `logs/shot-00832.png` and, with `NX2NAVI_MARK_RING=1`, 30 frames in `logs/mark-1/`; 0019 A/B above.
+- Not verified: the Flatpak kit on a Deck, fmz-pow's removal; 0018 is cleared as the #138 fix (no visible change).
 
 ## Private local patches
 
@@ -204,14 +209,14 @@ distribution). After `just update`, `build` may need a rebase onto the new upstr
   frames' draw lists can be diffed (`tools/dump-draws` summarises or diffs them).
 - `0019-vk_texture-NX2NAVI_TEX_RELEASED_MIB-caps-the-own-mem.patch`: `NX2NAVI_TEX_RELEASED_MIB=<n>` (default 0 = off) caps the
   VRAM held by released textures kept for take-back (RELEASED_MAX 2048 entries, 7-8 GiB of render targets in the heavy field
-  scene), dropping the oldest past the cap. Built into `nx2navi.new`, not swapped, untested; suggested first value 3072 (#132).
-- `0018-vk_pipeline-map-the-RGBX-sRGB-and-BGRX-vertex-format.patch`: **candidate, not yet A/B tested** (#138 gray bushes).
+  scene), dropping the oldest past the cap. `just play` sets 3072 since 2026-11-09 (Status has the lab numbers) (#132).
+- `0018-vk_pipeline-map-the-RGBX-sRGB-and-BGRX-vertex-format.patch`: vertex-format correctness fix (A/B cleared as the #138 bush cause).
   A vertex attribute whose NVN format had no table entry (RGBX8/16/32, 8-bit sRGB, BGRX8) read the zero binding
   (0, 0, 0, 1) silently, collapsing any shape with such an attribute; they now read as the 4-component format, and an
   attribute still without a mapping is logged once (`vk_pipeline: vertex attribute ... without a vertex format`). The
-  lab replays of 2026-11-09 lost the GPU ~26 s into every run from 00:00 on (innocent context, time-based, also with
-  the stock binary and RADV syncshaders), so the near-bush A/B (castle courtyard, Cal's slot save, frame 1500) is still
-  open; `build/v111/nx2navi.new` carries 0017+0018 and was **not** swapped in.
+  A/B 2026-11-09 at the castle courtyard (Cal's slot save, frame 1500): the topiary 15 m ahead is bare with and
+  without the patch and neither log has a `without a vertex format` line, so this is **not** the #138 cause; kept as
+  a correctness fix, in the swapped-in binary.
 
 ## Mark this moment
 
@@ -286,7 +291,8 @@ option) shows the screen again, to rebuild or import. Terminal routes: `build [g
 Saves (`build/v111/profile`), `nx2navi.ini`,
 the shader and pipeline caches and logs all live in that data dir, writable. A new kit re-copies the sources and
 rebuilds the game; a new `.nup` re-extracts. Play defaults are the justfile's: `RADV_DEBUG=nogpl`,
-`NX2NAVI_PIPE_SKIP=any`, `NX2NAVI_HDR=native`, `NX2NAVI_REPLAY_ASYNC=1`, `NX2NAVI_VK_RECORDER=1`, each overridable.
+`NX2NAVI_PIPE_SKIP=any`, `NX2NAVI_HDR=native`, `NX2NAVI_REPLAY_ASYNC=1`, `NX2NAVI_VK_RECORDER=1`,
+`NX2NAVI_TEX_RELEASED_MIB=3072`, each overridable.
 Permissions: Wayland (X11 fallback), `--device=all` (GPU and the Deck's pad), PulseAudio, `/sys/class/dmi/id` read-only
 (Deck detection), home and `/run/media` read-only (the scan), no network.
 
