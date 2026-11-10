@@ -1,0 +1,54 @@
+From b4985122c90015fa053a15c748d42c3ab0534ded Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 02:36:15 -0500
+Subject: [PATCH] vk_exec_draw: format the dump's draw arguments only in a
+ dumped frame
+
+DUMP_ARGS ran snprintf on every draw whenever any NX2NAVI_DUMP* was set,
+about 2% of the replay thread in lab replays.
+---
+ runtime/vk_dump.c      | 1 +
+ runtime/vk_exec.h      | 1 +
+ runtime/vk_exec_draw.c | 2 +-
+ 3 files changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/runtime/vk_dump.c b/runtime/vk_dump.c
+index df0495c..451e531 100644
+--- a/runtime/vk_dump.c
++++ b/runtime/vk_dump.c
+@@ -468,6 +468,7 @@ static int active(void) {
+     uint64_t f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1;
+     return !finished && (f == dump_frame || (log_from && f >= log_from && f < dump_frame));
+ }
++int vk_dump_active(void) { return active(); }
+ static uint64_t frame_now(void) { return __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1; }
+ 
+ typedef struct { char *s; size_t n, cap; } Str;
+diff --git a/runtime/vk_exec.h b/runtime/vk_exec.h
+index 7680d2d..1479ac7 100644
+--- a/runtime/vk_exec.h
++++ b/runtime/vk_exec.h
+@@ -169,6 +169,7 @@ void vk_exec_frame_log(const tex_t *presented, uint64_t frame);
+ // images are copied out and written as PNGs to NX2NAVI_DUMP_DIR (default "dump"), with passes.txt (targets, pipelines,
+ // textures, samplers) and images.txt (per image value statistics). The hooks run only when vk_dump_armed is set.
+ extern int vk_dump_armed;
++int vk_dump_active(void); // vk_dump.c: this frame is being dumped (the draw ops format their arguments only then)
+ void vk_dump_init(void);                 // reads the environment; vk_exec_record's first call
+ void vk_dump_pass_end(VkExec *ex);       // after vkCmdEndRendering
+ void vk_dump_draw(VkExec *ex, const VkPipeState *s, VkPipeline p, const VkPipeInfo *info);   // after a draw's binds
+diff --git a/runtime/vk_exec_draw.c b/runtime/vk_exec_draw.c
+index 43c9c49..23c8703 100644
+--- a/runtime/vk_exec_draw.c
++++ b/runtime/vk_exec_draw.c
+@@ -3940,7 +3940,7 @@ static void bind_index(VkExec *ex, const void *data, uint64_t bytes, VkIndexType
+ }
+ 
+ extern char vk_dump_draw_args[128];   // vk_dump.c, NX2NAVI_DUMP_DRAWS
+-#define DUMP_ARGS(...) do { if (vk_dump_armed) snprintf(vk_dump_draw_args, sizeof vk_dump_draw_args, __VA_ARGS__); } while (0)
++#define DUMP_ARGS(...) do { if (vk_dump_armed && vk_dump_active()) snprintf(vk_dump_draw_args, sizeof vk_dump_draw_args, __VA_ARGS__); } while (0)
+ 
+ static void op_draw(VkExec *ex, const p_draw *d) {
+     c0_binst = (uint32_t)d->base_instance;
+-- 
+2.56.0
+

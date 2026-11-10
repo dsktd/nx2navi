@@ -685,3 +685,44 @@ reach: `ioctl` 15.8% (GPU submit 4.9%, PAGEMAP_SCAN write-watch from `ww_query` 
 any `NX2NAVI_DUMP`, and lab-run always sets one, so lab replays pay ~2% replay CPU that `just play` does not.
 Leads, none small enough for tonight: the RADV preamble rebuild per submit (why do ring sizes change each submit?),
 fewer write-watch queries per sync, cheaper shadow copies.
+
+## Replay thread (2026-11-10 night, #148 continued)
+
+Binary `nx2navi.replay` (patches 0043, 0044), lab replays of `input-20261109-191317.txt`, field standing window ticks
+6300-10200, `taskset -c 0-7,16-23`, `NX2NAVI_TRACE=perf,present,nvn` (scripts `.lab/replay/`: `chain.sh`, `chain2.sh`,
+`sh.py` for the shadow line; `NX2navi-opt/gopt-scripts/an.py` for fps). Spread of one binary: 40-43 fps.
+
+| run | fps | p99 ms | replay ms/frame | shadow sync ms/frame | write-watch queries/frame |
+|---|---|---|---|---|---|
+| base (`nx2navi.rt0`) | 41.1 | 27.2 | 20.6 | 2.90 | 203 |
+| 0043 (no lab snprintf) | 42.1, 42.7 | 26.6, 26.4 | 20.2, 20.1 | 3.00, 2.80 | 232 |
+| + `SPLIT_DRAWS=0` (one part per submission) | 39.7, 39.2 | 27.5, 28.3 | 16.5, 16.7 | 1.27, 1.31 | 124 |
+| + `SPLIT_US=3000` | 40.7, 40.5 | 27.7, 27.7 | 19.6, 19.8 | 3.01, 3.00 | 185 |
+| + `FREEZE_IDLE=8` | 42.2, 41.8 | 26.6, 26.7 | 20.1, 20.3 | 3.12, 2.98 | 210 |
+| + `SHADOW_GAP_KIB=2048` | 42.2, 42.4 | 26.6, 26.3 | 20.3, 20.0 | 2.86, 2.90 | 160 |
+| + `SHADOW_NT=1` | 43.4, 43.8 | 25.6, 25.5 | 19.5, 19.3 | 2.03, 2.02 | 228 |
+| + `SHADOW_NT=1 SHADOW_GAP_KIB=2048` | 43.9, (33.4 void) | 25.6 | 19.2 | 1.99, 1.99 | 158 |
+
+The void run had 187 presents over 100 ms with texture uploads of 60-95 ms (a VRAM squeeze from a job beside it, as
+the `rtl` run before); its shadow figure is still 1.99 ms.
+
+- **Step 1, lab-only snprintf (0043).** The profile of the replay thread loses `snprintf` (1.5% -> absent, 26k samples);
+  fps and replay ms move inside the spread. Lab numbers from 0043 on no longer carry the dump cost.
+- **Step 2, RADV preamble.** Mesa 26.2.6 `radv_queue.c`: the main queue's `radv_update_preambles` returns early when
+  the ring needs are unchanged, but `radv_update_gang_preambles` (any submission holding a command buffer that bound
+  a task shader, i.e. has an ACE follower) calls `radv_update_preamble_cs` for the follower unconditionally, which
+  re-creates its three preamble streams every submit. Nothing we order or warm up changes it: every vkQueueSubmit2
+  carrying a task-shader draw pays it. Our only lever is fewer submissions: one part per submission
+  (`SPLIT_DRAWS=0`) takes 3.6 ms off the replay thread (fewer submits, preambles and shadow syncs: 124 against 232
+  queries) but loses 2.5-3 fps, because the GPU then starts each submission only after it is wholly recorded.
+  `SPLIT_US=3000` buys nothing. A Mesa fix (an early return like the main path's) would be upstream's.
+- **Step 3, write-watch.** Already batched (pools sorted, 64 KiB gaps merged, 2 MiB regions frozen after 60 idle
+  submissions). A 2 MiB gap cuts the queries by a third but the sync by only 0.05 ms; freezing after 8 submissions
+  changes nothing (the queried regions are written every frame). The scan is per part, not per frame: per-frame
+  scanning would mean one part per submission, see step 2.
+- **Step 4, shadow copy.** It copies only stamped pages already: 10.8 MiB a frame. With non-temporal stores the
+  destination lines are not read for ownership: the sync drops 2.9 -> 2.0 ms for the same bytes, replay -0.8 ms,
+  +1.2 fps, p99 -1 ms (two runs, consistent). Castle 1500 and crash spot 1700 pass with `SHADOW_NT=1
+  SHADOW_GAP_KIB=2048`; shots at 1480/1490/1500 and 1680/1690/1700 match the knob-off run (RMSE 0.3% at the menu,
+  2% at the castle from Navi's position, frame timing).
+- **Step 5** (bind_resources, slot hash) not started: vk_exec_draw.c is being edited by the AO work.

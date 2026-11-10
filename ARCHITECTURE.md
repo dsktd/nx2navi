@@ -138,7 +138,7 @@ Costs per frame in the Hyrule Field standing window, lab replay of Cal's 19:13 r
 | Audio mix | audio | 1.5 ms | |
 | Pipeline binds | | about 690 | |
 
-- **What the replay thread spends.** About a third is libc and kernel, not runtime code: shadow-sync memcpy, write-watch (PAGEMAP_SCAN) and submit ioctls, RADV re-creating its preamble per submit; compiler flags (-O3, znver3, ThinLTO) change nothing (NOTES-perf "Runtime optimisation").
+- **What the replay thread spends.** About a third is libc and kernel, not runtime code: shadow-sync memcpy, write-watch (PAGEMAP_SCAN) and submit ioctls, RADV re-creating the gang (ACE) follower preamble on every submit that holds a task-shader draw (Mesa 26.2.6 `radv_update_gang_preambles` has no early return); compiler flags (-O3, znver3, ThinLTO) change nothing (NOTES-perf "Runtime optimisation").
 - **Where the game waits.** In the submit finish wait, which is the replay thread's backlog, and on `pool_fini` at area changes.
 - **The critical path.** The replay thread. "frame bound 1800 calls, 0 waited" only says the present never waits for it; the game waits for it in the finish wait instead. Letting the game go before the GPU is through (`NX2NAVI_FINISH_DEFER`, patch 0036) gains nothing, and neither does faster guest code (16% of the main thread; the -O2 A/B agrees): what shortens the frame is a cheaper replay thread per draw.
 

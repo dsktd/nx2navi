@@ -1,0 +1,120 @@
+From 415c564725a749e81bceb6961df26325309ae836 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 03:41:33 -0500
+Subject: [PATCH] vk_memory: NX2NAVI_SHADOW_NT and NX2NAVI_SHADOW_GAP_KIB for
+ the shadow sync
+
+SHADOW_NT=1 copies runs of 4 KiB and more into the shadow with non-temporal
+stores and fences them before the submit. SHADOW_GAP_KIB sets how far apart
+touched pools may lie and still share one write-watch query (default 64).
+Both default to the old behaviour.
+---
+ runtime/vk_memory.c | 48 ++++++++++++++++++++++++++++++++++++++++-----
+ 1 file changed, 43 insertions(+), 5 deletions(-)
+
+diff --git a/runtime/vk_memory.c b/runtime/vk_memory.c
+index d6ef8d4..47cf83c 100644
+--- a/runtime/vk_memory.c
++++ b/runtime/vk_memory.c
+@@ -11,6 +11,9 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
++#ifdef __AVX2__
++#include <immintrin.h>
++#endif
+ 
+ #include "cfg.h"
+ #include "gfx.h"
+@@ -997,6 +1000,27 @@ static int spend_again(uint64_t lo, uint64_t hi) {
+     return 0;
+ }
+ 
++// NX2NAVI_SHADOW_NT=1: the shadow copies use non-temporal stores (no read for ownership of the destination lines, which
++// the CPU does not read again before the GPU does); vk_mem_shadow_sync fences them before the part is submitted.
++static int shadow_nt;
++static void shadow_memcpy(uint8_t *d, const void *src, uint64_t n) {
++#ifdef __AVX2__
++    if (shadow_nt && n >= 4096 && !((uintptr_t)d & 31)) {
++        const uint8_t *q = src;
++        uint64_t k = n & ~127ull;
++        for (uint64_t i = 0; i < k; i += 128) {
++            __m256i x0 = _mm256_loadu_si256((const __m256i *)(q + i)), x1 = _mm256_loadu_si256((const __m256i *)(q + i + 32));
++            __m256i x2 = _mm256_loadu_si256((const __m256i *)(q + i + 64)), x3 = _mm256_loadu_si256((const __m256i *)(q + i + 96));
++            _mm256_stream_si256((__m256i *)(d + i), x0), _mm256_stream_si256((__m256i *)(d + i + 32), x1);
++            _mm256_stream_si256((__m256i *)(d + i + 64), x2), _mm256_stream_si256((__m256i *)(d + i + 96), x3);
++        }
++        if (k < n) memcpy(d + k, q + k, n - k);
++        return;
++    }
++#endif
++    memcpy(d, src, n);
++}
++
+ // shadow_lock held: copies guest [a, b) into the shadow, leaving out the bytes of GPU writes not copied back yet
+ // (spend from index i on): submitted ones whose range the next part does not write again. When it does, the GPU
+ // starts from what the CPU left there, as on hardware, where the earlier write landed long before.
+@@ -1008,7 +1032,7 @@ static void shadow_copy(PoolRec *r, uint64_t a, uint64_t b, int i) {
+             if (spend[i].hi < b) shadow_copy(r, spend[i].hi, b, i + 1);
+             return;
+         }
+-    memcpy(r->smap + (a - r->import_lo), (const void *)(uintptr_t)a, b - a);
++    shadow_memcpy(r->smap + (a - r->import_lo), (const void *)(uintptr_t)a, b - a);
+     if (w_hi && a < w_hi && b > w_lo) vk_watch("cpu->shadow", a, b - a, nspend, r->smap + (w_lo - r->import_lo));
+     s_copied += b - a;
+ }
+@@ -1065,8 +1089,9 @@ static int pool_by_lo(const void *a, const void *b) {
+ 
+ // The touched pools are queried together, by address, under one generation: neighbouring pools (NVN pools are small,
+ // often a few pages apart) share one write-watch query instead of one each, about 300 queries per frame in the haze
+-// before. A gap of up to SHADOW_GAP between them is queried too: what it finds is stamped like any other write.
+-#define SHADOW_GAP (64u << 10)
++// before. A gap of up to shadow_gap between them is queried too: what it finds is stamped like any other write.
++// NX2NAVI_SHADOW_GAP_KIB sets it (default 64).
++static uint64_t shadow_gap = 64u << 10;
+ static uint8_t *stracked;
+ static int cstracked;
+ 
+@@ -1085,10 +1110,10 @@ void vk_mem_shadow_sync(void) {
+             if (!stracked) rt_fatal("vk: out of memory (shadow sync)");
+         }
+         uint32_t g = ++gen_now;
+-        for (int i = 0; i < nstouch;) {   // runs of pools no more than SHADOW_GAP apart
++        for (int i = 0; i < nstouch;) {   // runs of pools no more than shadow_gap apart
+             uint64_t lo = stouch[i]->import_lo, hi = stouch[i]->import_hi;
+             int j = i + 1;
+-            for (; j < nstouch && stouch[j]->import_lo <= hi + SHADOW_GAP; j++)
++            for (; j < nstouch && stouch[j]->import_lo <= hi + shadow_gap; j++)
+                 if (stouch[j]->import_hi > hi) hi = stouch[j]->import_hi;
+             int tracked = shadow_query(lo, hi, g);
+             for (; i < j; i++)   // a run that failed (a gap not write-watched): its pools on their own
+@@ -1099,6 +1124,9 @@ void vk_mem_shadow_sync(void) {
+         s_syncs += (uint64_t)nstouch;
+         nstouch = 0;
+     }
++#ifdef __AVX2__
++    if (shadow_nt) _mm_sfence();   // the streamed copies are visible before the submit
++#endif
+     for (int i = 0; i < nspend; i++) spend[i].sub = 1;   // the part goes to the GPU now
+     s_ticks += qpc() - t0;
+     plat_mutex_unlock(&shadow_lock);
+@@ -1590,6 +1618,16 @@ static void mirror_mode(int discrete) {
+     const char *fi = cfg_get("NX2NAVI_FREEZE_IDLE");
+     freeze_idle = fi && *fi ? atoi(fi) : 60;
+     if (freeze_idle < 0) freeze_idle = 0;
++    const char *sg = cfg_get("NX2NAVI_SHADOW_GAP_KIB");
++    if (sg && *sg && atoi(sg) >= 0) {
++        shadow_gap = (uint64_t)atoi(sg) << 10;
++        rt_log("mem: shadow sync queries pools up to %llu KiB apart together (NX2NAVI_SHADOW_GAP_KIB)",
++               (unsigned long long)(shadow_gap >> 10));
++    }
++    if (rt_knob("SHADOW_NT", "0")) {
++        shadow_nt = 1;
++        rt_log("mem: shadow copies of 4 KiB and more use non-temporal stores (NX2NAVI_SHADOW_NT=1)");
++    }
+     const char *sh = cfg_get("NX2NAVI_SHADOW");
+ #ifdef _WIN32
+     shadow_on = sh && *sh ? strcmp(sh, "0") != 0 : plat_is_wine();
+-- 
+2.56.0
+
