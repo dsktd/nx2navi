@@ -1,0 +1,199 @@
+#!/usr/bin/env python3
+"""Follow the live play log and print one line per thing worth acting on.
+
+Reads only: the newest NX2navi/build/<ver>/logs/play-*.log. Every memory sample also goes to
+.lab/play-watch/<session>.csv so growth can be analysed afterwards.
+
+Events (stdout, one line each):
+  session   a new play log appeared
+  mark      Cal marked a moment; printed with the memory state at that time
+  growth    live textures crossed another GiB
+  budget    VRAM use crossed 95% of the budget, went over it, or the released list ran dry
+  fault     a caught fault, device loss or Vulkan error
+  slow      a 60 s window under 35 fps mean or under 15 fps 1% low (at most every 5 minutes)
+  status    a summary every 10 minutes
+  ended     the log stopped growing for 90 s
+"""
+import csv
+import glob
+import os
+import re
+import sys
+import time
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+LOGS = os.path.join(ROOT, "NX2navi", "build", os.environ.get("NX2NAVI_VER", "v111"), "logs")
+OUT = os.path.join(ROOT, ".lab", "play-watch")
+
+VRAM = re.compile(
+    r"mem: vram frame (\d+): vma \d+ blocks (\d+) MiB, \d+ allocations (\d+) MiB; "
+    r"textures live (\d+) \(own memory \d+, (\d+) MiB\), released (\d+) \(own memory \d+, (\d+) MiB\); "
+    r"mirrors \d+ (\d+) MiB"
+)
+HEAPS = re.compile(r"mem: heaps frame (\d+): 0 vram: driver (\d+) of (\d+).*?1: driver (\d+) of (\d+)")
+MARK = re.compile(r"mark (\d+) at present (\d+)")
+FRAMETIME = re.compile(r"frametime: 60 s: \d+ frames in [\d.]+ s, mean ([\d.]+) fps, 1% low ([\d.]+) fps")
+PINS = re.compile(r"texture pins at submit \d+: (\d+) live, (\d+) waiting")
+BYFMT = re.compile(r"mem: textures frame (\d+), own memory by vk format/astc/rt/released: (.*)")
+FAULT = re.compile(r"fault caught|device lost|DEVICE_LOST|VK_ERROR|ERROR_OUT_OF|out of memory", re.I)
+
+
+QUIET = False
+
+
+def emit(kind, text):
+    if QUIET:
+        return
+    print(f"{time.strftime('%H:%M:%S')} {kind}: {text}", flush=True)
+
+
+def newest():
+    logs = glob.glob(os.path.join(LOGS, "play-*.log"))
+    return max(logs, key=os.path.getmtime) if logs else None
+
+
+class Session:
+    def __init__(self, path):
+        self.path = path
+        self.name = os.path.basename(path)[5:-4]
+        self.fh = open(path, "r", errors="replace")
+        self.state = {}
+        self.first_live = None
+        self.next_gib = None
+        self.flags = set()
+        self.last_slow = 0.0
+        self.last_status = time.time()
+        self.last_data = time.time()
+        self.samples = []
+        self.byfmt = None
+        os.makedirs(OUT, exist_ok=True)
+        self.csv = csv.writer(open(os.path.join(OUT, self.name + ".csv"), "a", newline=""))
+
+    def summary(self):
+        s = self.state
+        if "live" not in s:
+            return "no memory sample yet"
+        parts = [f"live textures {s['live']} MiB", f"released {s['released']} MiB"]
+        if "use" in s:
+            parts.append(f"card {s['use']} of {s['budget']} MiB")
+        if "waiting" in s:
+            parts.append(f"pins waiting {s['waiting']}")
+        if "fps" in s:
+            parts.append(f"{s['fps']:.0f} fps (1% low {s['low']:.0f})")
+        return ", ".join(parts)
+
+    def rate(self):
+        if len(self.samples) < 4:
+            return None
+        (t0, l0), (t1, l1) = self.samples[0], self.samples[-1]
+        return (l1 - l0) / max((t1 - t0) / 60.0, 0.1)
+
+    def line(self, text):
+        s = self.state
+        m = VRAM.search(text)
+        if m:
+            frame, _blocks, alloc, n_live, live, _n_rel, released, mirrors = map(int, m.groups())
+            s.update(frame=frame, alloc=alloc, live=live, released=released, n_live=n_live, mirrors=mirrors)
+            self.samples.append((time.time(), live))
+            self.csv.writerow([time.strftime("%H:%M:%S"), frame, alloc, live, released, n_live, mirrors,
+                               s.get("use", ""), s.get("budget", ""), s.get("waiting", ""), s.get("fps", "")])
+            if self.first_live is None:
+                self.first_live = live
+                self.next_gib = (live // 1024 + 1) * 1024
+            while live >= self.next_gib:
+                rate = self.rate()
+                grow = f", {rate:+.0f} MiB/min since the start" if rate is not None else ""
+                emit("growth", f"live textures passed {self.next_gib // 1024} GiB "
+                               f"(started at {self.first_live} MiB{grow}); {self.summary()}")
+                self.next_gib += 1024
+            if released == 0 and "dry" not in self.flags and frame > 20000:
+                self.flags.add("dry")
+                emit("budget", f"the released list is empty, nothing left to give back; {self.summary()}")
+            elif released > 256:
+                self.flags.discard("dry")
+            return
+        m = HEAPS.search(text)
+        if m:
+            _frame, use, budget, _sysuse, _sysbudget = map(int, m.groups())
+            s.update(use=use, budget=budget)
+            if use > budget and "over" not in self.flags:
+                self.flags.add("over")
+                emit("budget", f"VRAM use is over the budget by {use - budget} MiB; {self.summary()}")
+            elif use > 0.95 * budget and "near" not in self.flags:
+                self.flags.add("near")
+                emit("budget", f"VRAM use passed 95% of the budget; {self.summary()}")
+            elif use < 0.9 * budget:
+                self.flags -= {"over", "near"}
+            return
+        m = PINS.search(text)
+        if m:
+            s.update(pins=int(m.group(1)), waiting=int(m.group(2)))
+            return
+        m = BYFMT.search(text)
+        if m:
+            self.byfmt = m.group(2)[:400]
+            return
+        m = FRAMETIME.search(text)
+        if m:
+            fps, low = float(m.group(1)), float(m.group(2))
+            s.update(fps=fps, low=low)
+            if (fps < 35 or low < 15) and time.time() - self.last_slow > 300:
+                self.last_slow = time.time()
+                emit("slow", f"last minute {fps:.1f} fps mean, 1% low {low:.1f}; {self.summary()}")
+            return
+        m = MARK.search(text)
+        if m:
+            emit("mark", f"mark {m.group(1)} at present {m.group(2)}; {self.summary()}")
+            return
+        if FAULT.search(text):
+            emit("fault", text.strip()[:220])
+
+    def poll(self):
+        got = False
+        for text in self.fh:
+            got = True
+            self.line(text)
+        now = time.time()
+        if got:
+            self.last_data = now
+        if now - self.last_status > 600 and "live" in self.state:
+            self.last_status = now
+            rate = self.rate()
+            grow = f"; live textures {rate:+.0f} MiB/min since the start" if rate is not None else ""
+            fmt = f"; by format: {self.byfmt}" if self.byfmt else ""
+            emit("status", self.summary() + grow + fmt)
+        return now - self.last_data < 90
+
+
+def main():
+    session = None
+    while True:
+        path = newest()
+        if path and (session is None or path != session.path):
+            global QUIET
+            session = Session(path)
+            # Catch up on what the log already holds without reporting it; growth counts from here.
+            QUIET = True
+            session.poll()
+            QUIET = False
+            if "live" in session.state:
+                session.first_live = session.state["live"]
+                session.next_gib = (session.first_live // 1024 + 1) * 1024
+                session.samples = session.samples[-1:]
+            session.last_status = time.time()
+            emit("session", f"watching {os.path.basename(path)}; {session.summary()}")
+        if session and not session.poll():
+            emit("ended", f"{os.path.basename(session.path)} stopped growing; last state: {session.summary()}")
+            stale = session.path
+            while newest() == stale:
+                time.sleep(5)
+            session = None
+            continue
+        time.sleep(2)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.exit(0)
