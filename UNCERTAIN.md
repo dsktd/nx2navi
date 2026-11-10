@@ -23,3 +23,5 @@ Things that are on or available without proof they help. One line each; remove a
 | `NX2NAVI_POOL_KH` | 0 | lab field: replay -0.4 ms, +0.8 fps (3 on, 2 valid off runs, inside the spread); shots match; in `nx2navi.bind` | `=1` |
 | `NX2NAVI_MOTION_SOCK` | auto | yakin socket motion: fake-server probe only; real controller and in-game axis signs untested; in `nx2navi.motion` | `=off` |
 | `NX2NAVI_TEX_RT_TRIM` + `NX2NAVI_TEX_RT_DEDICATED_MIB` | 95 / 4 | #160: released render targets get own memory and go above 95% of the driver budget; built only, no GPU run yet (black-flash risk of dropping a render target as under the yield); in `nx2navi.vram` | `=0` / `=0` |
+| surface pick (`pick.req`, F5) | on in `just try` (on request) | #165: built only; never run on the GPU; the doubled draw at the centre pixel and query pool are unverified | do not pick |
+| `buf.req`, re-armable `watch.req`, `dump.req` options | on in `just try` (on request) | built only, no live run yet | do not write the files |

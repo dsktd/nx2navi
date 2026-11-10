@@ -1,0 +1,97 @@
+From a43ed06fc8216a91763df685d574571e63356861 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 18:03:11 -0500
+Subject: [PATCH] platform: plat_write_trace replaces the traced range on a
+ second call (old pages writable again, n = 0 disarms); boot: watch.req
+ re-arms the tracer any number of times per run, 'off' disarms (#164)
+
+---
+ runtime/boot.c              | 15 +++++++++------
+ runtime/platform/linux.c    | 15 ++++++++++++++-
+ runtime/platform/platform.h |  3 ++-
+ 3 files changed, 25 insertions(+), 8 deletions(-)
+
+diff --git a/runtime/boot.c b/runtime/boot.c
+index a8ce86d..13d598b 100644
+--- a/runtime/boot.c
++++ b/runtime/boot.c
+@@ -398,8 +398,8 @@ static int mark_knob(const char *name) {
+ }
+ 
+ // NX2NAVI_WATCH_REQ=1 (debug, off, #164): two request files beside the shader cache, polled every 4th present.
+-// watch.req holds <addr>:<size> (hex) and arms the write tracer (platform.h plat_write_trace) on that range once per
+-// run, as NX2NAVI_WATCH_PC does at start. peek.req holds up to 4 lines <addr>:<size>:<presents> (hex, hex, decimal) and
++// watch.req holds <addr>:<size> (hex) and arms the write tracer (platform.h plat_write_trace) on that range, as
++// NX2NAVI_WATCH_PC does at start; each new watch.req replaces the range, and one holding "off" disarms it. peek.req holds up to 4 lines <addr>:<size>:<presents> (hex, hex, decimal) and
+ // logs the guest words of each range (at most 512 bytes) as floats and hex once per present for that many presents.
+ // Pages that are not committed are left out.
+ typedef struct { uint64_t a, n; int left; } Peek;
+@@ -429,7 +429,7 @@ static void peek_log(uint64_t n) {
+ }
+ 
+ static void watch_req_poll(uint64_t n) {
+-    static int init, armed;
++    static int init;
+     static char wreq[PLAT_PATH_MAX], preq[PLAT_PATH_MAX];
+     if (!init) {
+         init = 1;
+@@ -452,9 +452,12 @@ static void watch_req_poll(uint64_t n) {
+         free(b);
+         char *x;
+         uint64_t a = strtoull(t, &x, 16), len = *x == ':' ? strtoull(x + 1, NULL, 16) : 0x1000;
+-        if (armed) rt_log("watch-req: %s ignored, the tracer is armed once per run", t);
+-        else {
+-            armed = 1;
++        if (!strncmp(t, "off", 3)) {
++            rt_log("watch-pc: off (watch.req, present %llu)", (unsigned long long)n);
++            plat_write_trace(0, 0);
++        } else if (x == t) {
++            rt_log("watch-req: '%s' is neither <addr>:<size> nor off: ignored", t);
++        } else {
+             rt_log("watch-pc: writes to %#llx+%#llx are traced (watch.req, present %llu)", (unsigned long long)a,
+                    (unsigned long long)len, (unsigned long long)n);
+             plat_write_trace(a, len);
+diff --git a/runtime/platform/linux.c b/runtime/platform/linux.c
+index e73b613..3bbe8bd 100644
+--- a/runtime/platform/linux.c
++++ b/runtime/platform/linux.c
+@@ -1029,8 +1029,21 @@ void plat_mem_fault_hook(int (*fn)(uint64_t addr)) {
+ 
+ void plat_crash_context(const char *s) { crash_ctx = s; }
+ 
++// A second call replaces the range: the old range's committed pages are made writable again first (a write that faults
++// in between is still in range and opens its page), then the new one is protected; n = 0 only disarms. The writers
++// are counted again for each range.
+ void plat_write_trace(uint64_t addr, uint64_t n) {
+-    wt_lo = addr & ~(PG - 1), wt_hi = (addr + n + PG - 1) & ~(PG - 1);
++    if (wt_hi) {
++        for (uint64_t p = wt_lo; p < wt_hi; p += PG) {
++            uint64_t end;
++            if (plat_mem_state(p, p + PG, &end) == PLAT_PROT_RW) mprotect((void *)(uintptr_t)p, PG, PROT_READ | PROT_WRITE);
++        }
++        __atomic_store_n(&wt_hi, 0, __ATOMIC_RELEASE);
++    }
++    wt_nrip = 0, wt_hits = 0;
++    if (!n) return;
++    wt_lo = addr & ~(PG - 1);
++    __atomic_store_n(&wt_hi, (addr + n + PG - 1) & ~(PG - 1), __ATOMIC_RELEASE);
+     fault_install();
+     wt_opened = 1;
+     plat_write_trace_rearm();
+diff --git a/runtime/platform/platform.h b/runtime/platform/platform.h
+index f053e8c..e987594 100644
+--- a/runtime/platform/platform.h
++++ b/runtime/platform/platform.h
+@@ -221,7 +221,8 @@ uint64_t plat_mem_written(uint64_t addr, uint64_t n, uint64_t *pages, uint64_t m
+ void plat_mem_fault_hook(int (*fn)(uint64_t addr));
+ // Debug (NX2NAVI_WATCH_PC): makes the committed pages of addr+n read-only; the first write to each page faults, logs
+ // the writing instruction once per distinct one (module + offset, to resolve with nm) and makes that page writable
+-// again. plat_write_trace_rearm protects the range again (once per present). A no-op where unsupported.
++// again. plat_write_trace_rearm protects the range again (once per present). Another call replaces the range (n = 0:
++// off). A no-op where unsupported.
+ void plat_write_trace(uint64_t addr, uint64_t n);
+ void plat_write_trace_rearm(void);
+ // Starts this program again with the same arguments and ends this process with the new one's exit code (Windows), or
+-- 
+2.56.0
+

@@ -1,0 +1,262 @@
+From ff43bf7dae0e7b1487c0d7fad0059f308487b3b8 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 18:06:10 -0500
+Subject: [PATCH] vk_dump: buf.req (<addr>:<size>[:<frames>[:<pass>]], polled
+ with NX2NAVI_WATCH_REQ=1) copies a GPU buffer range once per frame after one
+ render pass to logs/buf-<present>.bin, no images and no waits; 'off' ends it
+ (#164)
+
+---
+ runtime/boot.c    |  16 ++++--
+ runtime/vk.h      |   2 +
+ runtime/vk_dump.c | 129 +++++++++++++++++++++++++++++++++++++++++-----
+ runtime/vk_exec.c |   1 +
+ runtime/vk_exec.h |   2 +
+ 5 files changed, 134 insertions(+), 16 deletions(-)
+
+diff --git a/runtime/boot.c b/runtime/boot.c
+index 13d598b..b1f9e5b 100644
+--- a/runtime/boot.c
++++ b/runtime/boot.c
+@@ -401,7 +401,8 @@ static int mark_knob(const char *name) {
+ // watch.req holds <addr>:<size> (hex) and arms the write tracer (platform.h plat_write_trace) on that range, as
+ // NX2NAVI_WATCH_PC does at start; each new watch.req replaces the range, and one holding "off" disarms it. peek.req holds up to 4 lines <addr>:<size>:<presents> (hex, hex, decimal) and
+ // logs the guest words of each range (at most 512 bytes) as floats and hex once per present for that many presents.
+-// Pages that are not committed are left out.
++// Pages that are not committed are left out. buf.req holds <addr>:<size>[:<frames>[:<pass>]] and starts a live GPU
++// buffer capture (vk_dump.c vk_bufcap_request: once per frame, no images, no waits).
+ typedef struct { uint64_t a, n; int left; } Peek;
+ static Peek peeks[4];
+ 
+@@ -430,15 +431,15 @@ static void peek_log(uint64_t n) {
+ 
+ static void watch_req_poll(uint64_t n) {
+     static int init;
+-    static char wreq[PLAT_PATH_MAX], preq[PLAT_PATH_MAX];
++    static char wreq[PLAT_PATH_MAX], preq[PLAT_PATH_MAX], breq[PLAT_PATH_MAX];
+     if (!init) {
+         init = 1;
+         const char *v = cfg_get("NX2NAVI_WATCH_REQ");
+         if (!v || atoi(v) != 1 || !gfx_shader_beside_cache("watch.req", wreq, sizeof wreq) ||
+-            !gfx_shader_beside_cache("peek.req", preq, sizeof preq))
++            !gfx_shader_beside_cache("peek.req", preq, sizeof preq) || !gfx_shader_beside_cache("buf.req", breq, sizeof breq))
+             wreq[0] = 0;
+         else
+-            rt_log("watch-req: polling %s and %s (NX2NAVI_WATCH_REQ)", wreq, preq);
++            rt_log("watch-req: polling %s, %s and %s (NX2NAVI_WATCH_REQ)", wreq, preq, breq);
+     }
+     if (!wreq[0]) return;
+     peek_log(n);
+@@ -463,6 +464,13 @@ static void watch_req_poll(uint64_t n) {
+             plat_write_trace(a, len);
+         }
+     }
++    if (plat_file_exists(breq) && (b = plat_file_read(breq, &sz))) {
++        plat_file_delete(breq);
++        char t[128];
++        snprintf(t, sizeof t, "%.*s", (int)(sz < 127 ? sz : 127), (const char *)b);
++        free(b);
++        vk_bufcap_request(t, n);
++    }
+     if (plat_file_exists(preq) && (b = plat_file_read(preq, &sz))) {
+         plat_file_delete(preq);
+         char *t = malloc(sz + 1);
+diff --git a/runtime/vk.h b/runtime/vk.h
+index 1c0704e..b501f4a 100644
+--- a/runtime/vk.h
++++ b/runtime/vk.h
+@@ -480,6 +480,8 @@ int vk_sampler_params(int id, samp_par *out);       // parameters of a sampler s
+ 
+ // 8-bit RGBA PNG with stored deflate blocks (boot.c); stops with rt_fatal when the file cannot be written.
+ void rt_write_png(const char *path, const uint8_t *rgba, uint32_t w, uint32_t h);
++// buf.req (boot.c polls it, NX2NAVI_WATCH_REQ=1): a live GPU buffer capture, vk_dump.c; present: names the file
++void vk_bufcap_request(const char *spec, uint64_t present);
+ 
+ // ---- submission, synchronisation, completion (vk_sync.c, vk_backend.c)
+ // Fence values are ctx->timeline values: each submission signals the next one, in submit order. A value counts as done
+diff --git a/runtime/vk_dump.c b/runtime/vk_dump.c
+index 451e531..7399805 100644
+--- a/runtime/vk_dump.c
++++ b/runtime/vk_dump.c
+@@ -429,23 +429,103 @@ static void buf_done(void *arg) {
+     free(j);
+ }
+ 
++static int copy_range(VkExec *ex, uint64_t addr, uint64_t n, VkBuffer *buf, VmaAllocation *alloc, const uint8_t **map);
++
+ static void buf_snap(VkExec *ex, int pass) {
+     if (!bd_size) return;
+-    VkMemSpan s;
+-    if (!vk_mem_resolve(bd_addr, bd_size, &s) || s.avail < bd_size) return;
+-    VK_MEM_PICK(s);   // the GPU's view of the buffer
+     BufJob *j = calloc(1, sizeof *j);
+     if (!j) rt_fatal("vk_dump: out of memory");
+-    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = bd_size,
++    if (!copy_range(ex, bd_addr, bd_size, &j->buf, &j->alloc, &j->map)) {
++        free(j);
++        return;
++    }
++    j->pass = pass;
++    vk_completion_add(ex->fence, buf_done, j);
++}
++
++// ---- buf.req (live capture, boot.c polls the file; vk_exec.c calls vk_bufcap_pass_end while vk_bufcap_on):
++// <addr>:<size>[:<frames>[:<pass>]] (hex, hex, decimal, decimal; defaults 60 frames, render pass 0) copies the GPU's view
++// of that range (at most 16 MiB, one backing span) once per frame for that many frames, right after the frame's
++// <pass>th render pass (0: its first), to logs/buf-<present>.bin: per frame a 32-byte record header
++// {"NXBUF001", frame, addr, size} and then the bytes. No images and no waits: the copy goes into the frame's own command
++// buffer and the completion thread appends it to the file. A new request replaces a running capture; "off" ends it.
++typedef struct { FILE *f; int refs; uint64_t frames; char path[PLAT_PATH_MAX]; } CapFile;
++typedef struct { VkBuffer buf; VmaAllocation alloc; const uint8_t *map; uint64_t frame, addr, size; CapFile *cf; } CapJob;
++int vk_bufcap_on;
++static PlatMutex cap_lock = PLAT_MUTEX_INIT;
++static uint64_t cap_addr, cap_size, cap_cur_frame;
++static int cap_left, cap_pass, cap_npass, cap_warned;
++static CapFile *cap_file;
++
++static void cap_release(CapFile *cf) {   // cap_lock held
++    if (!cf || --cf->refs) return;
++    fclose(cf->f);
++    rt_log("buf-req: %llu frames written to %s", (unsigned long long)cf->frames, cf->path);
++    free(cf);
++}
++
++void vk_bufcap_request(const char *spec, uint64_t present) {
++    char *x;
++    uint64_t a = strtoull(spec, &x, 16), n = 0;
++    int frames = 60, pass = 0;
++    if (*x == ':') n = strtoull(x + 1, &x, 16);
++    if (*x == ':') frames = atoi(x + 1), strtol(x + 1, &x, 10);
++    if (*x == ':') pass = atoi(x + 1);
++    plat_mutex_lock(&cap_lock);
++    cap_release(cap_file);
++    cap_file = NULL, cap_left = 0;
++    __atomic_store_n(&vk_bufcap_on, 0, __ATOMIC_RELEASE);
++    if (!strncmp(spec, "off", 3) || !n || frames <= 0) {
++        rt_log("buf-req: off (present %llu)", (unsigned long long)present);
++        plat_mutex_unlock(&cap_lock);
++        return;
++    }
++    if (n > (16ull << 20)) n = 16ull << 20;
++    CapFile *cf = calloc(1, sizeof *cf);
++    char name[64];
++    snprintf(name, sizeof name, "logs/buf-%05llu.bin", (unsigned long long)present);
++    if (cf && gfx_shader_beside_cache(name, cf->path, sizeof cf->path) && (cf->f = fopen(cf->path, "wb"))) {
++        cf->refs = 1;
++        cap_file = cf, cap_addr = a, cap_size = n, cap_left = frames, cap_pass = pass < 0 ? 0 : pass;
++        cap_cur_frame = 0, cap_npass = 0, cap_warned = 0;
++        __atomic_store_n(&vk_bufcap_on, 1, __ATOMIC_RELEASE);
++        rt_log("buf-req: %#llx+%#llx for %d frames after render pass %d to %s (present %llu)", (unsigned long long)a,
++               (unsigned long long)n, frames, cap_pass, cf->path, (unsigned long long)present);
++    } else {
++        rt_log("buf-req: cannot write %s", cf ? cf->path : name);
++        free(cf);
++    }
++    plat_mutex_unlock(&cap_lock);
++}
++
++static void cap_done(void *arg) {
++    CapJob *j = arg;
++    vmaInvalidateAllocation(vk_ctx()->vma, j->alloc, 0, VK_WHOLE_SIZE);
++    uint64_t h[4];
++    memcpy(h, "NXBUF001", 8), h[1] = j->frame, h[2] = j->addr, h[3] = j->size;
++    plat_mutex_lock(&cap_lock);
++    fwrite(h, 8, 4, j->cf->f);
++    fwrite(j->map, 1, j->size, j->cf->f);
++    j->cf->frames++;
++    cap_release(j->cf);
++    plat_mutex_unlock(&cap_lock);
++    vmaDestroyBuffer(vk_ctx()->vma, j->buf, j->alloc);
++    free(j);
++}
++
++// The GPU's view of addr+n into a new host buffer, in ex's command buffer (outside a render pass); 0 when unbacked.
++static int copy_range(VkExec *ex, uint64_t addr, uint64_t n, VkBuffer *buf, VmaAllocation *alloc, const uint8_t **map) {
++    VkMemSpan s;
++    if (!vk_mem_resolve(addr, n, &s) || s.avail < n) return 0;
++    VK_MEM_PICK(s);   // the GPU's view of the buffer
++    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = n,
+                              .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+     VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO,
+                                   .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT};
+     VmaAllocationInfo info;
+-    if (vmaCreateBuffer(vk_ctx()->vma, &bi, &ai, &j->buf, &j->alloc, &info) != VK_SUCCESS || !info.pMappedData) {
+-        free(j);
+-        return;
+-    }
+-    j->map = info.pMappedData, j->pass = pass;
++    if (vmaCreateBuffer(vk_ctx()->vma, &bi, &ai, buf, alloc, &info) != VK_SUCCESS) return 0;
++    if (!info.pMappedData) return vmaDestroyBuffer(vk_ctx()->vma, *buf, *alloc), 0;
++    *map = info.pMappedData;
+     VkMemoryBarrier2 mb[2] = {
+         {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+          .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT, .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+@@ -456,12 +536,37 @@ static void buf_snap(VkExec *ex, int pass) {
+          .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT}};
+     VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb[0]};
+     vkCmdPipelineBarrier2(ex->cb, &di);
+-    VkBufferCopy c = {s.offset, 0, bd_size};
+-    vkCmdCopyBuffer(ex->cb, s.buffer, j->buf, 1, &c);
++    VkBufferCopy c = {s.offset, 0, n};
++    vkCmdCopyBuffer(ex->cb, s.buffer, *buf, 1, &c);
+     di.pMemoryBarriers = &mb[1];
+     vkCmdPipelineBarrier2(ex->cb, &di);
+     ex->recorded += 3;
+-    vk_completion_add(ex->fence, buf_done, j);
++    return 1;
++}
++
++void vk_bufcap_pass_end(VkExec *ex) {
++    plat_mutex_lock(&cap_lock);
++    uint64_t f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1;
++    if (f != cap_cur_frame) cap_cur_frame = f, cap_npass = 0;
++    if (!cap_file || cap_npass++ != cap_pass) goto out;
++    CapJob *j = calloc(1, sizeof *j);
++    if (!j) goto out;
++    if (!copy_range(ex, cap_addr, cap_size, &j->buf, &j->alloc, &j->map)) {
++        free(j);
++        if (!cap_warned++) rt_log("buf-req: %#llx+%#llx is not one backed span in frame %llu: frames without it are left out",
++                                  (unsigned long long)cap_addr, (unsigned long long)cap_size, (unsigned long long)f);
++    } else {
++        j->frame = f, j->addr = cap_addr, j->size = cap_size, j->cf = cap_file;
++        cap_file->refs++;
++        vk_completion_add(ex->fence, cap_done, j);
++    }
++    if (--cap_left <= 0) {
++        cap_release(cap_file);
++        cap_file = NULL;
++        __atomic_store_n(&vk_bufcap_on, 0, __ATOMIC_RELEASE);
++    }
++out:
++    plat_mutex_unlock(&cap_lock);
+ }
+ 
+ static int active(void) {
+diff --git a/runtime/vk_exec.c b/runtime/vk_exec.c
+index fd939ac..f72b739 100644
+--- a/runtime/vk_exec.c
++++ b/runtime/vk_exec.c
+@@ -662,6 +662,7 @@ void vk_exec_pass_end(VkExec *ex) {
+         if (ex->color[i].image && ex->color[i].img && ex->color[i].img->image != ex->color[i].image)
+             bc_copy_back(ex, &ex->color[i]);
+     if (vk_dump_armed) vk_dump_pass_end(ex);
++    if (__atomic_load_n(&vk_bufcap_on, __ATOMIC_ACQUIRE)) vk_bufcap_pass_end(ex);
+     uint64_t stamp = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1;
+     for (int i = 0; i < 8; i++)
+         if (ex->color[i].image) vk_texture_gpu_written(ex->color[i].tex), tfr_note(&ex->color[i], stamp);
+diff --git a/runtime/vk_exec.h b/runtime/vk_exec.h
+index d4615c2..73aea74 100644
+--- a/runtime/vk_exec.h
++++ b/runtime/vk_exec.h
+@@ -170,6 +170,8 @@ void vk_exec_frame_log(const tex_t *presented, uint64_t frame);
+ // textures, samplers) and images.txt (per image value statistics). The hooks run only when vk_dump_armed is set.
+ extern int vk_dump_armed;
+ int vk_dump_active(void); // vk_dump.c: this frame is being dumped (the draw ops format their arguments only then)
++extern int vk_bufcap_on;                // buf.req capture running (vk_dump.c)
++void vk_bufcap_pass_end(VkExec *ex);     // vk_exec_pass_end while vk_bufcap_on
+ void vk_dump_init(void);                 // reads the environment; vk_exec_record's first call
+ void vk_dump_pass_end(VkExec *ex);       // after vkCmdEndRendering
+ void vk_dump_draw(VkExec *ex, const VkPipeState *s, VkPipeline p, const VkPipeInfo *info);   // after a draw's binds
+-- 
+2.56.0
+

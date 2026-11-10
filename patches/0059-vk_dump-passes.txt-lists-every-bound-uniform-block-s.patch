@@ -1,0 +1,69 @@
+From d9d6aa82af8554f07795510e72e39f38c0b5334e Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 18:09:19 -0500
+Subject: [PATCH 59/59] vk_dump: passes.txt lists every bound uniform block's
+ address and size (c3 and up) without NX2NAVI_DUMP_UBO, and NX2NAVI_DUMP_DRAWS
+ lines carry each draw's own c-bank addresses (#165)
+
+---
+ runtime/vk_dump.c | 25 +++++++++++++++++++++----
+ 1 file changed, 21 insertions(+), 4 deletions(-)
+
+diff --git a/runtime/vk_dump.c b/runtime/vk_dump.c
+index 77418ce..98668c1 100644
+--- a/runtime/vk_dump.c
++++ b/runtime/vk_dump.c
+@@ -730,12 +730,13 @@ static void describe_bindings(Str *b, const VkExec *ex, const VkPipeInfo *info)
+             }
+             continue;
+         }
+-        if (r && bd->kind == GFX_RES_UBO && dump_ubo && r->slot >= 3 && r->slot - 3 < 18) {
++        if (r && bd->kind == GFX_RES_UBO && r->slot >= 3 && r->slot - 3 < 18) {   // address always, values with NX2NAVI_DUMP_UBO
+             int st = nvn_stage(bd->stage);
+             const p_bind_buf *u = &ex->ubo[st][r->slot - 3];
+             VkMemSpan ms;
+             sp(b, "    %s ubo c%d addr %#llx size %#llx", stn[st], r->slot, (unsigned long long)u->addr, (unsigned long long)u->size);
+-            if (u->addr && vk_mem_resolve(u->addr, 1, &ms)) {
++            if (!dump_ubo) {
++            } else if (u->addr && vk_mem_resolve(u->addr, 1, &ms)) {
+                 uint64_t n = u->size && u->size < ms.avail ? u->size : ms.avail;
+                 const float *f = (const float *)(uintptr_t)u->addr;
+                 for (uint64_t k = 0; k < (uint64_t)dump_ubo && (k + 1) * 16 <= n; k++)
+@@ -814,6 +815,19 @@ static void describe_bindings(Str *b, const VkExec *ex, const VkPipeInfo *info)
+     }
+ }
+ 
++// " vs c3=<addr>+<size> ..." for the uniform blocks info binds (c3 and up), this draw's addresses.
++static void cbank_list(Str *b, const VkExec *ex, const VkPipeInfo *info) {
++    static const char *stn[6] = {"vs", "fs", "?", "?", "?", "cs"};
++    for (uint32_t i = 0; i < info->n_bindings; i++) {
++        const VkPipeBinding *bd = &info->bindings[i];
++        const GfxShaderRes *r = bd->res;
++        if (!r || bd->kind != GFX_RES_UBO || r->slot < 3 || r->slot - 3 >= 18) continue;
++        int st = nvn_stage(bd->stage);
++        const p_bind_buf *u = &ex->ubo[st][r->slot - 3];
++        sp(b, " %s c%d=%#llx+%#llx", stn[st], r->slot, (unsigned long long)u->addr, (unsigned long long)u->size);
++    }
++}
++
+ static uint64_t bindings_hash(const VkExec *ex, const VkPipeInfo *info) {
+     uint64_t h = 0xcbf29ce484222325ull;
+     for (uint32_t i = 0; i < info->n_bindings; i++) {
+@@ -838,9 +852,12 @@ void vk_dump_draw(VkExec *ex, const VkPipeState *s, VkPipeline p, const VkPipeIn
+     int pipe = -1;
+     for (int i = 0; i < nents; i++)
+         if (ents[i].p == p && ents[i].th == th) { pipe = i; break; }
+-    if (dump_draws)
+-        sp(&draw_lines, "    draw %d: pipe %d vs %016llx fs %016llx %s\n", pass_draws - 1, pipe < 0 ? nents : pipe,
++    if (dump_draws) {
++        sp(&draw_lines, "    draw %d: pipe %d vs %016llx fs %016llx %s", pass_draws - 1, pipe < 0 ? nents : pipe,
+            (unsigned long long)shader_hash(s->vs), (unsigned long long)shader_hash(s->fs), vk_dump_draw_args);
++        cbank_list(&draw_lines, ex, info);
++        sp(&draw_lines, "\n");
++    }
+     if (pipe >= 0) {
+         ents[pipe].draws++;
+         goto out;
+-- 
+2.56.0
+

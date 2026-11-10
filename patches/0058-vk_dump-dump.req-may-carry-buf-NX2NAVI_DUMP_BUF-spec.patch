@@ -1,0 +1,100 @@
+From f6144eff5bce1cf27385958956467e924cc9582a Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 18:09:19 -0500
+Subject: [PATCH 58/59] vk_dump: dump.req may carry buf=<NX2NAVI_DUMP_BUF
+ spec>|off, ubo=<n>, draws=0|1 and skip_runs=0|1 for that dump and later ones;
+ bufs.txt goes to each dump's own folder (#164)
+
+---
+ runtime/vk_dump.c | 52 +++++++++++++++++++++++++++++++++--------------
+ 1 file changed, 37 insertions(+), 15 deletions(-)
+
+diff --git a/runtime/vk_dump.c b/runtime/vk_dump.c
+index 7399805..77418ce 100644
+--- a/runtime/vk_dump.c
++++ b/runtime/vk_dump.c
+@@ -1052,7 +1052,34 @@ static void make_dirs(char *path) { plat_file_mkdir_p(path); }
+ int vk_dump_white;   // vk_backend.c asks for a thumbnail of every present while it is set
+ #define dump_white vk_dump_white
+ 
+-// passes.txt and images.txt in dir (a new folder per NX2NAVI_DUMP_WHITE attempt)
++// NX2NAVI_DUMP_BUF's value, or "off"
++static void buf_spec(const char *bf) {
++    char *q;
++    bd_addr = strtoull(bf, &q, 0), bd_size = bd_off = bd_stride = 0, bd_w = bd_h = 0;
++    if (*q == ':') bd_size = strtoull(q + 1, &q, 0);
++    if (*q == ':') bd_off = strtoull(q + 1, &q, 0);
++    if (*q == ':') bd_stride = strtoull(q + 1, &q, 0) & ~3ull;
++    if (*q == ':') bd_w = (uint32_t)strtoul(q + 1, &q, 0);
++    if (*q == ':') bd_h = (uint32_t)strtoul(q + 1, &q, 0);
++    if (!bd_w || !bd_h) bd_stride = 0;
++    free(bd_prev), bd_prev = NULL;
++}
++
++// The options a dump.req may carry, space or line separated, kept for later dumps: buf=<NX2NAVI_DUMP_BUF value>|off,
++// ubo=<n> (NX2NAVI_DUMP_UBO), draws=0|1 (NX2NAVI_DUMP_DRAWS), skip_runs=0|1 (NX2NAVI_DUMP_SKIP_RUNS). An empty file
++// changes nothing.
++static void req_options(char *t) {
++    for (char *w = strtok(t, " \t\r\n"); w; w = strtok(NULL, " \t\r\n")) {
++        if (!strncmp(w, "buf=", 4)) buf_spec(w + 4);
++        else if (!strncmp(w, "ubo=", 4)) dump_ubo = atoi(w + 4) == 1 ? 16 : atoi(w + 4) < 0 ? 0 : atoi(w + 4) > 4096 ? 4096 : atoi(w + 4);
++        else if (!strncmp(w, "draws=", 6)) dump_draws = atoi(w + 6) != 0;
++        else if (!strncmp(w, "skip_runs=", 10)) skip_runs = atoi(w + 10) != 0;
++        else { rt_log("vk_dump: dump.req: '%s' unknown, ignored", w); continue; }
++        rt_log("vk_dump: dump.req: %s", w);
++    }
++}
++
++// passes.txt and images.txt in dir (a new folder per NX2NAVI_DUMP_WHITE attempt), bufs.txt with NX2NAVI_DUMP_BUF
+ static void open_files(void) {
+     make_dirs(dir);
+     char path[600];
+@@ -1061,6 +1088,8 @@ static void open_files(void) {
+     snprintf(path, sizeof path, "%s/images.txt", dir);
+     images_f = fopen(path, "w");
+     if (!passes_f || !images_f) rt_fatal("vk_dump: cannot write to %s", dir);
++    snprintf(path, sizeof path, "%s/bufs.txt", dir);
++    if (bd_size && !(bufs_f = fopen(path, "w"))) bd_size = 0;
+ }
+ 
+ void vk_dump_init(void) {
+@@ -1098,21 +1127,9 @@ void vk_dump_init(void) {
+     const char *d = cfg_get("NX2NAVI_DUMP_DIR");
+     snprintf(base_dir, sizeof base_dir, "%s", d && *d ? d : "dump");
+     snprintf(dir, sizeof dir, "%s", base_dir);
+-    char path[600];
+-    if (!dump_white && !dump_req) open_files();
+     const char *bf = cfg_get("NX2NAVI_DUMP_BUF");
+-    if (bf && *bf) {
+-        char *q;
+-        bd_addr = strtoull(bf, &q, 0);
+-        if (*q == ':') bd_size = strtoull(q + 1, &q, 0);
+-        if (*q == ':') bd_off = strtoull(q + 1, &q, 0);
+-        if (*q == ':') bd_stride = strtoull(q + 1, &q, 0) & ~3ull;
+-        if (*q == ':') bd_w = (uint32_t)strtoul(q + 1, &q, 0);
+-        if (*q == ':') bd_h = (uint32_t)strtoul(q + 1, &q, 0);
+-        if (!bd_w || !bd_h) bd_stride = 0;
+-        snprintf(path, sizeof path, "%s/bufs.txt", dir);
+-        if (bd_size && !(bufs_f = fopen(path, "w"))) bd_size = 0;
+-    }
++    if (bf && *bf) buf_spec(bf);
++    if (!dump_white && !dump_req) open_files();
+     vk_dump_armed = 1;
+     rt_log("vk_dump: frame %llu goes to %s", (unsigned long long)dump_frame, dir);
+ }
+@@ -1155,7 +1172,12 @@ void vk_dump_present(uint64_t frame) {
+     }
+     if (dump_white && !white_caught && !white_last && dump_frame == UINT64_MAX) white_check(frame);
+     if (dump_req && dump_frame == UINT64_MAX && plat_file_exists(req_path)) {   // asked for: dump the next frame
++        uint64_t sz;
++        uint8_t *b = plat_file_read(req_path, &sz);
+         plat_file_delete(req_path);
++        char *t = b ? malloc(sz + 1) : NULL;
++        if (t) memcpy(t, b, sz), t[sz] = 0, req_options(t);
++        free(t), free(b);
+         dump_frame = frame + 1;
+         snprintf(dir, sizeof dir, "%s/f%llu", base_dir, (unsigned long long)dump_frame);
+         open_files();
+-- 
+2.56.0
+
