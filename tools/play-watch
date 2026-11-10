@@ -35,6 +35,7 @@ MARK = re.compile(r"mark (\d+) at present (\d+)")
 FRAMETIME = re.compile(r"frametime: 60 s: \d+ frames in [\d.]+ s, mean ([\d.]+) fps, 1% low ([\d.]+) fps")
 PINS = re.compile(r"texture pins at submit \d+: (\d+) live, (\d+) waiting")
 BYFMT = re.compile(r"mem: textures frame (\d+), own memory by vk format/astc/rt/released: (.*)")
+TRIM = re.compile(r"vk: VRAM above \d+%: released render targets trimmed (\d+) \((\d+) MiB\).*?since start (\d+) \((\d+) MiB\)")
 FAULT = re.compile(r"fault caught|device lost|DEVICE_LOST|VK_ERROR|ERROR_OUT_OF|out of memory", re.IGNORECASE)
 
 
@@ -79,6 +80,8 @@ class Session:
             parts.append(f"card {s['use']} of {s['budget']} MiB")
         if "waiting" in s:
             parts.append(f"pins waiting {s['waiting']}")
+        if "trim_n" in s:
+            parts.append(f"rt trimmed {s['trim_n']} ({s['trim_mib']} MiB)")
         if "fps" in s:
             parts.append(f"{s['fps']:.0f} fps (1% low {s['low']:.0f})")
         return ", ".join(parts)
@@ -125,6 +128,11 @@ class Session:
                 emit("budget", f"VRAM use passed 95% of the budget; {self.summary()}")
             elif use < 0.9 * budget:
                 self.flags -= {"over", "near"}
+            return
+        m = TRIM.search(text)
+        if m:
+            n, mib, s["trim_n"], s["trim_mib"] = map(int, m.groups())
+            emit("trim", f"released render targets trimmed under pressure: {n} ({mib} MiB); {self.summary()}")
             return
         m = PINS.search(text)
         if m:

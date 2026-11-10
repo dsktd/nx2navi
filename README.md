@@ -422,6 +422,7 @@ distribution). After `just update`, `build` may need a rebase onto the new upstr
   `spirv-val` clean; none was drawn again before the report, so a successful pipeline build is **not yet seen**.
   0050 compiles (scratch build `.lab/xlate-txq/build`) but has not translated an affected shader.
 - `0051-input-NX2NAVI_MOTION_SOCK-reads-gyro-and-acceleromet.patch`: `NX2NAVI_MOTION_SOCK` (default `auto`, live), see "Motion from yakin's socket".
+- `0052-vk_texture-NX2NAVI_TEX_RT_DEDICATED_MIB-n-gives-rend.patch`: `NX2NAVI_TEX_RT_DEDICATED_MIB` (default 4) puts render targets in their own memory and `NX2NAVI_TEX_RT_TRIM` (default 95) drops released ones above that share of the driver's VRAM budget, logging `vk: VRAM above 95%: released render targets trimmed n (m MiB)` (#160). Built as `build/v111/nx2navi.vram` (0051 included); no GPU run yet. `tools/play-watch` reports the trims.
 
 ## Mark this moment
 

@@ -22,3 +22,4 @@ Things that are on or available without proof they help. One line each; remove a
 | `NX2NAVI_SHADOW_GAP_KIB` | 64 | `=2048`: write-watch queries 232 -> 160 a frame, sync -0.05 ms only; harmless, little gain | `=2048` |
 | `NX2NAVI_POOL_KH` | 0 | lab field: replay -0.4 ms, +0.8 fps (3 on, 2 valid off runs, inside the spread); shots match; in `nx2navi.bind` | `=1` |
 | `NX2NAVI_MOTION_SOCK` | auto | yakin socket motion: fake-server probe only; real controller and in-game axis signs untested; in `nx2navi.motion` | `=off` |
+| `NX2NAVI_TEX_RT_TRIM` + `NX2NAVI_TEX_RT_DEDICATED_MIB` | 95 / 4 | #160: released render targets get own memory and go above 95% of the driver budget; built only, no GPU run yet (black-flash risk of dropping a render target as under the yield); in `nx2navi.vram` | `=0` / `=0` |

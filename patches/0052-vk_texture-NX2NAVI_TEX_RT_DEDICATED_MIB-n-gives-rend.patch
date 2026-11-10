@@ -1,0 +1,135 @@
+From bd09ee0ae464a178d66e97ec456f4571e134d540 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 16:47:54 -0500
+Subject: [PATCH] vk_texture: NX2NAVI_TEX_RT_DEDICATED_MIB=<n> gives render
+ targets of n MiB and more their own memory, and NX2NAVI_TEX_RT_TRIM=<pct>
+ drops released ones in own memory oldest first above that share of the
+ driver's VRAM budget, one log line per run of drops (defaults 4 and 95; 0 =
+ off) (#160)
+
+---
+ runtime/vk_texture.c | 78 ++++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 76 insertions(+), 2 deletions(-)
+
+diff --git a/runtime/vk_texture.c b/runtime/vk_texture.c
+index 8743fee..2a63743 100644
+--- a/runtime/vk_texture.c
++++ b/runtime/vk_texture.c
+@@ -177,6 +177,7 @@ static void dirty_push(uint32_t x) { dirty[ndirty++ % DIRTY_N] = x; }
+ // last), so uploads of bytes the GPU already had show up, under the same key or another one. A summary line goes to
+ // the log every 600 frames (vk_texture_new_submit); the Tracy zone text names the class.
+ enum { DC_NEW, DC_RANGE_GONE, DC_REPLACED, DC_SWEEP_COUNT, DC_SWEEP_BYTES, DC_PRESSURE, DC_YIELD, DC_N };
++static uint64_t rt_dedicated_bytes(void);
+ #ifdef TRACY_ENABLE
+ static const char *const dc_name[DC_N] = {"first", "first: after range gone", "first: after replaced at address",
+                                           "first: after released-count sweep", "first: after released-bytes sweep", "first: after VRAM pressure",
+@@ -759,6 +760,8 @@ static Tex *create_tex(const tex_t *t, const TexKey *k, int defer_init) {
+     }
+     if (!img) {
+         VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
++        if (rt_dedicated_bytes() && !tex_mirrored(t) && L.size >= rt_dedicated_bytes())
++            ai.flags |= VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+         VkResult r = vmaCreateImage(c->vma, &ci, &ai, &img, &e->alloc, NULL);
+         if (r != VK_SUCCESS) {
+             log_limited(&n_failed, "image creation failed (%d): nvn fmt %#x %ux%ux%u target %d levels %u layers %u", (int)r,
+@@ -879,6 +882,23 @@ static void rel_unlink(Tex *e) {
+     e->rel_prev = e->rel_next = NULL;
+ }
+ 
++// NX2NAVI_TEX_RT_DEDICATED_MIB (default 4; 0 = off): a render target whose storage is at least that many MiB gets its
++// own VkDeviceMemory instead of a place in a VMA block. RADV does not ask for dedicated memory for plain images, so
++// render targets shared 256 MiB blocks with everything else: freeing a released one left a hole that the driver still
++// counted, and the blocks held 2.8 GiB more than their allocations while the heap sat at its budget (#160). In its own
++// memory a render target gives its bytes back to the driver when it goes (NX2NAVI_TEX_RT_TRIM below).
++static int64_t rt_ded = -1;
++static uint64_t rt_dedicated_bytes(void) {
++    if (rt_ded < 0) {
++        const char *s = cfg_get("NX2NAVI_TEX_RT_DEDICATED_MIB");
++        rt_ded = (s && *s ? atoll(s) : 4) * 1048576;
++        if (rt_ded < 0) rt_ded = 0;
++        rt_log("vk: render targets of %s%lld MiB get their own memory (NX2NAVI_TEX_RT_DEDICATED_MIB)",
++               rt_ded ? "at least " : "none: 0 = off, ", (long long)(rt_ded / 1048576));
++    }
++    return (uint64_t)rt_ded;
++}
++
+ static void destroy_tex(Tex *e) {
+     own_remove(e);
+     n_site[0]++;
+@@ -950,6 +970,51 @@ static int vram_pressure = -1;
+ static int rel_yield = -1;
+ static uint64_t n_yield_bytes;
+ static uint64_t n_pressure_drops;
++// NX2NAVI_TEX_RT_TRIM (percent of the driver's VK_EXT_memory_budget budget of the device-local heaps, default 95; 0 =
++// off): above it the oldest released entries that own dedicated memory go (released render targets, see
++// NX2NAVI_TEX_RT_DEDICATED_MIB), at most YIELD_STEP per query, until the drop would bring the heap down to
++// NX2NAVI_TEX_RT_TRIM - YIELD_HYST percent. Unlike the yield above it reads the driver's use without VMA's block slack:
++// only dedicated memory is dropped, so every byte freed leaves the driver's count (the yield subtracted the 2.8-4 GiB
++// of slack and never fired while the card was full, #160). The drops of one query still count against the next one,
++// as the images go only once the GPU is done with them. Each run of queries that dropped something logs one line.
++static int rt_trim = -1;
++static uint64_t trim_last, trim_ep_n, trim_ep_bytes, trim_tot_n, trim_tot_bytes;
++
++static int dedicated_own(const Tex *e) {
++    if (!e->alloc || (e->share && e->share->refs > 1)) return 0;
++    VmaAllocationInfo2 ai;
++    vmaGetAllocationInfo2(vk_ctx()->vma, e->alloc, &ai);
++    return ai.dedicatedMemory;
++}
++
++static void trim_log(uint64_t used, uint64_t budget) {
++    trim_tot_n += trim_ep_n, trim_tot_bytes += trim_ep_bytes;
++    rt_log("vk: VRAM above %d%%: released render targets trimmed %llu (%.0f MiB), %.0f of %.0f MiB in use; since start "
++           "%llu (%.0f MiB)", rt_trim, (unsigned long long)trim_ep_n, trim_ep_bytes / 1048576.0, used / 1048576.0,
++           budget / 1048576.0, (unsigned long long)trim_tot_n, trim_tot_bytes / 1048576.0);
++    trim_ep_n = trim_ep_bytes = 0;
++}
++
++static void sweep_rt_trim(uint64_t used, uint64_t budget) {   // tex_lock held; used/budget from vk_mem_vram (exact)
++    used -= trim_last < used ? trim_last : used;
++    trim_last = 0;
++    if (used <= budget / 100 * (uint64_t)rt_trim) {
++        if (trim_ep_n) trim_log(used, budget);
++        return;
++    }
++    uint64_t want = used - budget / 100 * (uint64_t)(rt_trim - YIELD_HYST), freed = 0;
++    int k = 0;
++    dcause = DC_YIELD;
++    for (Tex *e = rel_head, *next; e && k < YIELD_STEP && freed < want; e = next) {
++        next = e->rel_next;
++        if (!dedicated_own(e)) continue;
++        freed += e->rel_acct, k++;
++        destroy_tex(e);
++    }
++    dcause = DC_NEW;
++    trim_last = freed, trim_ep_n += (uint64_t)k, trim_ep_bytes += freed;
++    if (trim_ep_n >= 1024) trim_log(used, budget);   // a long run still shows up while it lasts
++}
+ 
+ static void sweep_pressure(void) {   // tex_lock held
+     if (vram_pressure < 0) {
+@@ -966,10 +1031,19 @@ static void sweep_pressure(void) {   // tex_lock held
+             rt_log("vk: released textures, render targets included, yield above %d%% of the VRAM budget (down to %d%%)",
+                    rel_yield, rel_yield - YIELD_HYST);
+     }
+-    if (!rel_head || submit_epoch & 7) return;   // the budget query every 8 submits
++    if (rt_trim < 0) {
++        const char *s = cfg_get("NX2NAVI_TEX_RT_TRIM");
++        rt_trim = s && *s ? atoi(s) : 95;
++        if (rt_trim < YIELD_HYST + 1 || rt_trim > 100) rt_trim = 0;
++        rt_log("vk: released render targets in their own memory %s%d%% of the VRAM budget (NX2NAVI_TEX_RT_TRIM)",
++               rt_trim ? "trimmed above " : "kept: off, ", rt_trim);
++    }
++    if ((!rel_head && !trim_ep_n) || submit_epoch & 7) return;   // the budget query every 8 submits
+     uint64_t used, budget;
+     int exact;
+-    if (!(vram_pressure || rel_yield) || !vk_mem_vram(&used, &budget, &exact)) return;
++    if (!(vram_pressure || rel_yield || rt_trim) || !vk_mem_vram(&used, &budget, &exact)) return;
++    if (rt_trim && exact) sweep_rt_trim(used, budget);
++    if (!rel_head) return;
+     // VMA keeps the blocks a drop empties only in part: their free space is reused by the next allocations and does not
+     // count as used here, or the drops never bring the heap down and the list is emptied at every query (lab, Death
+     // Mountain at 70%: 4.6 GiB re-created per second while VMA's blocks stayed at 10.4 GiB).
+-- 
+2.56.0
+
