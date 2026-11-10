@@ -1,0 +1,88 @@
+From 271137cbc0cd38f2f739e2c9cc83b6af4d961ba0 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 00:26:28 -0500
+Subject: [PATCH] vk_memory: log VRAM per heap every 1800 frames: driver usage
+ and budget, VMA blocks and allocations, the kernel's fdinfo vram/gtt/visible
+ and the shadow total, beside the texture and mirror census (#141, #132)
+
+---
+ runtime/vk_memory.c | 49 +++++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 47 insertions(+), 2 deletions(-)
+
+diff --git a/runtime/vk_memory.c b/runtime/vk_memory.c
+index a0870f3..911d670 100644
+--- a/runtime/vk_memory.c
++++ b/runtime/vk_memory.c
+@@ -573,7 +573,7 @@ static volatile uint64_t mirror_frame;   // the frame vk_mem_census last saw, fo
+ void vk_mem_census(uint64_t frame) {
+     mirror_frame = frame;
+     static uint64_t window_start;
+-    if ((rt_trace & RT_TRACE_PERF) && frame % 600 == 0) vram_log(frame);
++    if ((rt_trace & RT_TRACE_PERF) ? frame % 600 == 0 : frame % 1800 == 0) vram_log(frame);
+     if ((rt_trace & RT_TRACE_PERF) && !vk_mirror_on) dirty_frame(frame);
+     if ((rt_trace & RT_TRACE_PERF) ? frame % 60 == 0 : frame == 600 || frame == 1800)
+         mirror_log(frame), shadow_log(frame);   // mirror_log also logs the write-watch line
+@@ -2411,7 +2411,7 @@ static void mirror_log(uint64_t frame) {
+            a.flush_bytes / f / M, a.flush_calls / f, a.flush_sum / f / M);
+ }
+ 
+-// With NX2NAVI_TRACE=perf every 600 frames: what holds device-local memory, to see what grows over a long session.
++// Every 1800 frames (with NX2NAVI_TRACE=perf every 600): what holds device-local memory, to see what grows over a long session.
+ // VMA's blocks and allocations on the device-local heaps, texture entries with their own memory, the VRAM mirrors and
+ // the objects waiting for their last submission to retire.
+ static void vram_log(uint64_t frame) {
+@@ -2433,6 +2433,51 @@ static void vram_log(uint64_t frame) {
+            alloc_bytes / M, (unsigned long long)t.live, (unsigned long long)t.own_live, t.bytes_live / M,
+            (unsigned long long)t.released, (unsigned long long)t.own_released, t.bytes_released / M, (long long)m_live_n,
+            m_live_bytes / M, dead_pending());
++    // Per heap: the driver's VK_EXT_memory_budget usage and budget (what the pressure valves read), VMA's own blocks
++    // and allocations, then the kernel's fdinfo figures for this process (resident memory by placement, what nvtop
++    // shows): the gap between the three is memory held outside VMA (imports) or evicted from VRAM to GTT.
++    char line[640];
++    int n = snprintf(line, sizeof line, "mem: heaps frame %llu:", (unsigned long long)frame);
++    VkPhysicalDeviceMemoryBudgetPropertiesEXT db = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT};
++    if (c->has_memory_budget) {
++        VkPhysicalDeviceMemoryProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2, .pNext = &db};
++        vkGetPhysicalDeviceMemoryProperties2(c->phys, &p2);
++    }
++    for (uint32_t h = 0; h < c->mem_props.memoryHeapCount && h < VK_MAX_MEMORY_HEAPS && n < (int)sizeof line; h++)
++        n += snprintf(line + n, sizeof line - n, " %u%s: driver %.0f of %.0f, vma blocks %.0f allocations %.0f;", h,
++                      c->mem_props.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT ? " vram" : "",
++                      db.heapUsage[h] / M, db.heapBudget[h] / M, vb[h].statistics.blockBytes / M,
++                      vb[h].statistics.allocationBytes / M);
++#ifdef __linux__
++    // drm-memory-<region>: KiB per open DRM file; fds of one client share a drm-client-id, counted once.
++    uint64_t kib[3] = {0}, ids[16];
++    int nid = 0;
++    char path[64], buf[256];
++    for (int fd = 0; fd < 1024; fd++) {
++        snprintf(path, sizeof path, "/proc/self/fdinfo/%d", fd);
++        FILE *f = fopen(path, "r");
++        if (!f) continue;
++        uint64_t id = 0, v[3] = {0};
++        int drm = 0;
++        while (fgets(buf, sizeof buf, f)) {
++            unsigned long long x;
++            if (sscanf(buf, "drm-client-id: %llu", &x) == 1) id = x, drm = 1;
++            else if (sscanf(buf, "drm-memory-vram: %llu", &x) == 1) v[0] = x;
++            else if (sscanf(buf, "drm-memory-gtt: %llu", &x) == 1) v[1] = x;
++            else if (sscanf(buf, "amd-memory-visible-vram: %llu", &x) == 1) v[2] = x;
++        }
++        fclose(f);
++        int seen = 0;
++        for (int i = 0; i < nid; i++) seen |= ids[i] == id;
++        if (!drm || seen) continue;
++        if (nid < 16) ids[nid++] = id;
++        for (int i = 0; i < 3; i++) kib[i] += v[i];
++    }
++    if (nid && n < (int)sizeof line)
++        snprintf(line + n, sizeof line - n, " kernel vram %.0f gtt %.0f visible %.0f MiB; shadow %.0f MiB",
++                 kib[0] / 1024.0, kib[1] / 1024.0, kib[2] / 1024.0, s_live_bytes / M);
++#endif
++    rt_log("%s", line);
+ }
+ 
+ // Device class: INTEGRATED -> uma; a discrete GPU with a DEVICE_LOCAL heap of 1 GiB or more beside a
+-- 
+2.56.0
+

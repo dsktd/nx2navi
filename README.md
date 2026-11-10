@@ -328,6 +328,11 @@ distribution). After `just update`, `build` may need a rebase onto the new upstr
   replay only): the submit finish wait returns once the submission is on the GPU; the replay thread waits for the GPU
   before the next submission's shadow sync. Castle slot and crash spot pass, picture clean; no gain (42.3 / 41.0 fps
   against 42.7 / 43.1 in the field window): the wait is for the replay thread, not the GPU.
+- `0037-vk_memory-log-VRAM-per-heap-every-1800-frames.patch`: #141/#132. Every 1800 frames (600 with `NX2NAVI_TRACE=perf`)
+  the `mem: vram frame` census plus `mem: heaps frame N:` per heap: the driver's VK_EXT_memory_budget usage/budget (what the
+  pressure valves read), VMA blocks and allocations, the kernel's `/proc/self/fdinfo` drm-memory-vram/gtt and visible VRAM
+  (what nvtop shows) and the shadow total. Logging only. Reason: the play log's only budget figures (`stays imported ...
+  6961 of 7925 MiB`) are the first four refusals, in minute 1, so a 16 GB card fill was invisible in the log.
 
 ## Mark this moment
 
