@@ -1,0 +1,47 @@
+From aae55231324bac50e3ba38adc89c43853a3134ed Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Mon, 9 Nov 2026 22:41:43 -0500
+Subject: [PATCH] platform/linux: the crash report names what the thread was
+ doing (plat_crash_context was a no-op on Linux), so a fault inside the driver
+ during a pipeline build names the pipeline's shaders (#141)
+
+---
+ runtime/platform/linux.c | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/runtime/platform/linux.c b/runtime/platform/linux.c
+index a63f49d..45487f3 100644
+--- a/runtime/platform/linux.c
++++ b/runtime/platform/linux.c
+@@ -923,6 +923,7 @@ uint64_t plat_mem_written(uint64_t addr, uint64_t n, uint64_t *pages, uint64_t m
+ // gets the default action. Runs on the thread's signal stack.
+ static int (*fault_hook)(uint64_t addr);
+ static void (*crash_fn)(const PlatCrash *c);
++static __thread const char *crash_ctx;   // plat_crash_context: what this thread is doing, for the crash report
+ 
+ static void fault_handler(int sig, siginfo_t *si, void *uc) {
+     ucontext_t *u = uc;
+@@ -943,6 +944,11 @@ static void fault_handler(int sig, siginfo_t *si, void *uc) {
+         }
+         if (sig == SIGSEGV || sig == SIGBUS)
+             c.access = (err & 16) ? 8 : (err & 2) ? 1 : 0, c.addr = (uint64_t)(uintptr_t)si->si_addr;
++        if (crash_ctx) {   // before the hook, which ends the process; straight to stderr, as on Windows
++            char b[256];
++            int n = snprintf(b, sizeof b, "[host] crash: the thread was %s\n", crash_ctx);
++            if (n > 0 && write(2, b, (size_t)(n < (int)sizeof b ? n : (int)sizeof b - 1)) < 0) {}
++        }
+         crash_fn(&c);
+     }
+     signal(sig, SIG_DFL);   // returns into the faulting instruction, which faults again with the default action
+@@ -976,7 +982,7 @@ void plat_mem_fault_hook(int (*fn)(uint64_t addr)) {
+     fault_install();
+ }
+ 
+-void plat_crash_context(const char *s) { (void)s; }   // the Windows crash notes only
++void plat_crash_context(const char *s) { crash_ctx = s; }
+ 
+ int plat_frame_capture(PlatJmp *out, int (*want)(uintptr_t rip, void *arg), void *arg) {   // not on Linux yet
+     (void)out, (void)want, (void)arg;
+-- 
+2.56.0
+
