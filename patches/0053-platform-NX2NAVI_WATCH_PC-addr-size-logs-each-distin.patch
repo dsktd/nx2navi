@@ -1,0 +1,144 @@
+From 0bd2bc91ff9cb85ba4e43144a84dfe68c102c5e8 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 17:19:01 -0500
+Subject: [PATCH] platform: NX2NAVI_WATCH_PC=<addr>:<size> logs each distinct
+ instruction that writes a guest range (read-only pages, the write fault names
+ module+offset, protected again every present; debug, off by default) (#164)
+
+---
+ runtime/boot.c              | 11 +++++++++
+ runtime/platform/linux.c    | 47 +++++++++++++++++++++++++++++++++++++
+ runtime/platform/platform.h |  5 ++++
+ runtime/platform/win32.c    |  3 +++
+ 4 files changed, 66 insertions(+)
+
+diff --git a/runtime/boot.c b/runtime/boot.c
+index 0ed026b..ba957e9 100644
+--- a/runtime/boot.c
++++ b/runtime/boot.c
+@@ -405,6 +405,16 @@ static void mark_poll(uint64_t n) {
+         if (!gfx_shader_beside_cache("mark.req", mark_req, sizeof mark_req)) mark_req[0] = 0;
+         dump_req = cfg_get("NX2NAVI_DUMP_REQ") && atoi(cfg_get("NX2NAVI_DUMP_REQ")) == 1 &&
+                    gfx_shader_beside_cache("dump.req", dump_path, sizeof dump_path);
++        // NX2NAVI_WATCH_PC=<addr>:<size> (debug, off): log the instructions that write that guest range, see
++        // platform.h plat_write_trace; protected again once per present
++        const char *wp = cfg_get("NX2NAVI_WATCH_PC");
++        if (wp && *wp) {
++            char *x;
++            uint64_t a = strtoull(wp, &x, 16), sz = *x == ':' ? strtoull(x + 1, NULL, 16) : 0x1000;
++            rt_log("watch-pc: writes to %#llx+%#llx are traced (NX2NAVI_WATCH_PC)", (unsigned long long)a,
++                   (unsigned long long)sz);
++            plat_write_trace(a, sz);
++        }
+         mark_before = mark_knob("NX2NAVI_MARK_RING");
+         mark_after = mark_knob("NX2NAVI_MARK_BURST");
+         mark_legacy = mark_before == 1 && !mark_after;
+@@ -415,6 +425,7 @@ static void mark_poll(uint64_t n) {
+             mark_ring_on = 1;
+         }
+     }
++    plat_write_trace_rearm();
+     const char *why = input_mark_key() ? "F9" : input_mark_take() ? "gamepad chord" : NULL;
+     if (!why && mark_req[0] && n % 4 == 0 && plat_file_exists(mark_req)) why = "mark.req", plat_file_delete(mark_req);
+     if (!why) return;
+diff --git a/runtime/platform/linux.c b/runtime/platform/linux.c
+index 84aeb78..e73b613 100644
+--- a/runtime/platform/linux.c
++++ b/runtime/platform/linux.c
+@@ -927,9 +927,40 @@ static __thread const char *crash_ctx;   // plat_crash_context: what this thread
+ static __thread PlatFaultJmp *fault_guard;   // plat_fault_guard: where a fault in another module jumps back to
+ void plat_fault_guard_set(PlatFaultJmp *j) { fault_guard = j; }
+ 
++// NX2NAVI_WATCH_PC (plat_write_trace): the traced range, its distinct writers so far and the pages a write opened.
++enum { WT_RIPS = 64 };
++static uint64_t wt_lo, wt_hi, wt_hits;
++static uintptr_t wt_rip[WT_RIPS];
++static int wt_nrip, wt_opened;
++
++static int write_trace_fault(uintptr_t a, uintptr_t rip) {   // in the signal handler: 1 when the write may run again
++    if (!wt_hi || a < wt_lo || a >= wt_hi) return 0;
++    uintptr_t pg = a & ~(uintptr_t)(PG - 1);
++    if (mprotect((void *)pg, PG, PROT_READ | PROT_WRITE)) return 0;
++    __atomic_store_n(&wt_opened, 1, __ATOMIC_RELEASE);
++    uint64_t hit = __atomic_add_fetch(&wt_hits, 1, __ATOMIC_RELAXED);
++    for (int i = 0; i < wt_nrip; i++)
++        if (wt_rip[i] == rip) return 1;
++    if (wt_nrip >= WT_RIPS) return 1;
++    wt_rip[wt_nrip++] = rip;   // a race between two threads only logs a writer twice
++    Dl_info at;
++    int found = dladdr((void *)rip, &at) && at.dli_fname;
++    const char *m = found ? strrchr(at.dli_fname, '/') : NULL;
++    char b[256];
++    int n = snprintf(b, sizeof b, "[host] watch-pc: write to %#llx by %s+%#llx (writer %d, fault %llu)\n",
++                     (unsigned long long)a, found ? (m ? m + 1 : at.dli_fname) : "?",
++                     (unsigned long long)(found ? rip - (uintptr_t)at.dli_fbase : rip), wt_nrip,
++                     (unsigned long long)hit);
++    if (n > 0 && write(2, b, (size_t)(n < (int)sizeof b ? n : (int)sizeof b - 1)) < 0) {}
++    return 1;
++}
++
+ static void fault_handler(int sig, siginfo_t *si, void *uc) {
+     ucontext_t *u = uc;
+     long err = u->uc_mcontext.gregs[REG_ERR];
++    if (sig == SIGSEGV && (err & 2) &&
++        write_trace_fault((uintptr_t)si->si_addr, (uintptr_t)u->uc_mcontext.gregs[REG_RIP]))
++        return;
+     if (sig == SIGSEGV && fault_hook && (err & 2) && fault_hook((uint64_t)(uintptr_t)si->si_addr)) return;
+     uintptr_t rip = (uintptr_t)u->uc_mcontext.gregs[REG_RIP];
+     Dl_info at, self;
+@@ -998,6 +1029,22 @@ void plat_mem_fault_hook(int (*fn)(uint64_t addr)) {
+ 
+ void plat_crash_context(const char *s) { crash_ctx = s; }
+ 
++void plat_write_trace(uint64_t addr, uint64_t n) {
++    wt_lo = addr & ~(PG - 1), wt_hi = (addr + n + PG - 1) & ~(PG - 1);
++    fault_install();
++    wt_opened = 1;
++    plat_write_trace_rearm();
++}
++
++// Only committed pages (read-write in pstate) are protected again: a decommitted page stays PROT_NONE.
++void plat_write_trace_rearm(void) {
++    if (!wt_hi || !__atomic_exchange_n(&wt_opened, 0, __ATOMIC_ACQ_REL)) return;
++    for (uint64_t p = wt_lo; p < wt_hi; p += PG) {
++        uint64_t end;
++        if (plat_mem_state(p, p + PG, &end) == PLAT_PROT_RW) mprotect((void *)(uintptr_t)p, PG, PROT_READ);
++    }
++}
++
+ int plat_frame_capture(PlatJmp *out, int (*want)(uintptr_t rip, void *arg), void *arg) {   // not on Linux yet
+     (void)out, (void)want, (void)arg;
+     return 0;
+diff --git a/runtime/platform/platform.h b/runtime/platform/platform.h
+index a50a807..f053e8c 100644
+--- a/runtime/platform/platform.h
++++ b/runtime/platform/platform.h
+@@ -219,6 +219,11 @@ uint64_t plat_mem_written(uint64_t addr, uint64_t n, uint64_t *pages, uint64_t m
+ // A write that faulted on a read-only page at addr goes to fn first; fn returns 1 when it made the page writable and
+ // the write should run again, 0 to let the fault go on (to the crash handler). One hook per process.
+ void plat_mem_fault_hook(int (*fn)(uint64_t addr));
++// Debug (NX2NAVI_WATCH_PC): makes the committed pages of addr+n read-only; the first write to each page faults, logs
++// the writing instruction once per distinct one (module + offset, to resolve with nm) and makes that page writable
++// again. plat_write_trace_rearm protects the range again (once per present). A no-op where unsupported.
++void plat_write_trace(uint64_t addr, uint64_t n);
++void plat_write_trace_rearm(void);
+ // Starts this program again with the same arguments and ends this process with the new one's exit code (Windows), or
+ // replaces this process with it (Linux). Environment changes made before the call are passed on.
+ _Noreturn void plat_reexec(void);
+diff --git a/runtime/platform/win32.c b/runtime/platform/win32.c
+index 4e768c6..c498fa8 100644
+--- a/runtime/platform/win32.c
++++ b/runtime/platform/win32.c
+@@ -652,6 +652,9 @@ void plat_mem_fault_hook(int (*fn)(uint64_t addr)) {
+     AddVectoredExceptionHandler(1, fault_veh);
+ }
+ 
++void plat_write_trace(uint64_t addr, uint64_t n) { (void)addr, (void)n; }   // NX2NAVI_WATCH_PC: Linux only
++void plat_write_trace_rearm(void) {}
++
+ static void (*crash_fn)(const PlatCrash *c);
+ 
+ // A line written straight to the standard error handle, for the crash path: no C runtime buffering or locks.
+-- 
+2.56.0
+

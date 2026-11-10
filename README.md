@@ -423,6 +423,7 @@ distribution). After `just update`, `build` may need a rebase onto the new upstr
   0050 compiles (scratch build `.lab/xlate-txq/build`) but has not translated an affected shader.
 - `0051-input-NX2NAVI_MOTION_SOCK-reads-gyro-and-acceleromet.patch`: `NX2NAVI_MOTION_SOCK` (default `auto`, live), see "Motion from yakin's socket".
 - `0052-vk_texture-NX2NAVI_TEX_RT_DEDICATED_MIB-n-gives-rend.patch`: `NX2NAVI_TEX_RT_DEDICATED_MIB` (default 4) puts render targets in their own memory and `NX2NAVI_TEX_RT_TRIM` (default 95) drops released ones above that share of the driver's VRAM budget, logging `vk: VRAM above 95%: released render targets trimmed n (m MiB)` (#160). Built as `build/v111/nx2navi.vram` (0051 included); no GPU run yet. `tools/play-watch` reports the trims.
+- `0053-platform-NX2NAVI_WATCH_PC-addr-size-logs-each-distin.patch`: #164, debug and **off by default**. `NX2NAVI_WATCH_PC=<addr>:<size>` makes the committed pages of a guest range read-only. A write faults and logs `watch-pc: write to A by nx2navi.<x>+OFF (writer n, fault m)` once per distinct instruction, then the page is writable again; every present protects it again. Resolve OFF with `nm -n` on the same binary. Writes through another mapping of the same memory are not seen. Built as `build/v111/nx2navi.vram2` (0051-0052 included); no run yet.
 
 ## Mark this moment
 
