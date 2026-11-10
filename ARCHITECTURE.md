@@ -1,0 +1,268 @@
+# NX2navi architecture
+
+How *The Legend of Zelda: Ocarina of Time* for Switch 2 (game 1.1.1, build dir `v111`) runs as a native Linux x86-64 program here. Sources: the upstream worktree `~/claude/nx2navi/NX2navi` (branch `build` = upstream plus our private patches) and the tooling repo `~/claude/nx2navi`. Paths below are relative to `NX2navi/` unless they start with `~/claude/nx2navi/`. "Not established" means the code and logs read for this document do not answer the question.
+
+## 1. What it is
+
+NX2navi is a static recompiler plus a runtime. It takes the game's own ARM64 executable modules (ExeFS: `main`, `sdk`, `subsdk0`) and turns every guest function into a C function ahead of time. That C is compiled for x86-64 and linked with a hand-written C runtime. The runtime plays the role of the Switch 2 operating system (Horizon kernel, `nn::` SDK services) and of the GPU driver (NVN, translated to Vulkan). The game's data (RomFS: models, textures, shaders, audio, movies) is read at run time from the player's own dump. Out comes one executable (`build/v111/nx2navi`, 318 MB) plus caches. The game files, the generated C, the binary and our private patches are never redistributed (`tools/make_game.py:23-24`; every lifted file starts with "generated ... from game code. Do not edit or commit", e.g. `generated/v111/main/main_0049.c:1`; `~/claude/nx2navi/README.md`, "Private local patches").
+
+## 2. Build pipeline
+
+```
+.nup dump --make_game.py --until romfs--> build/extracted/v111/{exefs, romfs/romfs.bin}
+exefs --recomp/gen.py + patches-v111.txt--> generated/v111/{main,sdk,subsdk0}/*.c, layout.h, patches.h
+       (+ the two SDK bring-up fixes, make_game.py:62)
+generated C (-O1) + runtime/*.c (-O2) + runtime-linux/frames.c --clang/lld via Ninja--> build/v111/nx2navi
+shaders in romfs/exefs --prepare_shaders.py + nx2navi_xlate--> shader-cache/, pipeline-cache.bin
+```
+
+- **Extraction.** `make_game.py` checks the title id `0x0400486024DEC000` (`tools/make_game.py:53`) and main's build id, unpacks the ExeFS segments and packs every RomFS file into one image with an index (`tools/make_game.py:8-14`). In this build that is 186,583 files and a 26.2 GB `romfs.bin` (play log lines 55-57).
+- **Lift.** `recomp/lifter.py` decodes ARM64. `recomp/simd_c.py` lowers NEON and floating point. The output is one C function per guest function, named by its guest address (`f_7000001a20(Cpu *c)`), split into chunk files of many functions each.
+  - Direct `BL` becomes a direct C call. Indirect branches go through `rt_dispatch` (`runtime/dispatch.c:207`), which looks the target up in an address-keyed table and tail-calls it. Tail branches use `musttail`. Jump tables are resolved symbolically (`recomp/jumptables.py`).
+  - Registers live in a `Cpu` struct: `x[32]`, a separate `sp`, `pc`, `nzcv`, FP control and status, and the vector registers at offset 512 (`runtime/cpu.h:8-30`). NZCV and the six most-used registers of each function are kept in C locals and stored back around calls, SVCs and exits (`docs/architecture.md`, section 2).
+  - Guest memory is addressed directly: guest address = host address. `LD64(a)` is a plain pointer dereference (`runtime/cpu.h:80`). The guest stack is guest memory pointed to by `sp`. Every guest `BL` is also a host call, so each guest thread gets a 256 MiB host stack (`runtime/kernel.c:5`).
+  - An `SVC #n` becomes `rt_svc(c, n, pc)` (`runtime/cpu.h:37`). `UDF` and `BRK` become fatal traps.
+  - The patch table (`recomp/patches-v111.txt`) replaces chosen instruction words at generation time.
+  - 297,414 functions lifted (`~/claude/nx2navi/README.md`, "What was verified").
+- **Translation units.** 489 (main) + 58 (sdk) + 4 (subsdk0) = 551 lifted C files, about 1.2 GB of C in `generated/v111`, plus about 136 runtime C/C++ files.
+- **Flags.** Lifted code: `-O1 -fno-strict-aliasing -fvisibility=hidden -march=x86-64-v3`. Runtime: `-O2 -g -Wall -fdeclspec`. Link: `-fuse-ld=lld -no-pie`, plus Vulkan, SDL3, opus, vpx, dav1d and zstd (`~/claude/nx2navi/build-linux.py:45-53, 168-172`). Upstream uses the same -O1/-O2 split (`tools/make_game.py:605`). Measured: `-O2` and `-march=znver3` on the lifted code changed nothing (`~/claude/nx2navi/README.md`, "Guest optimisation level").
+- **Where our build differs from upstream's Windows build.**
+  - Upstream's kit (`make_game.py`) compiles Ocarina only with MSYS2 Clang on Windows. Upstream's Linux path (`build_game.py`) writes the glue for its other title.
+  - `build-linux.py` runs the kit's lift and glue writer, then compiles with Linux flags through Ninja and ccache (`~/claude/nx2navi/README.md`, "How the build works").
+  - It also compiles `runtime-linux/frames.c`. This fixes two Linux platform gaps: setjmp/longjmp through lifted frames, and fiber stack alignment.
+  - The window is SDL/Wayland, not Win32.
+  - The glue is the same `modules.c` (`tools/make_game.py:386-388`): game version 111, a 9809 MiB application pool, NVN API 231.40.
+
+## 3. Guest/host boundary
+
+There are three ways across the boundary:
+
+- **SVC trap.** `rt_svc` handles threads and sync (`kernel.c`), IPC (`ipc.c`), memory (`memory.c`) and GetInfo. The 21 SVCs never reached on the boot path stop with a named fatal (`runtime/svc.c:2-4`).
+- **Hooked symbol.** `HOST_OVERRIDE("<mangled nn:: name>", fn)` replaces that symbol in every GOT/relocation of every module. `HOST_OBSERVER` wraps it and can still call the original (`runtime/host.h:108-111`). These host functions get synthetic guest addresses (`runtime/hostfn.c:1-6`). There are 295 overrides in total.
+- **Function-pointer table.** NVN is reached through `nvnBootstrapLoader` / `nvnDeviceGetProcAddress`, which hand out host functions for 545 proc names (`runtime/nvn_procs.c:2`, `runtime/nvn_procs.inc`). Missing procs are traps that log their first call (play log lines 92-140).
+
+| Subsystem | Game code runs? | Replaced by (file) | Patched? | How it crosses |
+|---|---|---|---|---|
+| Kernel: threads, sync, virtual cores | `nn::os` is lifted and runs; only the kernel below it is host (`kernel.c:5-8`) | `runtime/kernel.c`: one host thread per guest thread, 6 virtual cores (`kernel.c:29-30`), priority preemption | no | SVC |
+| Kernel: fibers | the game's job code is lifted | `kernel.c:2396-2399` | no | override of `InitializeFiber`, `SwitchToFiber`, ... |
+| Kernel: memory | no | `runtime/memory.c` | no | SVC (SetHeapSize, MapPhysicalMemory, QueryMemory) |
+| Handles, IPC, `sm:` | client side lifted | `runtime/ipc.c`: in-process IPC; only `sm:` and `audren:u` are real services (`ipc.c:3, 186-198`) | no | SVC 0x21 SendSyncRequest |
+| fs / RomFS | no | `runtime/romfs.c:1281-1284` (`MountRom`, ...), `runtime/fs_host.c` | no | override |
+| Saves | no | `fs_host.c`: a host directory plus a working copy committed on `Commit` (play log 339-342) | no | override |
+| hid / input | no | `runtime/ov_input.c`, `input.c`, `input_sdl.c` (SDL3) | no | override |
+| Audio out | `nn::atk` (sound engine) is lifted and runs | `runtime/audren.c`, `audio_mixer.c`, `audio_effects.c`: host audio renderer, SDL output | no | IPC `audren:u` |
+| vi / display, HDR queries | no | `runtime/ov_gfx.c:178-185` | no | override |
+| time, settings, account, applet, oe, pctl, aoc, err | no | `runtime/ov_system.c` (85 overrides), `net_offline.c` (57) | no | override |
+| NVN graphics | the game's renderer is lifted and runs | `nvn_api_core.c`, `nvn_api_cmd.c`, `nvn_api_obj.c`, `nvn_tex.c` front end; `vk_*.c` Vulkan back end | no | proc table |
+| Shaders | the game's binaries are used as data | translated by `nx2navi_xlate` (section 7) | SPIR-V post-passes | from the NVN program object |
+| Movies | no | `runtime/ov_movie.c`, `ov_movie2.c` (AV1 via dav1d, play log 436) | no | override |
+| Physics / middleware | lifted if present | none | no | none; whether Havok is in this title is not established |
+| Fonts | the game's text rendering is lifted | the menu overlay only reads the game's fonts (play log 60) | no | none |
+| Memory allocators (game heaps) | lifted (sead and game allocators) | the region underneath is `memory.c` | no | SVC |
+| Job system | lifted; fibers move between workers (`kernel.c:115-117`) | fiber primitives only | no | override |
+| Frame pacing, game step | the game's own controller runs | `runtime/frame_rate.c` | `ostep` set (section 8) | patch page |
+| `memcpy` | no | `nvn_api_core.c:74` | no | override |
+
+## 4. Game components used as they are
+
+Identified inside the lifted code:
+
+- **The engine framework.** There is a sead-style engine framework: sead perspective projection and viewports (`recomp/patches-v111.txt`, wide_aspect and wide_movie comments) and sead delegate lists (`~/claude/nx2navi/NOTES-fog-nan.md:512`).
+- **The framework's per-frame update** at `main+0x6e6be0`.
+- **The time manager** at `**[main+0x4c7e890]`, fed its nominal frame through `main+0x3b4e300` (`recomp/patches-v111.txt:21-28`).
+- **The adaptive present-interval controller.** Upstream documents it at `main+0x8f26c8` for its other title (`runtime/frame_rate.c:4-9`). For Ocarina the log says "no patch table, shipping 30 fps whole-vsync steps" (play log 42). The Ocarina equivalent is not established.
+- **The graphics setup** at `main+0x1202ce0`: it presents 2560x1440 and the scene is 1920x1080 (`patches-v111.txt`, wide_out and wide_scene).
+- **A dynamic-resolution controller** (`main+0x805bd0`).
+- **The camera update** (`main+0x4c48c0`).
+- **The 2D UI canvas** (`main+0x774330`).
+- **nn::atk** with its sound thread, per-frame update `main+0x36d1440` and stream loader `main+0x6cb2d0` (`~/claude/nx2navi/NOTES-fog-nan.md:512-543`).
+- **The game's tensor-core temporal upscaler shaders.** They are drawn but replaced by a plain scale (`docs/architecture.md`, section 4; patch 0012).
+
+Not established: Havok, a font rasterizer, the job scheduler's identity, and the guest thread count.
+
+Read at run time:
+
+- RomFS files through the index (`romfs-index.bin`, 186,583 files).
+- Shader programs (NVN control section plus code, found by `tools/shader_census.py`).
+- Textures, mostly ASTC, decoded on the GPU and re-encoded to BC3 (play log 141-143).
+- AV1 movies.
+- Saves in `build/v111/profile/save` (14 files, 1.0 MiB; play log 340-341).
+
+## 5. One frame, end to end
+
+```
+ guest threads (lifted)              host runtime                         GPU
+ ----------------------              ------------                         ---
+ game render thread (t1)  --nvn*--> nvn_api_cmd.c records op streams
+  + producer thread (t6)            into host buffers (not game memory)
+        |
+ nvnQueueSubmitCommands ---------> nvn_submit_prepare; hand-off
+   (submit finish wait 5.1 ms) <-- [frame bound: game at most 1 frame ahead]
+        |                               |
+        |                          replay thread (t2, vk_exec*.c):
+        |                           texture pool refresh (~2.7 ms field)
+        |                           shadow sync of guest pages (2.7 ms)
+        |                           uniform snapshot (0.5 ms, vk_usnap)
+        |                           pipeline lookup / build or skip
+        |                           draws, mesh draws, compute
+        |                               | packets (ring)
+        |                          recorder thread (vk_rec.c) vkCmd* ---> queue
+        |                               |                                  |
+        |                          completion thread (t5, vk_sync.c) <-- timeline
+        |                           write-back compare (5.4 ms, 4 thr)
+        |                           write-back, frees, events
+ nvnQueuePresentTexture --> pacer (nvn_api_obj.c:737-752) --> vkQueuePresent (mailbox)
+```
+
+- **Recording.** The game records NVN command buffers. Records go to growable host buffers, never into the game's command memory (`runtime/nvn_api_cmd.c:1-12`).
+- **Replay.** At submit, the replay walks the ops (`runtime/vk_exec.c:1-10`). It runs on its own thread at most one frame behind the game (play log 316). A recorder thread makes the driver calls from a ring (`runtime/vk_rec.c:1-6`).
+- **Completion.** One timeline semaphore orders everything. A completion thread runs the CPU-side effects per value (`runtime/vk_sync.c:1-9`).
+- **Draws.** Mesh and task shaders run through `VK_EXT_mesh_shader` (play log 18). Textures are bindless pools: 16 kinds x 32768 slots (play log 49).
+- **Present.** The present goes through the pacer, then `vkQueuePresent` in mailbox mode.
+
+Costs per frame in a Hyrule Field window of Cal's real play, mean frame 22.9 ms, about 43 fps (`~/claude/nx2navi/NOTES-perf-2026-11-09.md`, section 2):
+
+| What | Cost | Notes |
+|---|---|---|
+| Submit finish wait (game thread) | 5.07 ms | includes the completion callbacks |
+| Write-back compare | 5.42 ms | 66 MiB compared |
+| Shadow sync | 2.71 ms | 771 pools touched |
+| Audio mix | 1.39 ms | |
+| Pipeline binds | about 610 | |
+| Unzoned game-thread time | 17.8 ms | |
+
+- **Where the game waits.** On the submit finish wait and on `pool_fini` (section 3 of the notes; play log 835: 44 waits, 1490 ms).
+- **The critical path.** The game's render thread. The replay thread never blocked a present ("frame bound 1800 calls, 0 waited", play log 770, 835).
+
+## 6. Memory model
+
+All guest addresses are below 2^39 (`docs/architecture.md`, section 2). `runtime/memory.c:215-248` reserves:
+
+- The module window at `0x7000000000`. Main is 0x4ea0000 bytes, subsdk0 sits at `0x7005000000` and sdk at `0x7005200000` (play log 36-38). The patch page sits right after main, at `0x7004ea0000` (play log 39).
+- A 14 GiB stack-and-heap block: a 256 MiB stack area and a 12 GiB heap cap (`memory.c:22-26`).
+- A 64 GiB alias region for MapPhysicalMemory (`memory.c:27`).
+- Kernel and host-function windows.
+
+The game is told its application pool is 9809 MiB, as on the console (`memory.c:26, 30`; `make_game.py:387`). `NX2NAVI_APP_POOL=<bytes>` overrides it (`memory.c:238-248`). Patches 0034/0035 log SetHeapSize and MapPhysicalMemory high-water marks and refusals.
+
+GPU-visible NVN memory pools map onto Vulkan memory in one of two modes:
+
+- **Import mode.** Host memory is imported into Vulkan directly (`VK_EXT_external_memory_host`).
+- **Mirror mode** (the default on a discrete GPU, play log 17). Pools used as buffers get a device-local mirror, and the pages the CPU wrote are uploaded.
+
+On Linux, shadow storage is on (play log 16; `runtime/vk_memory.c:921-933`). Each CPU-visible pool gets its own host-visible buffer, kept in step both ways:
+
+- **CPU to shadow:** before each submit, the written pages are copied into the shadow.
+- **GPU to guest:** after the fence, GPU writes are copied back, page by page, only where the bytes changed (our patches 0001, 0008, 0025).
+
+Written pages are found with a userfaultfd in asynchronous write-protect mode plus `PAGEMAP_SCAN`. This needs Linux 6.7, and Podman's default seccomp blocks it (`runtime/platform/linux.c:796-799`; `~/claude/nx2navi/README.md`, "Upstream bug").
+
+Two lifetime mechanisms keep graphics objects alive just long enough:
+
+- **Texture pins.** Recordings name immutable host copies of each texture initialisation. A copy is freed some submits after nothing reads it (`runtime/nvn_api_cmd.c:234-248`; play log: "6625 live, 6605 waiting").
+- **Released textures.** Textures released for take-back are kept, up to 2048 entries (`runtime/vk_texture.c:914`). Our patch 0019 caps their memory (`NX2NAVI_TEX_RELEASED_MIB=3072` in `just play`; play log 388).
+
+## 7. Shaders
+
+- **What the game ships.** Compiled NVN 2 shader programs (Ampere SM86 code with an 0x880-byte control section and c1 constants), as data in RomFS and ExeFS (`tools/prepare_shaders.py:1-10`).
+- **The translator.** `nx2navi_xlate` is the pinned Ryujinx shader translator 1.3.2 (`tools/vendor/ryujinx`) plus upstream's patches (34 of them, `tools/xlate/patches/`). Before translation, `AmpereLowering.cs` lowers SM86 to Maxwell, and `MeshSpirv.cs` handles mesh stages. It is built with .NET 10 NativeAOT and emits SPIR-V plus a JSON resource list. The runtime keeps a pool of `--serve` child processes (`runtime/gfx_shader.c:1-4`).
+- **Cache key.** sha256 over:
+  - the translator identity (hash of its sources, `nx2navi_xlate.id`; play log 21);
+  - the code hash (stage, control section, code, c1);
+  - the translator "answers" (bind state), masked to the slots the shader reads.
+
+  Host capability answers are mixed in too (`gfx_shader.c:6-20, 318-320`).
+- **Post-passes per pipeline.** `vk_pipeline.c:645-964` applies rebind, descriptor set, dual source, added outputs, fixups and pool rebind. A TXD gradient transpose exists but stays off for Switch 2 titles (`gfx_shader.c:797-806`).
+- **Pipeline cache.** `pipeline-cache.bin` (play log 45). Our patch 0032 skips redundant exit saves.
+- **Prewarm.** At boot, 44,195 shaders and 6,418 pipeline keys are prepared in about 1.4 s warm. The guest starts 4.9 s after process start (play log 48, 66, 69).
+- **No graphics pipeline library here.** Because of `RADV_DEBUG=nogpl` (the RADV crash workaround), whole pipelines are built (play log 26-27, 34).
+- **Skip/wait policy.** A draw whose pipeline is not ready:
+  - is skipped if its targets were rendered last frame;
+  - waits if it is a "one-shot" draw into never-rendered targets, up to `NX2NAVI_ONESHOT_WAIT_MS` (`runtime/vk_exec_draw.c:47-53, 3049-3080`);
+  - waits within a 50 ms per-frame budget if it is a full-screen draw.
+
+  `NX2NAVI_PIPE_SKIP=any` is our default.
+
+## 8. Timing
+
+- **The game's own pacing.** Shipping Ocarina steps its update by whole vsync intervals. Above 60 fps, gameplay, the interface and the frame counter at update `+0xd58` all run fast (`recomp/patches-v111.txt:21-28`).
+- **The `ostep` patch set** (`NX2NAVI_OCARINA_REALTIME`, on) rewrites two instructions at `main+0x6e6cc0`. The per-frame update then reads frames-per-update from patch page `+256`, which `frame_rate.c` writes each present as the display interval in 60 Hz frames (play log 39-41).
+- **The other sets** (`fps60`, `realtime`, `cloth`, `bounce`) belong to upstream's other title's tables (`patches-v121.txt` etc.).
+- **The frame limit** is `fps_limit` / `NX2NAVI_FPS_LIMIT`, capped at 240 (`frame_rate.c:21-23`). Cal's ini currently says 60 (play log 379); the perf trace ran at 240.
+- **Game time follows wall time.** The step is the moving average of the last 5 display intervals, at least 1/240 s and at most 1/15 s (`frame_rate.c:10-13, 55-58`).
+- **Why replays drift.** Recorded input is keyed to game time, and game time is the measured wall time. A different frame rate gives different steps and stick-sample instants, so positions diverge (tracker #145).
+
+## 9. Input, audio, HDR and scaling, saves
+
+- **Input.** SDL3 gamepads; the pad pressed last is the game's pad (`input.c`). Our patch 0014 prefers Steam Input's virtual pad. Motion can come from a second pad (patch 0034). The six-axis sensor and rumble are served through the hid overrides (play log 357-364).
+- **Audio.** The game's `nn::atk` runs as lifted code and talks to `audren:u` over in-process IPC. `audren.c` and `audio_mixer.c` mix on the host and output through SDL (play log 333-336). Open problem #128: intro narration voices start faster at higher frame rates.
+- **HDR, upscaling, frame generation.** HDR10 native swapchain (`vk_hdr.c`; play log 52-53). The game's tensor-core upscaler is replaced by decode-and-scale (`vk_tonemap.c`). FSR 1 runs when the window is larger than the picture (`vk_fsr.c`). FSR 3.1 and DLSS paths exist (`vk_ffx.cpp`, `vk_dlaa.c`, `vk_dlssg.c`), but FSR 3.1 is missing on this host (play log 32-33). Frame generation is off in Cal's ini; whether it works on Linux is not established.
+- **Saves.** A host save directory with a working copy; the game's `Commit` writes it (play log 339-342, 493). `just play` copies saves into each recording bundle.
+
+## 10. Our private patches
+
+All are in `~/claude/nx2navi/patches/`, as local commits on `build`. Status comes from `~/claude/nx2navi/README.md`.
+
+**Memory / shadow**
+- 0001: write back only pages the GPU changed. On.
+- 0004: shadow sync takes the CPU's bytes under the next part's GPU writes (sky-SH fix). On.
+- 0008: page compare outside `shadow_lock`. On.
+- 0010: neighbouring-pool write-watch queries. On.
+- 0025: write-back compare on threads (`NX2NAVI_DIFF_THREADS`, 4). On.
+- 0034-mem, 0035-mem: SetHeapSize / MapPhysicalMemory logging. On (logs only).
+
+**Textures**
+- 0009: compact freshness arrays. On.
+- 0019: `TEX_RELEASED_MIB`, 3072 in `just play`. On.
+- 0027: tex trace. Debug.
+- 0028: `TEX_DEDUPE` / `TEX_RELEASED_LRU`. Off (dedupe paints wrong terrain).
+- 0030: `TEX_STATE_GEN` / `TEX_CHECK_SKIP`. Off (no gain).
+
+**Sync / replay**
+- 0013, 0016: `NX2NAVI_EVENT_WAITS`. Off.
+- 0024: `NX2NAVI_GPU_WAIT`. Default 0 (=1 is suspected of causing the horizon bands).
+- 0036: `NX2NAVI_FINISH_DEFER`. Off (no gain).
+
+**Draw / pipeline**
+- 0006: clamp the mesh-stage c0 table. On (fixes the upstream overflow).
+- 0018: RGBX/sRGB/BGRX vertex formats. On.
+- 0012: `NX2NAVI_UNJITTER`. Auto.
+- 0033-oneshot: `ONESHOT_WAIT_MS`, 30000. On (unchanged default).
+- 0032: skip redundant pipeline cache saves. In `nx2navi.crash`, not swapped.
+- 0033-guard: driver-fault guard around pipeline creation. In `nx2navi.crash`, not swapped.
+
+**Shaders**
+- 0002: xlate honours fmz. Private translator build only.
+- 0003: shader hot reload. Debug.
+
+**Crash**
+- 0031: Linux crash context. Not swapped.
+
+**Input**
+- 0014: Steam Input pad. On.
+- 0034-input: `NX2NAVI_MOTION_PAD`, auto. On.
+
+**Debug and tooling**
+- 0005 (`NX2NAVI_WATCH`), 0007 (shot crop), 0011 (`DUMP_REQ`), 0015 (mark this moment), 0017 (`DUMP_DRAWS`), 0020 (`OQ_FORCE`).
+- 0022 (counters), 0023 (Tracy), 0026 (`NX2NAVI_RDOC`), 0035-nvn (`TRACE=nvn`).
+
+Open problems mapped onto the architecture:
+- **#132 performance.** The game thread is the critical path (finish wait plus 17.8 ms unzoned). Then the completion thread's compares and the replay's shadow sync and pool refresh (section 5).
+- **#146 AO flicker.** Replay ordering: the replay ignores `nvnCommandBufferWaitEvent`, so AO reads last frame's half-res depth (0013/0016).
+- **#141 crash guard.** Driver faults in RADV `spirv_to_nir` during pipeline builds (0031/0033), plus device losses possibly tied to VRAM pressure.
+- **#149 missing terrain.** Memory: 211 MapPhysicalMemory refusals (0x10801, LimitReached) against the 9809 MiB pool in the same session (play log 561-563). Next test: a larger `NX2NAVI_APP_POOL`.
+- **#138 bushes.** Not a renderer problem: the leaf cards are never drawn. The cause is in the lifted game's LOD/cull decision.
+- **#128 intro audio.** Game timing: atk's per-frame update starts voices per present, and `ostep` does not cover that path.
+
+## 11. Glossary
+
+- **NVN:** the Switch's native graphics API. The game calls it through a proc table; NX2navi implements it on Vulkan.
+- **SVC:** supervisor call, the ARM64 instruction for a kernel request. Here it is a call to `rt_svc`.
+- **Lift:** translating guest machine code into C ahead of time.
+- **Guest:** the game's code and its view of memory and the OS. **Host:** the Linux process and the runtime around it.
+- **Replay thread:** the host thread that turns a submitted NVN recording into Vulkan commands.
+- **Shadow:** a host-visible Vulkan copy of a CPU-visible guest pool, synced before submit and written back after the fence.
+- **Pin:** a reference-counted host copy of a texture's state that recordings point at.
+- **One-shot pass:** a pass into targets never rendered before (a LUT or volume made once). Its draws wait for their pipeline instead of being skipped.
+- **c0/c1:** NVN constant banks. c0 is driver data (storage and uniform tables, group counts) filled by the back end; c1 holds the program's own constants.
+- **Patch page:** a page right after `main` (`0x7004ea0000`) that patched instructions read and the runtime writes each present (frame step, sizes, ratios).
