@@ -9,7 +9,7 @@ the flags build_game.py documents for Linux, through Ninja. Nothing in the check
 
     build-linux.py --src <checkout> [--extracted build/extracted/v111] [--out build/v111] [--cpu v3|v2] [--jobs N]
                    [--exe nx2navi] [--tracy] [--rt-obj NAME] [--guest-opt 1|2|3] [--guest-flags '...']
-                   [--guest-obj NAME] [--link-flags '...'] [--no-ccache]
+                   [--guest-obj NAME] [--runtime-flags '...'] [--link-flags '...'] [--no-ccache]
 
 Steps (each incremental), after make_game.py's exefs and romfs steps have filled <extracted>:
   lift      make_game.step_lift: the kit lifts <extracted>/exefs into <extracted>/build-cache/lift with its fixes
@@ -28,6 +28,9 @@ game code only; the Nix clang wrapper drops -march=native, name the CPU) and --l
 --guest-flags puts the game objects under obj/guest-<tag>/, the tag derived from the level and the flags (O2,
 O2-znver3; --guest-obj names it instead), and leaves obj/{main,sdk,subsdk0} alone: every variant keeps its objects,
 switching between them compiles nothing. NOTES-perf-2026-11-09.md "Guest optimisation level".
+--runtime-flags is the same for the runtime (stock -O2 -g, --cpu level): appended to its compile line, objects in
+obj/runtime-<tag>/ (runtime-O3-znver3; --rt-obj names it instead). -flto=thin and -fprofile-* flags in it are put on
+the link line too. NOTES-perf-2026-11-09.md "Runtime optimisation".
 Compiler cache: with ccache on PATH (the flake has it) every compile goes through it, cache in .ccache/ beside this
 script (CCACHE_DIR overrides; 40 GB), so a translation unit is compiled once per set of flags, in any source tree
 laid out the same way (paths below the checkout are hashed relative). ccache stands in as `clang` through a PATH
@@ -119,9 +122,14 @@ PER_FILE_FLAGS = {
 
 def guest_tag(opt, flags):
     """The object folder of a guest variant: O2, O2-znver3; flags that make a long name are hashed."""
+    return flags_tag(f'O{opt}', flags)
+
+
+def flags_tag(head, flags):
+    """head plus the flags as words (O3-znver3-flto-thin); a long name is hashed."""
     words = [re.sub(r'[^A-Za-z0-9.]+', '-', f.lstrip('-').removeprefix('march=')).strip('-') for f in flags.split()]
-    tag = '-'.join([f'O{opt}'] + words)
-    return tag if len(tag) <= 40 else f'O{opt}-{hashlib.sha256(flags.encode()).hexdigest()[:10]}'
+    tag = '-'.join([w for w in [head] + words if w])
+    return tag if len(tag) <= 40 else f'{head or "f"}-{hashlib.sha256(flags.encode()).hexdigest()[:10]}'
 
 
 def ccache_env(src):
@@ -142,12 +150,16 @@ def ccache_env(src):
 
 
 def write_ninja(src, out, lift, gen, cpu, exe='nx2navi', tracy=None, rt_obj=None, guest_opt='1', guest_flags='',
-                guest_obj=None, link_flags=''):
+                guest_obj=None, link_flags='', rt_flags=''):
     runtime = src / 'runtime'
     rt_extra = f' -DTRACY_ENABLE -I {npath(tracy / "include" / "tracy")}' if tracy else ''
     ld_extra = f' -L {npath(tracy / "lib")} -Wl,-rpath,{npath(tracy / "lib")}' if tracy else ''
     libs_extra = ' -lTracyClient' if tracy else ''
-    rt_obj = rt_obj or ('runtime-tracy' if tracy else 'runtime')
+    rt_obj = rt_obj or ('runtime-tracy' if tracy else 'runtime') + (f'-{flags_tag("", rt_flags)}' if rt_flags else '')
+    if '-flto' in rt_flags and '-flto' not in link_flags:
+        # ThinLTO objects are bitcode: the link line needs the same -flto to run the backend in lld
+        link_flags = ' '.join(f for f in rt_flags.split() if f.startswith('-flto') or f.startswith('-fprofile')
+                              ) + (f' {link_flags}' if link_flags else '')
     march = f'-march=x86-64-{cpu}'
     # vk_mem_alloc.h is copied into the build folder: the compile lines then hold no Nix store path, so objects
     # built on one machine (the container) stay valid on another (the host) with the same /home path
@@ -166,7 +178,8 @@ def write_ninja(src, out, lift, gen, cpu, exe='nx2navi', tracy=None, rt_obj=None
         f'builddir = {npath(out)}',
         'cc = clang',
         f'genflags = -O{guest_opt} {" ".join(GEN_FLAGS)} {march} {inc}' + (f' {guest_flags}' if guest_flags else ''),
-        f'rtflags = {" ".join(RT_FLAGS)} {march} -DRT_CPU_LEVEL={3 if cpu == "v3" else 2} {rt_inc}{rt_extra}',
+        f'rtflags = {" ".join(RT_FLAGS)} {march} -DRT_CPU_LEVEL={3 if cpu == "v3" else 2} {rt_inc}{rt_extra}'
+        + (f' {rt_flags}' if rt_flags else ''),
         f'ldflags = {" ".join(LINK_FLAGS)} -Wl,-Map={npath(out / (exe + ".map"))}{ld_extra}'
         + (f' {link_flags}' if link_flags else ''),
         f'libs = {" ".join(LINK_LIBS)}{libs_extra}',
@@ -197,7 +210,8 @@ def write_ninja(src, out, lift, gen, cpu, exe='nx2navi', tracy=None, rt_obj=None
             lines.append(f'  rtflags = $rtflags {extra}')
         flags = PER_FILE_FLAGS.get(rel.as_posix())
         if flags:
-            lines.append(f'  rtflags = {" ".join(flags)} -DRT_CPU_LEVEL={3 if cpu == "v3" else 2} {rt_inc}{rt_extra}')
+            lines.append(f'  rtflags = {" ".join(flags)} -DRT_CPU_LEVEL={3 if cpu == "v3" else 2} {rt_inc}{rt_extra}'
+                         + (f' {rt_flags}' if rt_flags else ''))
         objs.append(o)
     exe = out / exe
     lines += [f'build {npath(exe)}: link ' + ' '.join(npath(o) for o in objs), f'default {npath(exe)}', '']
@@ -232,6 +246,8 @@ def main():
     ap.add_argument('--guest-opt', choices=('1', '2', '3'), default='1', help='-O level of the lifted game code (default 1)')
     ap.add_argument('--guest-flags', default='', help='appended to the lifted code\'s compile line, e.g. -march=znver3')
     ap.add_argument('--guest-obj', help='game objects under obj/<name> (default obj/ at the stock flags, else guest-<level and flags>)')
+    ap.add_argument('--runtime-flags', default='', help='appended to the runtime\'s compile line, e.g. \'-O3 -march=znver3\'; '
+                    'its objects go to obj/runtime-<flags> (-flto/-fprofile-* flags are added to the link line too)')
     ap.add_argument('--no-ccache', action='store_true', help='compile without ccache')
     ap.add_argument('--link-flags', default='', help='appended to the link line')
     a = ap.parse_args()
@@ -248,7 +264,7 @@ def main():
         if not (tracy / 'lib' / 'libTracyClient.so').is_file():
             sys.exit('build-linux: --tracy needs NX2NAVI_TRACY_PREFIX (the nixpkgs tracy store path; the flake sets it)')
     ninja = write_ninja(src, out, lift, gen, a.cpu, a.exe, tracy, a.rt_obj, a.guest_opt, a.guest_flags, a.guest_obj,
-                        a.link_flags)
+                        a.link_flags, a.runtime_flags)
     run(['ninja', '-C', out, '-f', ninja.name, f'-j{a.jobs}'], env=None if a.no_ccache else ccache_env(src))
     step_copy(src, out)
     print(f'\nbuild-linux: {out / a.exe} ({(out / a.exe).stat().st_size / 1e6:.0f} MB)')

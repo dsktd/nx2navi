@@ -20,6 +20,9 @@ nup := env("NX2NAVI_NUP", "")
 # (obj/guest-<tag>), so switching only relinks. NOTES-perf-2026-11-09.md "Guest optimisation level"
 guestopt := env("NX2NAVI_GUEST_OPT", "")
 guestflags := env("NX2NAVI_GUEST_FLAGS", "")
+# Extra compile flags for the runtime (stock -O2 -g), e.g. NX2NAVI_RUNTIME_FLAGS="-O3 -march=znver3" just game;
+# objects in obj/runtime-<tag>. NOTES-perf-2026-11-09.md "Runtime optimisation"
+rtflags := env("NX2NAVI_RUNTIME_FLAGS", "")
 # the Steam Deck's hostname or IP for `just deck`
 host := env("NX2NAVI_DECK", "")
 
@@ -93,7 +96,7 @@ xlate:
 # Lift (the kit, with its bring-up fixes), glue, compile and link build/{{ver}}/nx2navi (a CPU without AVX2: just game v2).
 # tracy=1 builds build/{{ver}}/nx2navi.tracy with the Tracy profiler client instead (README "Profiling with Tracy")
 game cpu="v3" tracy="":
-    cd "{{src}}" && {{dev}} python3 -I "{{flake}}/build-linux.py" --src "{{src}}" --extracted "{{work}}/extracted/{{ver}}" --out "build/{{ver}}" --cpu {{cpu}} {{ if tracy != "" { "--tracy --exe nx2navi.tracy" } else { "" } }} {{ if guestopt != "" { "--guest-opt " + guestopt } else { "" } }} {{ if guestflags != "" { "--guest-flags=" + quote(guestflags) } else { "" } }}
+    cd "{{src}}" && {{dev}} python3 -I "{{flake}}/build-linux.py" --src "{{src}}" --extracted "{{work}}/extracted/{{ver}}" --out "build/{{ver}}" --cpu {{cpu}} {{ if tracy != "" { "--tracy --exe nx2navi.tracy" } else { "" } }} {{ if guestopt != "" { "--guest-opt " + guestopt } else { "" } }} {{ if guestflags != "" { "--guest-flags=" + quote(guestflags) } else { "" } }} {{ if rtflags != "" { "--runtime-flags=" + quote(rtflags) } else { "" } }}
 
 # Prepare every shader of the game files and warm the GPU driver's cache (opens a window: run from the desktop session)
 shaders: && fmzpow
