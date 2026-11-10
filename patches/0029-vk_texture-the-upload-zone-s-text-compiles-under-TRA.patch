@@ -1,0 +1,29 @@
+From 14db217e7d0bd03c991c2650e411ea0f34da4d46 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Mon, 9 Nov 2026 19:10:25 -0500
+Subject: [PATCH] vk_texture: the upload zone's text compiles under
+ TRACY_ENABLE (the zone text macro is a block, not an expression)
+
+---
+ runtime/vk_texture.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/runtime/vk_texture.c b/runtime/vk_texture.c
+index c0d1f0e..6ccd80c 100644
+--- a/runtime/vk_texture.c
++++ b/runtime/vk_texture.c
+@@ -983,8 +983,9 @@ static void upload(Tex *e) {
+         else content_forget(e);
+     }
+ #ifdef TRACY_ENABLE
+-    if (e->uploaded) RT_ZONE_TEXT(zu, e->took_back ? "re-upload: after take-back" : "re-upload");
+-    else {
++    if (e->uploaded) {
++        RT_ZONE_TEXT(zu, e->took_back ? "re-upload: after take-back" : "re-upload");
++    } else {
+         void *g = tex_trace() ? nvn_hm_get(&ghosts, &e->key) : NULL;
+         RT_ZONE_TEXT(zu, dc_name[g ? (int)(uintptr_t)g - 1 : DC_NEW]);
+     }
+-- 
+2.56.0
+
