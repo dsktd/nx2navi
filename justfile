@@ -140,10 +140,10 @@ debug *args:
 # The burst build (NX2NAVI_EXE=burst NX2NAVI_MARK_RING=120 NX2NAVI_MARK_BURST=120) froze the game at its first mark
 # on 2026-11-10: not for play until that is fixed.
 # NX2NAVI_MARK_RING / NX2NAVI_MARK_BURST (patch 0049) and any other NX2NAVI_ knob pass through from the environment
-# Default binary: nx2navi.play (patches through 0062): live debugging without a restart, watch.req / peek.req / buf.req /
+# Default binary: nx2navi.play2 (patches through 0063): live debugging without a restart, watch.req / peek.req / buf.req /
 # pick.req (NX2NAVI_WATCH_REQ=1), F5 pick, Shift+F5 crosshair, F6 shot, F12 dump, Shift+F6 broken, Shift+F12 fixed.
 try *args:
-    NX2NAVI_EXE="${NX2NAVI_EXE:-play}" NX2NAVI_WATCH_REQ="${NX2NAVI_WATCH_REQ:-1}" \
+    NX2NAVI_EXE="${NX2NAVI_EXE:-play2}" NX2NAVI_WATCH_REQ="${NX2NAVI_WATCH_REQ:-1}" \
     NX2NAVI_TEX_RELEASED_YIELD="${NX2NAVI_TEX_RELEASED_YIELD:-85}" \
     NX2NAVI_ALIAS_EXTRA_MIB="${NX2NAVI_ALIAS_EXTRA_MIB:-512}" NX2NAVI_AO_ORDER="${NX2NAVI_AO_ORDER:-1}" \
     NX2NAVI_SHADOW_NT="${NX2NAVI_SHADOW_NT:-1}" \

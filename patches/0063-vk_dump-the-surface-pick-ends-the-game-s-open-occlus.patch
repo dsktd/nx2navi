@@ -1,0 +1,108 @@
+From 854c915a6e6ee9ba23634b900385c6073a5661c3 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 18:35:05 -0500
+Subject: [PATCH] vk_dump: the surface pick ends the game's open occlusion
+ query around each pick draw and begins a new one after it (NX2NAVI_PICK_OQ=0:
+ such draws left out, as before); a pick frame with no pick draws logs its
+ passes, draws and why each was left out (#165)
+
+---
+ runtime/vk_dump.c | 34 ++++++++++++++++++++++++++++------
+ 1 file changed, 28 insertions(+), 6 deletions(-)
+
+diff --git a/runtime/vk_dump.c b/runtime/vk_dump.c
+index b5e45d8..2abfaf8 100644
+--- a/runtime/vk_dump.c
++++ b/runtime/vk_dump.c
+@@ -1257,8 +1257,10 @@ void vk_dump_present(uint64_t frame) {
+ // query of its own, then as usual. The query counts the samples that passed every test before the real draw ran, so a
+ // nonzero count means this draw wrote (or, with colour writes off, would have written) that pixel over what was drawn
+ // before it; the last such draw of a pass is its top surface there. The extra draw changes nothing but that pixel, and
+-// there only what blending and stencil increments do twice. Draws inside one of the game's own occlusion queries are
+-// left out (Vulkan does not nest them). The results (read on a thread of their own, no wait on the replay) go to
++// there only what blending and stencil increments do twice. Vulkan does not nest occlusion queries: a draw inside one of
++// the game's own (vk_exec_xfer.c, which keeps one open per pass while the game counts samples) has that query ended
++// before the pick draw and a new one begun after it, so the game's count is the same sum over one more slot
++// (NX2NAVI_PICK_OQ=0: such draws are left out, as before). The results (read on a thread of their own, no wait on the replay) go to
+ // logs/pick-<frame>.txt: per draw that hit, its pass number (as passes.txt of a dump of the same frame numbers them),
+ // draw index in the pass, samples, shaders with their cache .spv paths (hot-reload targets), bound textures, storage
+ // buffers and uniform blocks with their addresses (peek.req / watch.req targets); the log gets one line per pass with
+@@ -1275,6 +1277,11 @@ static VkQueryPool pick_pool;
+ static const VkPipeInfo *pick_info;
+ static const GfxShader *pick_vs, *pick_fs;
+ static int pick_prim;
++static int pick_oq_split = -1;         // NX2NAVI_PICK_OQ (default 1)
++static int pick_resumed;               // vk_pick_post begins the game's query again
++// Self-check: why a pick frame named no draws. Passes and noted draws of the pick frame, and the draws left out.
++enum { PK_NO_INFO, PK_FULL, PK_OQ, PK_SCISSOR, PK_WHY };
++static int pick_passes, pick_notes, pick_out[PK_WHY];
+ 
+ void vk_pick_request(void) {
+     if (__atomic_load_n(&pick_busy, __ATOMIC_ACQUIRE)) {
+@@ -1346,6 +1353,12 @@ void vk_pick_present(uint64_t frame) {
+         PickJob *j = calloc(1, sizeof *j);
+         if (j) {
+             j->frame = pick_frame, j->n = pick_n, j->recs = pick_recs;
++            if (!pick_n)
++                rt_log("pick: frame %llu recorded no pick draws: %d passes and %d draws seen in it (0 passes: the frame "
++                       "was never recorded as numbered), left out: %d without pipeline, %d over %d, %d inside the game's "
++                       "occlusion query (NX2NAVI_PICK_OQ=0), %d centre outside the scissor",
++                       (unsigned long long)pick_frame, pick_passes, pick_notes, pick_out[PK_NO_INFO], pick_out[PK_FULL],
++                       PICK_N, pick_out[PK_OQ], pick_out[PK_SCISSOR]);
+             if (!plat_thread_spawn(pick_read, j, "pick", 0)) pick_read(j);
+         }
+         pick_recs = NULL, pick_frame = 0;
+@@ -1372,32 +1385,40 @@ void vk_pick_present(uint64_t frame) {
+     if (!pick_recs) return;
+     __atomic_store_n(&pick_busy, 1, __ATOMIC_RELEASE);
+     pick_frame = frame + 1, pick_seq = pick_draw = pick_n = 0;
++    pick_passes = pick_notes = 0;
++    memset(pick_out, 0, sizeof pick_out);
++    if (pick_oq_split < 0) pick_oq_split = rt_knob("PICK_OQ", "1") != 0;
+     rt_log("pick: frame %llu is picked at the centre pixel of each pass", (unsigned long long)pick_frame);
+ }
+ 
+ static int pick_now(void) { return pick_frame && frame_now() == pick_frame; }
+ 
+ void vk_pick_pass_end(void) {
+-    if (pick_now()) pick_seq++, pick_draw = 0;
++    if (pick_now()) pick_seq++, pick_draw = 0, pick_passes++;
+ }
+ 
+ void vk_pick_note(const VkPipeState *s, const VkPipeInfo *info) {
+     if (!pick_now()) return;
++    pick_notes++;
+     pick_info = info, pick_vs = s->vs, pick_fs = s->fs, pick_prim = s->prim;
+ }
+ 
+ // Before a draw's own command: 1 when the draw is to be recorded once more, first, for the pick (vk_pick_post after).
+ int vk_pick_pre(VkExec *ex) {
+-    if (!pick_now() || !pick_info) return 0;
++    if (!pick_now()) return 0;
++    if (!pick_info) return pick_out[PK_NO_INFO]++, 0;
+     int draw = pick_draw++;
+     const VkPipeInfo *info = pick_info;
+     pick_info = NULL;
+-    if (pick_n >= PICK_N || vk_exec_oq_active()) return 0;
++    if (pick_n >= PICK_N) return pick_out[PK_FULL]++, 0;
++    if (vk_exec_oq_active() && !pick_oq_split) return pick_out[PK_OQ]++, 0;
+     VkRect2D sc = vk_exec_scissor(ex);
+     int32_t x = (int32_t)(ex->pass_w / 2), y = (int32_t)(ex->pass_h / 2);
+     if (x < sc.offset.x || y < sc.offset.y || x >= sc.offset.x + (int32_t)sc.extent.width ||
+         y >= sc.offset.y + (int32_t)sc.extent.height)
+-        return 0;
++        return pick_out[PK_SCISSOR]++, 0;
++    pick_resumed = vk_exec_oq_active();
++    if (pick_resumed) vk_exec_oq_pass_end(ex);   // the game's query ends here; vk_pick_post begins a new one
+     PickRec *r = &pick_recs[pick_n];
+     r->pass = pick_seq, r->draw = draw, r->w = ex->pass_w, r->h = ex->pass_h;
+     r->c0 = ex->color[0].tex ? (uint64_t)(uintptr_t)ex->color[0].tex->mem : 0;
+@@ -1424,4 +1445,5 @@ void vk_pick_post(VkExec *ex) {
+     vkCmdEndQuery(ex->cb, pick_pool, (uint32_t)pick_q);
+     vkCmdSetScissorWithCount(ex->cb, 1, &pick_sc);
+     ex->recorded += 2;
++    if (pick_resumed) vk_exec_oq_draw(ex), pick_resumed = 0;
+ }
+-- 
+2.56.0
+
