@@ -48,10 +48,13 @@ def play_age():
     return time.time() - max(p.stat().st_mtime for p in logs) if logs else 1e9
 
 
+DEADLINE = time.time() + 60 * float(os.environ.get("SCENARIO_WAIT_MIN", "30"))
+
+
 def wait_idle():
-    deadline = time.time() + 60 * float(os.environ.get("SCENARIO_WAIT_MIN", "30"))
+    """One wait budget for the whole invocation, not per scenario."""
     while (age := play_age()) < IDLE_S:
-        if time.time() > deadline:
+        if time.time() > DEADLINE:
             return False
         print(f"scenario: Cal's play log written {age:.0f} s ago; waiting", file=sys.stderr)
         time.sleep(30)
