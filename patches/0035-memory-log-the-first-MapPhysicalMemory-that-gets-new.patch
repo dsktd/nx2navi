@@ -1,0 +1,65 @@
+From a8f87b8c3f121c26e653de04f3104c8580c586a9 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 00:05:29 -0500
+Subject: [PATCH] memory: log the first MapPhysicalMemory that gets new pages
+ after refusals: how long the game went without new memory, how many refusals,
+ how much it unmapped meanwhile (#141)
+
+---
+ runtime/memory.c | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/runtime/memory.c b/runtime/memory.c
+index b75f629..c8160c4 100644
+--- a/runtime/memory.c
++++ b/runtime/memory.c
+@@ -50,6 +50,7 @@ static uint64_t mods_lo, mods_hi;   // fixed module window
+ static PlatMutex lock = PLAT_MUTEX_INIT;
+ static uint64_t heap_size, alias_bytes;
+ static uint64_t alias_logged;       // alias_bytes at the last high-water log line
++static uint64_t refused_n, refused_ms, refused_freed;   // refusals since the last map that got new pages: count, first time, bytes unmapped since
+ static uint8_t *alias_pages;        // 1 per mapped 4 KiB page of the alias region
+ typedef struct { uint64_t dst, src, size; } StackMap;
+ static StackMap stack_maps[MAX_STACK_MAPS];
+@@ -445,7 +446,7 @@ static uint32_t alias_map(int unmap, uint64_t a, uint64_t n) {
+     uint64_t first = (a - L.alias.base) / PAGE, count = n / PAGE;
+     plat_mutex_lock(&lock);
+     uint32_t r = R_OK;
+-    uint64_t high = 0;
++    uint64_t high = 0, again_n = 0, again_freed = 0, again_ms = 0;
+     if (unmap) {
+         for (unsigned i = 0; i < nstack_maps; i++)
+             if (overlaps(a, n, stack_maps[i].src, stack_maps[i].size)) {
+@@ -456,22 +457,29 @@ static uint32_t alias_map(int unmap, uint64_t a, uint64_t n) {
+         for (uint64_t i = 0; i < count; i++) released += alias_pages[first + i];
+         alias_runs(first, count, 1, 0);
+         alias_bytes -= released * PAGE;
++        if (refused_n) refused_freed += released * PAGE;
+     } else {
+         uint64_t fresh = 0;
+         for (uint64_t i = 0; i < count; i++) fresh += !alias_pages[first + i];
+         if (fresh * PAGE + alias_bytes + heap_size + image_bytes() > L.pool) {
+             r = R_LIMIT_REACHED;   // the SDK maps LimitReached to its recoverable out-of-memory result
++            if (!refused_n++) refused_ms = plat_now_ms(), refused_freed = 0;
+             goto out;
+         }
+         alias_runs(first, count, 0, 1);
+         alias_bytes += fresh * PAGE;
+         if (alias_bytes >= alias_logged + (256ull << 20)) alias_logged = high = alias_bytes;
++        if (fresh && refused_n) again_n = refused_n, again_freed = refused_freed, again_ms = plat_now_ms() - refused_ms, refused_n = 0;
+     }
+ out:
+     plat_mutex_unlock(&lock);
+     if (high)   // the high-water mark of MapPhysicalMemory, every 256 MiB: how much the game takes when the pool allows it
+         rt_log("mem: MapPhysicalMemory high-water %llu MiB (heap %llu MiB, pool %llu MiB)", (unsigned long long)(high >> 20),
+                (unsigned long long)(heap_size >> 20), (unsigned long long)(L.pool >> 20));
++    if (again_n)   // how long the game went without new memory: the time a streamed asset can be late by
++        rt_log("mem: MapPhysicalMemory %#llx+%#llx succeeds %llu ms after the first of %llu refusals (%llu MiB unmapped "
++               "meanwhile)", (unsigned long long)a, (unsigned long long)n, (unsigned long long)again_ms,
++               (unsigned long long)again_n, (unsigned long long)(again_freed >> 20));
+     if (r) rt_log("%sMapPhysicalMemory %#llx+%#llx failed %#x (alias %#llx used, heap %#llx)", unmap ? "Un" : "",
+                   (unsigned long long)a, (unsigned long long)n, r, (unsigned long long)alias_bytes,
+                   (unsigned long long)heap_size);
+-- 
+2.56.0
+
