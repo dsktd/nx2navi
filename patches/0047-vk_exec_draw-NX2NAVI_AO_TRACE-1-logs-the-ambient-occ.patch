@@ -1,0 +1,104 @@
+From 2ed907c5031aaa3f4a5116438750b05ba9cd7ac4 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 04:28:50 -0500
+Subject: [PATCH 45/45] vk_exec_draw: NX2NAVI_AO_TRACE=1 logs the ambient
+ occlusion chain per frame in replay order: depth pass, occlusion, blur, with
+ their images (diagnosis; the logging slows the replay) (#146)
+
+---
+ runtime/cfg.c          |  2 +-
+ runtime/vk_exec_draw.c | 51 ++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 52 insertions(+), 1 deletion(-)
+
+diff --git a/runtime/cfg.c b/runtime/cfg.c
+index 903d652..e373b59 100644
+--- a/runtime/cfg.c
++++ b/runtime/cfg.c
+@@ -41,7 +41,7 @@ static const char *const known[] = {
+     "BIND_ZL", "BIND_ZR", "BLOCK_VIEWS_3D", "CLOTH_REALTIME", "COLOR_BRIGHTNESS", "COLOR_CONTRAST", "COLOR_GAMMA",
+     "COLOR_PRESET", "COLOR_SATURATION", "CONTACT_DEBUG", "CONTACT_SHADOWS", "CORE_DIAG", "CRIT", "CRIT_OUT",
+     "DESC_TEMPLATE", "DEVICE_PROFILE", "DISCORD_APP_ID", "DISCORD_IMAGE", "DISCORD_RPC", "DLAA", "DLAA_JITTER", "DLAA_MV", "DLAA_MASKDEBUG", "DLAA_MVDEBUG", "DLAA_OBJMV", "DLAA_SURVEY", "DLAA_TIMES", "DLSS", "DLSS_CHAR_MASK", "DLSS_PRESET", "DLSS_REACTIVE", "DUMP", "DUMP_BUF", "DUMP_DIR", "DUMP_REQ",
+-    "DUMP_LOG", "LOG_CS_BINDS", "LOG_TEX_FLAGS", "LOG_MESH", "MESH", "POOL", "NATIVE_TENSOR", "LOG_RCOND", "LOG_OQ", "OQ_FORCE", "AO", "AO_ORDER", "LOG_RT_SIZES", "DUMP_WHITE", "DUMP_AFTER", "SUBMIT_FINISH", "GPU_WAIT", "DIFF_THREADS", "ACQUIRE_WAIT", "CS_FALLBACK", "EXEFS", "FEEDBACK", "FIX_C0", "FIX_ZERO", "FLIGHT", "FLIGHT_AT", "FLIGHT_DIR", "FLIGHT_FRAMES",
++    "DUMP_LOG", "LOG_CS_BINDS", "LOG_TEX_FLAGS", "LOG_MESH", "MESH", "POOL", "NATIVE_TENSOR", "LOG_RCOND", "LOG_OQ", "OQ_FORCE", "AO", "AO_ORDER", "AO_TRACE", "LOG_RT_SIZES", "DUMP_WHITE", "DUMP_AFTER", "SUBMIT_FINISH", "GPU_WAIT", "DIFF_THREADS", "ACQUIRE_WAIT", "CS_FALLBACK", "EXEFS", "FEEDBACK", "FIX_C0", "FIX_ZERO", "FLIGHT", "FLIGHT_AT", "FLIGHT_DIR", "FLIGHT_FRAMES",
+     "FLIGHT_SPIKE_MS", "FLIGHT_THUMBS", "FLUSH_SPAN", "FOV", "FOV_PATCH", "FG_HUDLESS_SHOW", "FPS60", "FPS_LIMIT", "FRAMEGEN", "FREEZE_IDLE", "FREE_CORES",
+     "FULLSCREEN", "FXAA", "GAME_ASPECT", "GAME_RES", "GPA", "GPA_EMPTY", "GPA_TWIN", "GPL", "GPL_DRAW_BUILD", "GPU", "GPU_INDEX", "GPU_NAME", "HDR", "HDR_GAME_NITS", "HDR_HUE",
+     "HDR_PEAK_NITS", "HDR_UI_NITS", "HIGHFPS_FIX", "INPUT", "INPUT_RECORD", "INPUT_SCRIPT", "LANG", "LIB_PREBUILD",
+diff --git a/runtime/vk_exec_draw.c b/runtime/vk_exec_draw.c
+index 6e26354..219c7f4 100644
+--- a/runtime/vk_exec_draw.c
++++ b/runtime/vk_exec_draw.c
+@@ -1890,6 +1890,55 @@ static void ao_clear(VkExec *ex) {
+     ex->recorded++;
+ }
+ 
++// NX2NAVI_AO_TRACE=1 (diagnosis of the ambient occlusion flicker): one log line, in replay order, for each step of
++// the ambient occlusion chain: the half-resolution depth pass, the occlusion compute, its last blur, and the lighting
++// resolve that samples the result, each with the frame, the fence and the images it binds (storage address, VkImage).
++// From the lines one reads which frame's depth the occlusion saw and whether the resolve sampled the image the blur
++// of its own frame wrote.
++static int ao_trace_on(void) {
++    static int on = -1;
++    if (on < 0) on = rt_knob("AO_TRACE", "0");
++    return on;
++}
++
++static int ao_img(char *o, size_t n, const char *name, uint64_t h) {
++    view_t v;
++    int hv = 0;
++    const VkTexImage *t = h ? vk_texture_by_id(NVN_HANDLE_TEX(h), &v, &hv) : NULL;
++    if (!t) return snprintf(o, n, " %s=none", name);
++    return snprintf(o, n, " %s=%llx/%p/%ux%u/id%d", name, (unsigned long long)t->addr, (void *)t->image, t->width, t->height,
++                    NVN_HANDLE_TEX(h));
++}
++
++static void ao_trace(VkExec *ex, const GfxShader *sh, int draw) {
++    static const struct { uint64_t h; const char *name; int8_t tex[3], img; } steps[] = {
++        {0x1b66d31cf1ac4053ull, "depth", {-1, -1, -1}, -1},     // fs: full to half resolution depth
++        {0x561cf523be84578bull, "occlusion", {0, -1, -1}, 0},   // cs: occlusion from the half resolution depth
++        {0x8b563e79bcdf41ecull, "blur", {0, -1, -1}, 0},        // cs: vertical blur (the last one writes the result)
++        {0xc6f5578c8c701891ull, "mask", {0, -1, -1}, 0},        // cs: full resolution r8 from the depth buffer
++        {0xc4fcb154221f0f5aull, "resolve", {5, 6, 1}, -1},      // fs: samples mask (5), occlusion (6), half depth (1)
++    };
++    uint64_t h = ao_hash(sh);
++    for (size_t k = 0; k < sizeof steps / sizeof *steps; k++) {
++        if (steps[k].h != h) continue;
++        char line[400];
++        int st = draw ? NVN_STAGE_FS : NVN_STAGE_CS;
++        int o = snprintf(line, sizeof line, "ao: f%llu fence %llu %s", (unsigned long long)__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1,
++                         (unsigned long long)ex->fence, steps[k].name);
++        for (int i = 0; i < 3; i++)
++            if (steps[k].tex[i] >= 0) {
++                char nm[8];
++                snprintf(nm, sizeof nm, "t%d", steps[k].tex[i]);
++                o += ao_img(line + o, sizeof line - (size_t)o, nm, ex->tex[st][steps[k].tex[i]]);
++            }
++        if (steps[k].img >= 0) o += ao_img(line + o, sizeof line - (size_t)o, "out", ex->img[st][steps[k].img]);
++        if (draw && ex->color[0].img)
++            snprintf(line + o, sizeof line - (size_t)o, " rt=%llx/%p/%ux%u", (unsigned long long)ex->color[0].img->addr,
++                     (void *)ex->color[0].image, ex->color[0].width, ex->color[0].height);
++        rt_log("%s", line);
++    }
++}
++
+ // NX2NAVI_SKIP_SHADERS=<hash>,...: draws and dispatches whose shader's SPIR-V has one of these FNV-1a hashes (the "vs"/"fs"/
+ // "cs" hashes of the frame dump's passes.txt) are skipped (diagnosis: which pass makes an effect).
+ static int shader_skipped(const GfxShader *sh) {
+@@ -3104,6 +3153,7 @@ static int prepare_draw_ex(VkExec *ex, int prim, int32_t count, int restart, int
+     feedback_written(ex, &s);
+     if (!mesh) bind_vertex_buffers(ex);
+     if (vk_dump_armed && !mesh) vk_dump_draw(ex, &s, p, info);
++    if (ao_trace_on() && fs) ao_trace(ex, fs, 1);
+     if (vk_hdr_track) vk_hdr_draw(ex, info);
+     vk_exec_oq_draw(ex);
+     DRS.issued[mesh]++;
+@@ -4379,6 +4429,7 @@ static void op_dispatch(VkExec *ex, const p_dispatch *d) {
+     vk_pass_mark_end(ex->cb, m);
+     ex->recorded++;
+     if (vk_dump_armed) vk_dump_dispatch(ex, cs, p, info, d);
++    if (ao_trace_on()) ao_trace(ex, cs, 0);
+     if (!ao_on() && ao_hash(cs) == 0x561cf523be84578bull) ao_clear(ex);
+ }
+ 
+-- 
+2.56.0
+

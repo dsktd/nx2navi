@@ -1,0 +1,269 @@
+From 8fb4fb64dffc0b834cff871eb7dfba6f9058260b Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 04:28:50 -0500
+Subject: [PATCH 44/45] vk_exec: NX2NAVI_AO_ORDER=1 runs the ambient occlusion
+ again after the event it waits for, inside the signalling submission's replay
+ (default 0) (#146)
+
+The worker queues wait (WaitEvent) for the main submission's signal that the
+half-resolution depth is written, then compute the occlusion; replayed in
+submission order the occlusion read the previous frame's depth, so it trails
+one frame behind anything that moves on screen. The replay now notes each
+unmet wait with the queue state there and, at the matching signal op, replays
+the binds and the occlusion dispatches (occlusion, two blurs) recorded after
+the wait once more, then returns to the signalling submission. Nothing is cut
+or held, fences are unchanged; the waiting recording is kept alive 64 submits.
+Asynchronous replay only.
+
+Lab, nx2navi.ao: 300 of 300 frames read this frame's depth (before: 0);
+standing still at the castle slot and the graveyard no brightness outliers in
+300 frames either way, sharpness and frame rate unchanged (28.2 vs 28.4 and
+33.1-33.4 vs 33.2-33.8 fps), crash spot frame 1700 passes. Event waits v3 on
+the same castle spot: the region 23% darker with 5 dark frames in 300.
+---
+ runtime/cfg.c          |   2 +-
+ runtime/nvn_api_cmd.c  |  19 ++++++++
+ runtime/vk_exec.c      | 105 +++++++++++++++++++++++++++++++++++++++--
+ runtime/vk_exec.h      |   1 +
+ runtime/vk_exec_draw.c |   7 +++
+ 5 files changed, 130 insertions(+), 4 deletions(-)
+
+diff --git a/runtime/cfg.c b/runtime/cfg.c
+index 27bd608..903d652 100644
+--- a/runtime/cfg.c
++++ b/runtime/cfg.c
+@@ -41,7 +41,7 @@ static const char *const known[] = {
+     "BIND_ZL", "BIND_ZR", "BLOCK_VIEWS_3D", "CLOTH_REALTIME", "COLOR_BRIGHTNESS", "COLOR_CONTRAST", "COLOR_GAMMA",
+     "COLOR_PRESET", "COLOR_SATURATION", "CONTACT_DEBUG", "CONTACT_SHADOWS", "CORE_DIAG", "CRIT", "CRIT_OUT",
+     "DESC_TEMPLATE", "DEVICE_PROFILE", "DISCORD_APP_ID", "DISCORD_IMAGE", "DISCORD_RPC", "DLAA", "DLAA_JITTER", "DLAA_MV", "DLAA_MASKDEBUG", "DLAA_MVDEBUG", "DLAA_OBJMV", "DLAA_SURVEY", "DLAA_TIMES", "DLSS", "DLSS_CHAR_MASK", "DLSS_PRESET", "DLSS_REACTIVE", "DUMP", "DUMP_BUF", "DUMP_DIR", "DUMP_REQ",
+-    "DUMP_LOG", "LOG_CS_BINDS", "LOG_TEX_FLAGS", "LOG_MESH", "MESH", "POOL", "NATIVE_TENSOR", "LOG_RCOND", "LOG_OQ", "OQ_FORCE", "AO", "LOG_RT_SIZES", "DUMP_WHITE", "DUMP_AFTER", "SUBMIT_FINISH", "GPU_WAIT", "DIFF_THREADS", "ACQUIRE_WAIT", "CS_FALLBACK", "EXEFS", "FEEDBACK", "FIX_C0", "FIX_ZERO", "FLIGHT", "FLIGHT_AT", "FLIGHT_DIR", "FLIGHT_FRAMES",
++    "DUMP_LOG", "LOG_CS_BINDS", "LOG_TEX_FLAGS", "LOG_MESH", "MESH", "POOL", "NATIVE_TENSOR", "LOG_RCOND", "LOG_OQ", "OQ_FORCE", "AO", "AO_ORDER", "LOG_RT_SIZES", "DUMP_WHITE", "DUMP_AFTER", "SUBMIT_FINISH", "GPU_WAIT", "DIFF_THREADS", "ACQUIRE_WAIT", "CS_FALLBACK", "EXEFS", "FEEDBACK", "FIX_C0", "FIX_ZERO", "FLIGHT", "FLIGHT_AT", "FLIGHT_DIR", "FLIGHT_FRAMES",
+     "FLIGHT_SPIKE_MS", "FLIGHT_THUMBS", "FLUSH_SPAN", "FOV", "FOV_PATCH", "FG_HUDLESS_SHOW", "FPS60", "FPS_LIMIT", "FRAMEGEN", "FREEZE_IDLE", "FREE_CORES",
+     "FULLSCREEN", "FXAA", "GAME_ASPECT", "GAME_RES", "GPA", "GPA_EMPTY", "GPA_TWIN", "GPL", "GPL_DRAW_BUILD", "GPU", "GPU_INDEX", "GPU_NAME", "HDR", "HDR_GAME_NITS", "HDR_HUE",
+     "HDR_PEAK_NITS", "HDR_UI_NITS", "HIGHFPS_FIX", "INPUT", "INPUT_RECORD", "INPUT_SCRIPT", "LANG", "LIB_PREBUILD",
+diff --git a/runtime/nvn_api_cmd.c b/runtime/nvn_api_cmd.c
+index aeb4a57..8d91dc1 100644
+--- a/runtime/nvn_api_cmd.c
++++ b/runtime/nvn_api_cmd.c
+@@ -1504,6 +1504,24 @@ static void ew_prepare(const uint64_t *h, int n, uint64_t *hs) {
+     else nvn_submit_prepare(h, n), memcpy(hs, h, sizeof *hs * (size_t)n);
+ }
+ 
++// NX2NAVI_AO_ORDER=1 (vk_exec.c "ambient occlusion after its event"): the replay reads a recording that waits for an
++// event once more when a later submission signals it, so such a recording lives until 64 more submissions are replayed
++// (the replay forgets a wait after 24).
++static void keep_waiting(const uint64_t *h, int n) {
++    static int on = -1;
++    if (on < 0) on = rt_knob("AO_ORDER", "0") && gfx_replay_async();
++    if (!on) return;
++    for (int i = 0; i < n; i++)
++        for (const op_hdr *o = nvn_op_first(h[i]); o->op != OP_END; o = nvn_op_next(o)) {
++            if (o->op != OP_WAIT_EVENT) continue;
++            plat_mutex_lock(&copy_lock);
++            __atomic_store_n(&((copy_prefix *)(uintptr_t)h[i] - 1)->used_at, __atomic_load_n(&nsubmits, __ATOMIC_RELAXED) + 64,
++                             __ATOMIC_RELAXED);
++            plat_mutex_unlock(&copy_lock);
++            break;
++        }
++}
++
+ uint64_t nvn_submit_ordered(const void *q, const uint64_t *h, int n) {
+     if (ew_on < 0) {
+         const char *e = cfg_get("NX2NAVI_EVENT_WAITS");
+@@ -1533,6 +1551,7 @@ uint64_t nvn_submit_ordered(const void *q, const uint64_t *h, int n) {
+     uint64_t f;
+     if (!ew_on) {
+         f = ew_issue(hs, n, NULL, -1);
++        keep_waiting(hs, n);
+     } else if (ew_queue_held(q, ew_n)) {   // behind its queue's held work
+         ew_hold(q, hs, n, NULL, -1, NULL);
+         f = 0;
+diff --git a/runtime/vk_exec.c b/runtime/vk_exec.c
+index d6d009a..fd939ac 100644
+--- a/runtime/vk_exec.c
++++ b/runtime/vk_exec.c
+@@ -872,11 +872,11 @@ static void state_save(VkExec *ex, int slot) {
+     *exec_slots[slot] = *ex;
+     vk_usnap_save(slot);
+ }
+-static void state_restore(VkExec *ex, int slot) {
+-    if (slot >= NVN_EXEC_SLOTS || !exec_slots[slot]) rt_fatal("vk: state slot %d was never saved", slot);
++// The replay goes on in this command buffer with the queue state of *to; per command buffer fields stay as they are.
++static void state_switch(VkExec *ex, const VkExec *to) {
+     vk_exec_pass_end(ex);
+     VkExec cur = *ex;
+-    *ex = *exec_slots[slot];
++    *ex = *to;
+     ex->cb = cur.cb, ex->fence = cur.fence, ex->recorded = cur.recorded, ex->in_pass = 0;
+     ex->mark = cur.mark, ex->mark_draws0 = cur.mark_draws0;
+     ex->mark_passes = cur.mark_passes, ex->mark_dispatches = cur.mark_dispatches;
+@@ -887,9 +887,105 @@ static void state_restore(VkExec *ex, int slot) {
+     ex->tex_serial = cur.tex_serial + 1, ex->pass_serial = cur.pass_serial + 1;
+     ex->dirty = VK_EXEC_DIRTY_ALL;
+     ex->rt_resolved = 0;
++}
++static void state_restore(VkExec *ex, int slot) {
++    if (slot >= NVN_EXEC_SLOTS || !exec_slots[slot]) rt_fatal("vk: state slot %d was never saved", slot);
++    state_switch(ex, exec_slots[slot]);
+     vk_usnap_restore(slot);
+ }
+ 
++// ---- ambient occlusion after its event (NX2NAVI_AO_ORDER=1)
++// The game's worker queues wait (WaitEvent) for the frame's main submission to signal that the half-resolution depth
++// is written, then compute the ambient occlusion from it; the main submission's lighting resolve samples the result.
++// Replayed in submission order the occlusion ran before the frame's depth pass and read the previous frame's depth:
++// right while nothing moves, but one frame behind whatever moves on screen (a turning camera, swaying plants), where
++// the resolve's depth-aware filter then finds no matching occlusion, so the shading comes and goes with the motion.
++// Here the replay notes each wait whose value was not signalled yet, with the queue state at that point; the
++// submission still runs to its end as before. When a later submission signals that value, the replay runs the
++// occlusion dispatches recorded after the wait once more, right after the signal op, with the noted state, and then
++// goes on with the signalling submission: the occlusion now reads this frame's depth and overwrites the early result
++// before the resolve samples it. Only binds and the occlusion dispatches are replayed again (vk_exec_rerun_wanted in
++// vk_exec_draw.c); everything else behind the wait ran once, in its old place. No submission is cut (the event waits
++// of nvn_api_cmd.c cut and hold whole submissions, which changed fences and the picture). The submit call keeps the
++// waiting recording alive for the signal (nvn_submit_ordered). Uniform blocks of the second run that the signalling
++// submission's snapshot does not hold are read from live memory (vk_usnap.c).
++#define WAITS_MAX 8
++typedef struct { const op_hdr *at; const volatile uint32_t *val; uint32_t value; uint64_t sub; VkExec st; } WaitNote;
++static WaitNote *wait_notes;
++static int n_wait_notes, ao_order = -1;
++static uint64_t replay_subs, ao_reruns;
++static struct { const volatile uint32_t *val; uint32_t value; } signalled[16];
++static int n_signalled;
++int vk_exec_rerun;   // vk_exec_draw.c: only the occlusion dispatches run
++
++static int vk_exec_ao_order(void) {
++    if (ao_order < 0) {
++        ao_order = rt_knob("AO_ORDER", "0") && gfx_replay_async();
++        rt_log("vk: ambient occlusion %s (NX2NAVI_AO_ORDER%s)", ao_order ? "runs again after the event it waits for" : "in submission order",
++               rt_knob("AO_ORDER", "0") && !ao_order ? "=1 needs NX2NAVI_REPLAY_ASYNC=1" : "");
++    }
++    return ao_order;
++}
++
++static void wait_note(VkExec *ex, const op_hdr *h) {
++    const p_wait_event *w = nvn_op_payload(h);
++    if (w->mode != 0) return;   // EQUAL waits only: the frame counter events
++    for (int i = 0; i < n_signalled; i++)
++        if (signalled[i].val == w->val && signalled[i].value == w->value) return;   // already signalled: in order
++    if (!wait_notes && !(wait_notes = malloc(sizeof *wait_notes * WAITS_MAX))) rt_fatal("vk: out of memory (wait notes)");
++    if (n_wait_notes == WAITS_MAX) memmove(wait_notes, wait_notes + 1, sizeof *wait_notes * --n_wait_notes);
++    WaitNote *n = &wait_notes[n_wait_notes++];
++    n->at = nvn_op_next(h), n->val = w->val, n->value = w->value, n->sub = replay_subs, n->st = *ex;
++}
++
++// Binds and dispatches from h to the end of its recording (called recordings are not followed: only the waiting
++// recording itself is kept alive); the dispatch handler runs only the occlusion's.
++static void walk_again(VkExec *ex, const op_hdr *h) {
++    for (;;) {
++        const void *a = nvn_op_payload(h);
++        switch (h->op) {
++        case OP_END: return;
++        case OP_JUMP: h = (const op_hdr *)(uintptr_t)((const p_jump *)a)->target; continue;
++        case OP_SET_TEX_POOL: ex->tex_pool = ((const p_set_pool *)a)->pool, ex->tex_serial++; break;
++        case OP_SET_SAMP_POOL: ex->samp_pool = ((const p_set_pool *)a)->pool; break;
++        case OP_BARRIER: vk_exec_barrier(ex); break;
++        case OP_DISPATCH:
++        case OP_BIND_PROGRAM: case OP_BIND_UBO: case OP_BIND_SSBO: case OP_BIND_TEX: case OP_BIND_SAMP: case OP_BIND_IMG:
++        case OP_PUSH_CC:
++            vk_exec_op_draw(ex, h->op, a);
++            break;
++        default: break;
++        }
++        h = nvn_op_next(h);
++    }
++}
++
++static void signal_seen(VkExec *ex, const p_signal_event *s) {
++    if (s->mode != 0) return;
++    int k = 0;
++    for (; k < n_signalled && signalled[k].val != s->val; k++) {}
++    if (k == n_signalled && n_signalled < 16) n_signalled++;
++    if (k < 16) signalled[k].val = s->val, signalled[k].value = s->value;
++    static VkExec back;   // replay thread only
++    int kept = 0;
++    for (int i = 0; i < n_wait_notes; i++) {
++        WaitNote *n = &wait_notes[i];
++        if (n->val != s->val) {   // another event's wait: kept while its recording lives (nvn_submit_ordered)
++            if (replay_subs - n->sub <= 24) wait_notes[kept++] = *n;
++            continue;
++        }
++        if (n->value != s->value || replay_subs - n->sub > 24) continue;   // an older frame's wait: dropped
++        back = *ex;
++        state_switch(ex, &n->st);
++        vk_exec_rerun = 1;
++        walk_again(ex, n->at);
++        vk_exec_rerun = 0;
++        state_switch(ex, &back);
++        if (!(++ao_reruns % 3600)) rt_log("vk: ambient occlusion ran again after its event %llu times", (unsigned long long)ao_reruns);
++    }
++    n_wait_notes = kept;
++}
++
+ static void walk(VkExec *ex, const op_hdr *h, int depth) {
+     for (;;) {
+         if (h->size < sizeof *h || (h->size & 7) || h->op >= OP_COUNT_)
+@@ -900,6 +996,7 @@ static void walk(VkExec *ex, const op_hdr *h, int depth) {
+         case OP_BEGIN: break;
+         case OP_WAIT_EVENT:   // a cut of nvn_submit_ordered: this part ends here, the held rest resumes with the state
+             if (((const p_wait_event *)a)->slot >= 0) { state_save(ex, ((const p_wait_event *)a)->slot); return; }
++            if (!depth && vk_exec_ao_order()) wait_note(ex, h);
+             break;
+         case OP_EXEC_STATE:
+             if (((const p_exec_state *)a)->slot >= 0) state_restore(ex, ((const p_exec_state *)a)->slot);
+@@ -979,6 +1076,7 @@ static void walk(VkExec *ex, const op_hdr *h, int depth) {
+                         state_save(ex, s);
+                         return;
+                     }
++            if (h->op == OP_SIGNAL_EVENT && vk_exec_ao_order()) signal_seen(ex, a);
+             break;
+         default: rt_fatal("vk: op %s has no replay handler", nvn_op_name(h->op));
+         }
+@@ -1006,6 +1104,7 @@ int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t
+     ex->barrier_at = -1;
+     ex->nfbl = 0;   // the previous command buffer ended with a full barrier: every image is in GENERAL
+     vk_exec_frame.submits++;
++    replay_subs++;
+     split_draws = part_start = 0;
+     part_t0 = kern_now_ns();
+     x_here = 1;
+diff --git a/runtime/vk_exec.h b/runtime/vk_exec.h
+index 1479ac7..d4615c2 100644
+--- a/runtime/vk_exec.h
++++ b/runtime/vk_exec.h
+@@ -187,6 +187,7 @@ void vk_c0_fill(uint8_t bank[VK_C0_BYTES], int stage, const p_bind_buf ssbo[16],
+ // vk_exec_draw.c: OP_DRAW, OP_DRAW_IDX, OP_DISPATCH, OP_BIND_* (program, state, vattr, vstream, vbuf, ubo, ssbo, tex,
+ // samp, img), OP_UPDATE_UB, OP_DRAW_IDX_IND, OP_DISPATCH_IND. payload: nvn_op_payload of the record.
+ void vk_exec_op_draw(VkExec *ex, uint32_t op, const void *payload);
++extern int vk_exec_rerun;   // vk_exec.c, ambient occlusion after its event: the replay runs a recording's occlusion dispatches again
+ // The aspect a sampled view of img reads (vk_exec_draw.c get_view): stencil for a view in STENCIL depth-stencil mode.
+ VkImageAspectFlags vk_exec_view_aspect(const VkTexImage *img, const view_t *v, int hv);
+ VkImageView vk_exec_target_view(const VkTexImage *img, VkFormat format, VkImageViewType type, uint32_t aspect,
+diff --git a/runtime/vk_exec_draw.c b/runtime/vk_exec_draw.c
+index f7ee213..6e26354 100644
+--- a/runtime/vk_exec_draw.c
++++ b/runtime/vk_exec_draw.c
+@@ -1859,6 +1859,12 @@ static uint64_t ao_hash(const GfxShader *sh) {
+     return h;
+ }
+ 
++// The ambient occlusion chain: the occlusion compute and its two blur shaders (horizontal, vertical).
++static int ao_chain(const GfxShader *cs) {
++    uint64_t h = ao_hash(cs);
++    return h == 0x561cf523be84578bull || h == 0xcd6ddba0e3074332ull || h == 0x8b563e79bcdf41ecull;
++}
++
+ // NX2NAVI_AO=0: no ambient occlusion. The occlusion compute's result is overwritten with 1 (no occlusion) right after
+ // its dispatch, so its blur and the lighting resolve see an unoccluded picture: a steady fallback while the occlusion
+ // reads the previous frame's depth (the replay runs it before the frame's depth pass). 1 (the default): the game's own.
+@@ -4361,6 +4367,7 @@ static void op_dispatch(VkExec *ex, const p_dispatch *d) {
+     VkPipeline p = vk_pipeline_compute(cs, &info);
+     if (!p || !info) return warn_once(W_PIPELINE, "a compute pipeline could not be created: dispatches with it are skipped");
+     if ((info->pool && !pool_on()) || shader_skipped(cs)) return;   // NX2NAVI_POOL=0, NX2NAVI_SKIP_SHADERS
++    if (vk_exec_rerun && !ao_chain(cs)) return;   // NX2NAVI_AO_ORDER: the second run after the event is the occlusion's alone
+     vk_exec_barrier(ex);   // ends the pass; earlier writes are visible to the shader
+     bind_pipeline(ex, VK_PIPELINE_BIND_POINT_COMPUTE, p);
+     c0_dim[0] = (uint32_t)d->x, c0_dim[1] = (uint32_t)d->y, c0_dim[2] = (uint32_t)d->z;
+-- 
+2.56.0
+

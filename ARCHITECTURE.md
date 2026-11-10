@@ -256,7 +256,7 @@ All are in `~/claude/nx2navi/patches/`, as local commits on `build`. Status come
 
 Open problems mapped onto the architecture:
 - **#132 performance.** The game thread is the critical path (finish wait plus 17.8 ms unzoned). Then the completion thread's compares and the replay's shadow sync and pool refresh (section 5).
-- **#146 AO flicker.** Replay ordering: the replay ignores `nvnCommandBufferWaitEvent`, so AO reads last frame's half-res depth (0013/0016).
+- **#146 AO flicker.** Replay ordering: the replay ignores `nvnCommandBufferWaitEvent`, so AO reads last frame's half-res depth and trails one frame behind motion (identical while nothing moves). `NX2NAVI_AO_ORDER=1` (0046, `vk_exec.c` "ambient occlusion after its event") runs the occlusion again at the signal op; `NX2NAVI_AO=0` (0045) turns it off; 0013/0016 cut submissions and darken the picture.
 - **#141 crash guard.** Driver faults in RADV `spirv_to_nir` during pipeline builds (0031/0033), plus device losses possibly tied to VRAM pressure.
 - **#149 missing terrain.** Memory: 211 MapPhysicalMemory refusals (0x10801, LimitReached) against the 9809 MiB pool in the same session (play log 561-563). Next test: a larger `NX2NAVI_APP_POOL`.
 - **#138 bushes.** Not a renderer problem: the leaf cards are never drawn. The cause is in the lifted game's LOD/cull decision.

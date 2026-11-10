@@ -7,6 +7,8 @@ Things that are on or available without proof they help. One line each; remove a
 | CPU pinning to one cache domain | on (`just play`) | lab 2026-11-10: same mean (42.6/43.0 unpinned, 42.2/42.7 pinned), steadier tail (p99 29.0/28.7 to 27.8/27.3 ms); Cal: feels faster and steadier. Keep. | `NX2NAVI_CPUS=off` |
 | `NX2NAVI_GPU_WAIT` | 0 | off fixed the horizon bands by observation, not re-proven | `=1` |
 | `NX2NAVI_EVENT_WAITS` | off | fixes AO flicker, causes fullscreen flicker and a soft picture | `=1` |
+| `NX2NAVI_AO_ORDER` | 0 | AO reads this frame's depth; lab clean at two spots; real play untested | `=1` |
+| `NX2NAVI_AO` | 1 | `=0` is the steady fallback without ambient occlusion | `=0` |
 | `NX2NAVI_ONESHOT_WAIT_MS` | 30000 | a low cap would cut combat hitches; picture untested | `=<ms>` |
 | `NX2NAVI_TEX_RELEASED_MIB` | 3072 | graveyard may want more; higher risks video memory | `=<MiB>` |
 | `NX2NAVI_TEX_RELEASED_YIELD` | off | lab at Death Mountain with `=60`: video memory 11.5 to 9.7 GiB, fps 53.6 to 55.0, worst upload 775 to 428 ms; `=85` proposed for play but never fires in the lab (area sits at 69%); in `nx2navi.vram`; needs Cal's full-card session | `=85` |

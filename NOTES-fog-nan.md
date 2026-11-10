@@ -576,3 +576,48 @@ Runs i128p4-240 (heap scan at the slot-21 start, `tools/voice-scan.gdb`, dump of
 - Next, when the lab is free: dump present 3400, look for the lines in final.png; if absent try 9000 (sunset). At the
   frame that shows them: `NX2NAVI_GPU_WAIT=0`, `NX2NAVI_DIFF_THREADS=1`, both, `NX2NAVI_EVENT_WAITS=1`, then a
   binary without 0024-0026. If the lab never shows them, ask Cal for one run with `NX2NAVI_GPU_WAIT=0` in the field.
+
+## AO flicker (#146), 2026-11-10 night
+
+Question: why would AO that reads last frame's depth flicker while standing still? Answer: it does not. Lab, castle
+slot (`lab-profile-flicker`, frames 1400-1699) and the graveyard gate (tonight's save bundle `profile-20261109-234907`,
+frames 2100-2399), nothing pressed, binary `nx2navi.ao`, play defaults:
+
+- `NX2NAVI_AO_TRACE=1` (patch 0047): every frame has the same chain, mask (cs c6f5578c, 1920x1080 r8 from the depth
+  buffer), occlusion (561cf523, reads the r32f half depth at 0x80025f9200), blur H/V twice, and only then the frame's
+  half-depth pass (fs 1b66d31c). 300 of 300 frames read an earlier frame's depth. The targets are the same VkImages at
+  the same pool addresses every frame; no other pass writes them before the lighting resolve (the pool reuses their
+  memory only after it: 480x270 and 960x540 targets from pass 238 of a 295-pass frame). Dynamic resolution is off
+  ("DLSS render scale 100%: the game's dynamic resolution off") and unjitter is on, in the lab and in Cal's play log.
+- 480x270 shot series, region mean brightness: 0 outliers above 1.5/255 in 300 frames with the stock order, with
+  `NX2NAVI_AO=0` and with `NX2NAVI_AO_ORDER=1`, at both spots; the frame-to-frame pixel change is 0.28-0.49 at the
+  graveyard across seven runs, on, off or without AO (run noise).
+- So a still picture is steady: a one-frame-old depth equals this frame's. What Cal sees is the lag under motion. His
+  marks 4 and 5 (presents 8752 and 8786): the recording has the right stick at 9% for the first and at 15% for the
+  second, and the camera moved between them; the region means of ground and sky are equal in both shots (no global
+  change), only the fine shading in the straw and on the dirt is gone in 8786. Lab pan (right stick 8000, 4-11 px per
+  frame at 2560 wide = 1-2 half-res px), frame 1650 dumped with `NX2NAVI_AO_ORDER=1`, which holds the early and the
+  late occlusion image of one frame: they differ by more than 6% in 2.5% of the pixels (mean 1.6/255). The resolve
+  weighs the occlusion by depth, so occlusion displaced off thin geometry (straw, grass, wall creases) is dropped: the
+  shading goes away while the camera or the plants move and comes back when they rest. At 45 fps each frame's motion
+  is larger than at 60.
+- Not found: pooled-target aliasing, a not-yet-written read, a size change, or jitter. Not the cause.
+
+Fix (patch 0046, `NX2NAVI_AO_ORDER=1`, default 0): at the main submission's SignalEvent the replay runs the occlusion
+and its blurs again with the worker queue's state noted at the WaitEvent. Trace: `mobbd` becomes `mobbdobb`, the second
+occlusion reads the depth written in this frame, 300 of 300. Checks in the README entry. Event waits v3 on the same
+castle frames: region mean 120.9 against 157.7 (the haze is thinner, the whole scene darker: v3 also moves the fog
+froxel dispatches and six more behind the signal) and 5 single dark frames of -8 in 300, so v3's side effect is
+reproduced in the lab and 0046 does not have it.
+
+Open:
+- Bright, hazy single frames (geometry +10 green, +17 blue, sky and HUD unchanged, Link's shadow lighter) appeared 4-5
+  times per 200-300 frames only in the three runs with `NX2NAVI_AO_TRACE=1` plus a second load (full-size shots or the
+  rerun); trace alone at 22 fps, full-size shots alone, and every untraced run had none. Looks like the sky ambient
+  (the 0004 area) under replay timing stress; not reproduced without the trace, not chased.
+- The mask (c6f5578c) also sits behind the wait and is not run again: it is a flat 1 in every dump so far.
+- Synchronization validation (suggested for this): not run. `LAB_VALIDATE=1` still stalls at boot (above), and the
+  replay is one timeline with a full barrier between passes, so an ordering that is legal Vulkan but one frame late is
+  not a hazard it reports.
+- Real play with `NX2NAVI_AO_ORDER=1` is untested; the in-picture gain under motion is shown only through the two
+  occlusion images of one frame, not by an A/B of final frames (replays drift once the camera moves).

@@ -1,0 +1,86 @@
+From 7d39a1deb236b2c0eaa9d0213f418c715506ee9e Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 04:28:50 -0500
+Subject: [PATCH 43/45] vk_exec_draw: NX2NAVI_AO=0 turns the ambient occlusion
+ off: the occlusion compute's result is overwritten with 1 after its dispatch,
+ so its blur and the lighting resolve see no occlusion (default 1, the game's
+ own) (#146)
+
+---
+ runtime/cfg.c          |  2 +-
+ runtime/vk_exec_draw.c | 39 +++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 40 insertions(+), 1 deletion(-)
+
+diff --git a/runtime/cfg.c b/runtime/cfg.c
+index e061d12..27bd608 100644
+--- a/runtime/cfg.c
++++ b/runtime/cfg.c
+@@ -41,7 +41,7 @@ static const char *const known[] = {
+     "BIND_ZL", "BIND_ZR", "BLOCK_VIEWS_3D", "CLOTH_REALTIME", "COLOR_BRIGHTNESS", "COLOR_CONTRAST", "COLOR_GAMMA",
+     "COLOR_PRESET", "COLOR_SATURATION", "CONTACT_DEBUG", "CONTACT_SHADOWS", "CORE_DIAG", "CRIT", "CRIT_OUT",
+     "DESC_TEMPLATE", "DEVICE_PROFILE", "DISCORD_APP_ID", "DISCORD_IMAGE", "DISCORD_RPC", "DLAA", "DLAA_JITTER", "DLAA_MV", "DLAA_MASKDEBUG", "DLAA_MVDEBUG", "DLAA_OBJMV", "DLAA_SURVEY", "DLAA_TIMES", "DLSS", "DLSS_CHAR_MASK", "DLSS_PRESET", "DLSS_REACTIVE", "DUMP", "DUMP_BUF", "DUMP_DIR", "DUMP_REQ",
+-    "DUMP_LOG", "LOG_CS_BINDS", "LOG_TEX_FLAGS", "LOG_MESH", "MESH", "POOL", "NATIVE_TENSOR", "LOG_RCOND", "LOG_OQ", "OQ_FORCE", "LOG_RT_SIZES", "DUMP_WHITE", "DUMP_AFTER", "SUBMIT_FINISH", "GPU_WAIT", "DIFF_THREADS", "ACQUIRE_WAIT", "CS_FALLBACK", "EXEFS", "FEEDBACK", "FIX_C0", "FIX_ZERO", "FLIGHT", "FLIGHT_AT", "FLIGHT_DIR", "FLIGHT_FRAMES",
++    "DUMP_LOG", "LOG_CS_BINDS", "LOG_TEX_FLAGS", "LOG_MESH", "MESH", "POOL", "NATIVE_TENSOR", "LOG_RCOND", "LOG_OQ", "OQ_FORCE", "AO", "LOG_RT_SIZES", "DUMP_WHITE", "DUMP_AFTER", "SUBMIT_FINISH", "GPU_WAIT", "DIFF_THREADS", "ACQUIRE_WAIT", "CS_FALLBACK", "EXEFS", "FEEDBACK", "FIX_C0", "FIX_ZERO", "FLIGHT", "FLIGHT_AT", "FLIGHT_DIR", "FLIGHT_FRAMES",
+     "FLIGHT_SPIKE_MS", "FLIGHT_THUMBS", "FLUSH_SPAN", "FOV", "FOV_PATCH", "FG_HUDLESS_SHOW", "FPS60", "FPS_LIMIT", "FRAMEGEN", "FREEZE_IDLE", "FREE_CORES",
+     "FULLSCREEN", "FXAA", "GAME_ASPECT", "GAME_RES", "GPA", "GPA_EMPTY", "GPA_TWIN", "GPL", "GPL_DRAW_BUILD", "GPU", "GPU_INDEX", "GPU_NAME", "HDR", "HDR_GAME_NITS", "HDR_HUE",
+     "HDR_PEAK_NITS", "HDR_UI_NITS", "HIGHFPS_FIX", "INPUT", "INPUT_RECORD", "INPUT_SCRIPT", "LANG", "LIB_PREBUILD",
+diff --git a/runtime/vk_exec_draw.c b/runtime/vk_exec_draw.c
+index 23c8703..f7ee213 100644
+--- a/runtime/vk_exec_draw.c
++++ b/runtime/vk_exec_draw.c
+@@ -1846,6 +1846,44 @@ static void pool_catch_up(uint64_t from, uint64_t to) {
+ 
+ // Entry id of every kind in mask: the slot's view of that kind or the kind's stand-in. Texture lock held. 0: the
+ // slot's texture was left to a later sync by the creation budget (pool_sync).
++// FNV-1a of a shader's SPIR-V, as the frame dump's passes.txt names it (vk_dump.c shader_hash).
++static uint64_t ao_hash(const GfxShader *sh) {
++    static struct { const GfxShader *s; uint64_t h; } memo[256];
++    if (!sh) return 0;
++    uint32_t i = (uint32_t)(((uintptr_t)sh * 0x9E3779B97F4A7C15ull) >> 56);
++    if (memo[i].s == sh) return memo[i].h;
++    uint64_t words = 0, h = 0xcbf29ce484222325ull;   // as vk_dump.c shader_hash
++    const uint8_t *b = (const uint8_t *)gfx_shader_spirv(sh, &words);
++    for (uint64_t k = 0; b && k < words * 4; k++) h = (h ^ b[k]) * 0x100000001b3ull;
++    memo[i].s = sh, memo[i].h = h;
++    return h;
++}
++
++// NX2NAVI_AO=0: no ambient occlusion. The occlusion compute's result is overwritten with 1 (no occlusion) right after
++// its dispatch, so its blur and the lighting resolve see an unoccluded picture: a steady fallback while the occlusion
++// reads the previous frame's depth (the replay runs it before the frame's depth pass). 1 (the default): the game's own.
++static int ao_on(void) {
++    static int on = -1;
++    if (on < 0) {
++        on = rt_knob("AO", "1");
++        if (!on) rt_log("vk: ambient occlusion off (NX2NAVI_AO=0)");
++    }
++    return on;
++}
++
++static void ao_clear(VkExec *ex) {
++    view_t v;
++    int hv = 0;
++    uint64_t h = ex->img[NVN_STAGE_CS][0];
++    const VkTexImage *t = h ? vk_texture_by_id(NVN_HANDLE_TEX(h), &v, &hv) : NULL;
++    if (!t || !t->image) return;
++    VkClearColorValue one = {.float32 = {1, 1, 1, 1}};
++    VkImageSubresourceRange r = {VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS};
++    vk_exec_barrier(ex);
++    vkCmdClearColorImage(ex->cb, t->image, VK_IMAGE_LAYOUT_GENERAL, &one, 1, &r);
++    ex->recorded++;
++}
++
+ // NX2NAVI_SKIP_SHADERS=<hash>,...: draws and dispatches whose shader's SPIR-V has one of these FNV-1a hashes (the "vs"/"fs"/
+ // "cs" hashes of the frame dump's passes.txt) are skipped (diagnosis: which pass makes an effect).
+ static int shader_skipped(const GfxShader *sh) {
+@@ -4334,6 +4372,7 @@ static void op_dispatch(VkExec *ex, const p_dispatch *d) {
+     vk_pass_mark_end(ex->cb, m);
+     ex->recorded++;
+     if (vk_dump_armed) vk_dump_dispatch(ex, cs, p, info, d);
++    if (!ao_on() && ao_hash(cs) == 0x561cf523be84578bull) ao_clear(ex);
+ }
+ 
+ // DispatchComputeIndirect: vkCmdDispatchIndirect from the pool buffer. The shader reads the group counts from c0 0x200,
+-- 
+2.56.0
+

@@ -164,8 +164,9 @@ Field, HDR10 native through niri-spicy, 240 Hz panel. Since the 2026-11-08 morni
 - Debug and play features: shader hot-reload and on-request shots (0003), dump.req (0011), mark this moment (0015,
   F9 / L3+R3), draw lists in dumps (0017), Steam Input pad preferred (0014), projection unjitter (0012).
 - Defaults: `NX2NAVI_PIPE_SKIP=any`, `NX2NAVI_HDR=native`, `REPLAY_ASYNC=1`, `VK_RECORDER=1`, `TEX_RELEASED_MIB=3072`.
-- AO: the event-waits ordering (v3, patch 0016) fixes AO's one-frame lag in the lab but is off (one residual dip, a
-  device loss at the castle spot).
+- AO (#146): the occlusion trails one frame behind what moves (it runs before the frame's depth pass). `NX2NAVI_AO_ORDER=1`
+  (patch 0046, off until Cal has played with it) runs it again after its event; `NX2NAVI_AO=0` (0045) turns it off.
+  Event waits v3 (0016) stays off: it darkens the picture (castle slot, lab).
 - Horizon bands (2026-11-09, open): thin vertical lines every 80 px over the hazy mid-distance field (Cal's shot-21152, binary through 0026); not reproduced in the lab yet, no toggle tested; NOTES "Horizon bands" has the candidates and the next replay.
 - Open: #128 intro speed (second lab pass 2026-11-09: the narration voice slots start 2.5-4x faster per wall second at 240 than at 60 while the time manager and the update's +0xd58 step are patched correctly; the update's +0xd50 counter runs per present; the consumer is still unknown; third pass: the slots are started by atk's sound thread itself; fourth pass: no separate start command, the start is a side effect of atk's per-frame update main+0x36d1440 (two callers), stream reader entries and ring objects located, NOTES "#128 fourth lab pass"; tools/voice-{watch,scan,queue,stream}.gdb, tools/gdbwrap), #138 gray close-LOD bushes (cleared so far: mesh path, alpha test, render
   conditions, vertex formats (0018), occlusion-query culls (0020's `NX2NAVI_OQ_FORCE`), the shared vs c6 block; the vertex
@@ -352,6 +353,15 @@ distribution). After `just update`, `build` may need a rebase onto the new upstr
   start, frame 3600 (standing): off 11.5 GiB driver VRAM, released 3.3 GiB; 60% -> 9.7 GiB, released 1.3 GiB, 55.0 vs 53.6
   fps, worst-frame texture upload 428 vs 775 ms (load); 70% never fires there (68.8%). Castle 1500 and crash spot 1700
   pass with 60%, picture clean. Proposed play default: 85.
+- `0043-vk_exec_draw-format-the-dump-s-draw-arguments-only-i.patch`: #148 step 1. `DUMP_ARGS` (op_draw, op_draw_idx,
+  indirect) ran snprintf on every draw whenever any `NX2NAVI_DUMP*` was set, as `tools/lab-run` always does; it now
+  formats only in a frame being dumped (`vk_dump_active`). Plain fix, lab-only cost: the replay-thread profile loses its
+  snprintf (1.5% -> 0); field window 41.1 -> 42.1, 42.7 fps, replay 20.6 -> 20.2, 20.1 ms (inside the spread).
+- `0044-vk_memory-NX2NAVI_SHADOW_NT-and-NX2NAVI_SHADOW_GAP_K.patch`: #148 steps 3-4, both **default off**.
+  `NX2NAVI_SHADOW_NT=1`: shadow copies of 4 KiB and more use AVX2 non-temporal stores, fenced before the submit;
+  field window shadow sync 2.9 -> 2.0 ms/frame for the same 10.9 MiB, replay 20.1 -> 19.4 ms, 42.4 -> 43.6 fps, p99
+  26.5 -> 25.5 ms (two runs each). `NX2NAVI_SHADOW_GAP_KIB=<n>` (default 64): touched pools up to n KiB apart share one
+  write-watch query; 2048 cuts queries 232 -> 160 a frame but the sync only 0.05 ms. NOTES-perf "Replay thread".
 - Guest memory and the missing-geometry holes (#141), all in `runtime/memory.c`, built into `nx2navi.crash` (not swapped):
   `0034-memory-log-SetHeapSize...`, `0035-memory-log-the-first-MapPhysicalMemory...`, `0040-memory-at-the-first-refused...`
   and `0041-memory-the-MapPhysicalMemory-high-water...` are log lines (`mem: SetHeapSize`, `mem: MapPhysicalMemory
@@ -366,6 +376,25 @@ distribution). After `just update`, `build` may need a rebase onto the new upstr
   extra, where the alias peak settles near 2990 MiB (185 MiB past the pool) from frame 5400 on. Not shown: that the
   holes Cal marked go away (replays drift), and why the console would not hit the same limit. Try in play:
   `NX2NAVI_EXE=crash NX2NAVI_ALIAS_EXTRA_MIB=512 just play`.
+
+- `0045-vk_exec_draw-NX2NAVI_AO-0-turns-the-ambient-occlusio.patch`: #146 fallback. `NX2NAVI_AO=0` (default 1) overwrites the
+  occlusion compute's result (cs 561cf523) with 1 right after its dispatch, so the blurs and the lighting resolve see no
+  occlusion. Lab: the blur outputs are a flat 1; the picture loses the soft darkening in creases and under objects,
+  0.1% brighter at the castle slot and about 2-3% at the graveyard gate (480x270 region means, one run each).
+- `0046-vk_exec-NX2NAVI_AO_ORDER-1-runs-the-ambient-occlusio.patch`: #146, the targeted reorder (**default 0** until Cal
+  has played with it). The replay notes each unmet WaitEvent with the queue state there; at the matching SignalEvent
+  of the frame's main submission it replays the binds and the three occlusion shaders (561cf523, blurs cd6ddba0 and
+  8b563e79) recorded after the wait once more, in the same command buffer, and goes on. No submission is cut or held
+  (0013/0016 did that), fences are untouched, the early run stays. Asynchronous replay only. Lab (`nx2navi.ao`): the
+  occlusion reads this frame's half-res depth in 300 of 300 frames (before: 0); in a slow pan (1-2 half-res px per
+  frame) the early and the late occlusion image of one frame differ by more than 6% in 2.5% of the pixels; standing
+  still at the castle slot and the graveyard gate: 0 brightness outliers in 300 frames with it off and on, sharpness
+  92.6 vs 93.9 (Laplacian variance, 200 full-size frames), 28.4 vs 28.2 fps and 33.2-33.8 vs 33.1-33.4 fps; crash spot
+  (frame 1700) passes. Event waits v3 at the same castle spot: the region 23% darker and 5 dark frames in 300, which
+  is the side effect Cal saw. NOTES "AO flicker (#146)".
+- `0047-vk_exec_draw-NX2NAVI_AO_TRACE-1-logs-the-ambient-occ.patch`: `NX2NAVI_AO_TRACE=1` logs `ao: f<frame> fence <n>
+  depth|occlusion|blur|mask` lines with the bound images in replay order. The logging slows the replay (28 -> 22 fps)
+  and runs with it showed single-frame bright, hazy flashes that runs without it did not: debug only.
 
 ## Mark this moment
 
