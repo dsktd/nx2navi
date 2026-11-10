@@ -1,0 +1,90 @@
+From 4c2b48e99e1aecb4bbf608c4579cfbc3c6753388 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 00:58:49 -0500
+Subject: [PATCH] vk_texture: the mem: heaps log adds own texture memory by
+ Vulkan format, ASTC footprint, render target and released, with the guest
+ storage size per group (#132, #141)
+
+---
+ runtime/vk.h         |  1 +
+ runtime/vk_memory.c  |  1 +
+ runtime/vk_texture.c | 39 +++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 41 insertions(+)
+
+diff --git a/runtime/vk.h b/runtime/vk.h
+index bb9042f..1c0704e 100644
+--- a/runtime/vk.h
++++ b/runtime/vk.h
+@@ -470,6 +470,7 @@ void vk_texture_stats(uint64_t *images, uint64_t *uploads, uint64_t *reuploads);
+ // (images not bound into pool memory).
+ typedef struct { uint64_t live, released, own_live, own_released, bytes_live, bytes_released; } VkTexCensus;
+ void vk_texture_census(VkTexCensus *s);
++void vk_texture_format_log(uint64_t frame);         // own texture memory by format, astc footprint, render target
+ void vk_texture_shutdown(void);                     // vk_mem_shutdown calls it
+ void vk_texture_new_submit(void);                   // a queue submit starts: draw bindings check storage again
+ uint32_t vk_texture_epoch(void);                    // the write-watch snapshot epoch vk_texture_new_submit started
+diff --git a/runtime/vk_memory.c b/runtime/vk_memory.c
+index 911d670..d6ef8d4 100644
+--- a/runtime/vk_memory.c
++++ b/runtime/vk_memory.c
+@@ -2478,6 +2478,7 @@ static void vram_log(uint64_t frame) {
+                  kib[0] / 1024.0, kib[1] / 1024.0, kib[2] / 1024.0, s_live_bytes / M);
+ #endif
+     rt_log("%s", line);
++    vk_texture_format_log(frame);
+ }
+ 
+ // Device class: INTEGRATED -> uma; a discrete GPU with a DEVICE_LOCAL heap of 1 GiB or more beside a
+diff --git a/runtime/vk_texture.c b/runtime/vk_texture.c
+index c449702..a483747 100644
+--- a/runtime/vk_texture.c
++++ b/runtime/vk_texture.c
+@@ -2679,6 +2679,45 @@ void vk_texture_census(VkTexCensus *s) {
+     unlock();
+ }
+ 
++// The texture memory by kind, for the mem: heaps log (vk_memory.c vram_log): own memory grouped by image format, ASTC
++// footprint and whether the GPU writes it (render targets), largest first, with the guest storage size of each group
++// (for ASTC: the compressed bytes the console holds).
++void vk_texture_format_log(uint64_t frame) {
++    VkCtx *c = vk_ctx();
++    if (!c) return;
++    typedef struct { int vk, bw, bh, rt, rel; uint64_t n, bytes, src; } Grp;
++    Grp g[96];
++    int ng = 0;
++    lock();
++    for (uint32_t i = 0; i < by_key.cap; i++) {
++        const Tex *e = by_key.vals[i];
++        if (!e || !e->alloc) continue;
++        VmaAllocationInfo ai;
++        vmaGetAllocationInfo(c->vma, e->alloc, &ai);
++        int rt = e->pub.gpu_owned || e->wr_fence != 0, k = 0;
++        for (; k < ng; k++)
++            if (g[k].vk == (int)e->f.vk && g[k].bw == e->f.astc_bw && g[k].bh == e->f.astc_bh && g[k].rt == rt &&
++                g[k].rel == e->released)
++                break;
++        if (k == ng) {
++            if (ng == 96) continue;
++            g[ng++] = (Grp){(int)e->f.vk, e->f.astc_bw, e->f.astc_bh, rt, e->released, 0, 0, 0};
++        }
++        g[k].n++, g[k].bytes += ai.size, g[k].src += e->t.L.size;
++    }
++    unlock();
++    for (int a = 1; a < ng; a++)
++        for (int b = a; b > 0 && g[b].bytes > g[b - 1].bytes; b--) { Grp t = g[b]; g[b] = g[b - 1]; g[b - 1] = t; }
++    char line[1024];
++    int n = snprintf(line, sizeof line, "mem: textures frame %llu, own memory by vk format/astc/rt/released:",
++                     (unsigned long long)frame);
++    for (int k = 0; k < ng && k < 16 && n < (int)sizeof line; k++)
++        n += snprintf(line + n, sizeof line - n, " fmt %d%s%dx%d%s%s %llu %.0f MiB (storage %.0f);", g[k].vk,
++                      g[k].bw ? " astc " : "", g[k].bw, g[k].bh, g[k].rt ? " rt" : "", g[k].rel ? " rel" : "",
++                      (unsigned long long)g[k].n, g[k].bytes / 1048576.0, g[k].src / 1048576.0);
++    rt_log("%s", line);
++}
++
+ void vk_texture_shutdown(void) {
+     VkCtx *c = vk_ctx();
+     lock();
+-- 
+2.56.0
+

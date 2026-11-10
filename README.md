@@ -333,6 +333,11 @@ distribution). After `just update`, `build` may need a rebase onto the new upstr
   pressure valves read), VMA blocks and allocations, the kernel's `/proc/self/fdinfo` drm-memory-vram/gtt and visible VRAM
   (what nvtop shows) and the shadow total. Logging only. Reason: the play log's only budget figures (`stays imported ...
   6961 of 7925 MiB`) are the first four refusals, in minute 1, so a 16 GB card fill was invisible in the log.
+- `0038-vk_texture-texture-memory-by-format-in-the-heaps-log.patch`: #132. After the heaps line, `mem: textures frame N`: own
+  texture memory grouped by Vulkan format, ASTC footprint, render target (`rt`) and released (`rel`), largest 16, with the
+  guest storage bytes per group. Logging only. Lab, Death Mountain start (input-20261110-004353, frame 3600): driver, VMA and
+  kernel agree (VRAM 11.5 / 11.1 / 11.6 GiB, GTT 5.6 with 4.85 shadow): no hidden memory; render targets 5.5 GiB (3.3 released),
+  ASTC as BC3 2.0 GiB from 0.9 GiB of ASTC, mirrors 1.0 GiB.
 
 ## Mark this moment
 
