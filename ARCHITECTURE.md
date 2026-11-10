@@ -167,7 +167,7 @@ Written pages are found with a userfaultfd in asynchronous write-protect mode pl
 Two lifetime mechanisms keep graphics objects alive just long enough:
 
 - **Texture pins.** Recordings name immutable host copies of each texture initialisation. A copy is freed some submits after nothing reads it (`runtime/nvn_api_cmd.c:234-248`; play log: "6625 live, 6605 waiting").
-- **Released textures.** Textures released for take-back are kept, up to 2048 entries (`runtime/vk_texture.c:914`). Our patch 0019 caps their memory (`NX2NAVI_TEX_RELEASED_MIB=3072` in `just play`; play log 388).
+- **Released textures.** Textures released for take-back are kept, up to 2048 entries (`runtime/vk_texture.c:914`). Our patch 0019 caps their memory (`NX2NAVI_TEX_RELEASED_MIB=3072` in `just play`; play log 388). `NX2NAVI_TEX_RELEASED_YIELD` (0039) makes the list give memory back, render targets included, above a share of the VRAM budget. The pressure valve (`NX2NAVI_TEX_VRAM_PRESSURE`) never drops render targets. VMA keeps part-empty 256 MiB blocks: the driver's usage does not fall when allocations are freed, only VMA's own allocation count does. `mem: heaps` / `mem: textures` lines every 1800 frames (0037, 0038) show driver, VMA and kernel figures and texture memory by format. Death Mountain needs about 11.6 GiB VRAM: 5.5 render targets (3.3 released), 2.0 ASTC as BC3, 1.0 mirrors; GTT 5.6 of which 4.85 shadow.
 
 ## 7. Shaders
 

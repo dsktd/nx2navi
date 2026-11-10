@@ -1,0 +1,108 @@
+From 6dc60ccdb72d4c6b647a31c3a0806b2d5d9e8a83 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 01:52:04 -0500
+Subject: [PATCH] vk_texture: NX2NAVI_TEX_RELEASED_YIELD=<percent> (default 0 =
+ off): above it of the VRAM budget, VMA's free block space not counted, the
+ released list gives back its oldest entries, render targets included, down to
+ 5 points below (#132, #141)
+
+---
+ runtime/vk_texture.c | 57 ++++++++++++++++++++++++++++++++++++++------
+ 1 file changed, 50 insertions(+), 7 deletions(-)
+
+diff --git a/runtime/vk_texture.c b/runtime/vk_texture.c
+index a483747..8743fee 100644
+--- a/runtime/vk_texture.c
++++ b/runtime/vk_texture.c
+@@ -176,10 +176,11 @@ static void dirty_push(uint32_t x) { dirty[ndirty++ % DIRTY_N] = x; }
+ // destroyed key) and by a hash of the storage bytes it copies (contents: hash -> the key hash it was uploaded under
+ // last), so uploads of bytes the GPU already had show up, under the same key or another one. A summary line goes to
+ // the log every 600 frames (vk_texture_new_submit); the Tracy zone text names the class.
+-enum { DC_NEW, DC_RANGE_GONE, DC_REPLACED, DC_SWEEP_COUNT, DC_SWEEP_BYTES, DC_PRESSURE, DC_N };
++enum { DC_NEW, DC_RANGE_GONE, DC_REPLACED, DC_SWEEP_COUNT, DC_SWEEP_BYTES, DC_PRESSURE, DC_YIELD, DC_N };
+ #ifdef TRACY_ENABLE
+ static const char *const dc_name[DC_N] = {"first", "first: after range gone", "first: after replaced at address",
+-                                          "first: after released-count sweep", "first: after released-bytes sweep", "first: after VRAM pressure"};
++                                          "first: after released-count sweep", "first: after released-bytes sweep", "first: after VRAM pressure",
++                                          "first: after the released list yielded"};
+ #endif
+ static int dcause;   // the cause of the destroy_tex calls under way (its callers set it)
+ static uint64_t td_n[DC_N], td_bytes[DC_N];                                        // destroys by cause
+@@ -941,6 +942,13 @@ static void sweep_released_body(void) {
+ // "left uninitialised" aliases a minute).
+ #define PRESSURE_STEP 32
+ static int vram_pressure = -1;
++// NX2NAVI_TEX_RELEASED_YIELD (percent of the device-local budget, default 0 = off): above it the released list gives
++// memory back, render targets included, so a light area keeps the byte cap's reuse and a heavy one returns it before
++// the card fills (#132, #141: Death Mountain holds 3.3 GiB of released render targets of 11.6 GiB).
++#define YIELD_HYST 5
++#define YIELD_STEP 64
++static int rel_yield = -1;
++static uint64_t n_yield_bytes;
+ static uint64_t n_pressure_drops;
+ 
+ static void sweep_pressure(void) {   // tex_lock held
+@@ -950,10 +958,44 @@ static void sweep_pressure(void) {   // tex_lock held
+         if (vram_pressure < 0 || vram_pressure > 100) vram_pressure = 90;
+         rt_log("vk: released textures under VRAM pressure: %s%d%%", vram_pressure ? "dropped above " : "off", vram_pressure);
+     }
+-    if (!vram_pressure || !rel_head || submit_epoch & 7) return;   // the budget query every 8 submits
++    if (rel_yield < 0) {
++        const char *y = cfg_get("NX2NAVI_TEX_RELEASED_YIELD");
++        rel_yield = y && *y ? atoi(y) : 0;
++        if (rel_yield < YIELD_HYST + 1 || rel_yield > 100) rel_yield = 0;
++        if (rel_yield)
++            rt_log("vk: released textures, render targets included, yield above %d%% of the VRAM budget (down to %d%%)",
++                   rel_yield, rel_yield - YIELD_HYST);
++    }
++    if (!rel_head || submit_epoch & 7) return;   // the budget query every 8 submits
+     uint64_t used, budget;
+     int exact;
+-    if (!vk_mem_vram(&used, &budget, &exact) || used <= budget / 100 * (uint64_t)vram_pressure) return;
++    if (!(vram_pressure || rel_yield) || !vk_mem_vram(&used, &budget, &exact)) return;
++    // VMA keeps the blocks a drop empties only in part: their free space is reused by the next allocations and does not
++    // count as used here, or the drops never bring the heap down and the list is emptied at every query (lab, Death
++    // Mountain at 70%: 4.6 GiB re-created per second while VMA's blocks stayed at 10.4 GiB).
++    uint64_t slack = 0;
++    if (rel_yield) {
++        VkCtx *c = vk_ctx();
++        VmaBudget vb[VK_MAX_MEMORY_HEAPS];
++        vmaGetHeapBudgets(c->vma, vb);
++        for (uint32_t h = 0; h < c->mem_props.memoryHeapCount && h < VK_MAX_MEMORY_HEAPS; h++)
++            if (c->mem_props.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
++                slack += vb[h].statistics.blockBytes - vb[h].statistics.allocationBytes;
++    }
++    if (rel_yield && used - (slack < used ? slack : used) > budget / 100 * (uint64_t)rel_yield) {
++        used -= slack < used ? slack : used;
++        // The oldest released entries go whatever they hold, as under the byte cap (0019), until the drop would bring the
++        // heap down to rel_yield - YIELD_HYST percent; at most YIELD_STEP per query, so one query never frees thousands.
++        uint64_t want = used - budget / 100 * (uint64_t)(rel_yield - YIELD_HYST), freed = 0;
++        dcause = DC_YIELD;
++        for (int k = 0; k < YIELD_STEP && rel_head && freed < want; k++) {
++            freed += rel_head->rel_acct;
++            destroy_tex(rel_head);
++        }
++        dcause = DC_NEW;
++        n_yield_bytes += freed;
++    }
++    if (!vram_pressure || !rel_head || used <= budget / 100 * (uint64_t)vram_pressure) return;
+     int dropped = 0;
+     for (Tex *e = rel_head, *next; e && dropped < PRESSURE_STEP; e = next) {
+         next = e->rel_next;
+@@ -1946,9 +1988,10 @@ void vk_texture_new_submit(void) {
+                (unsigned long long)f * 60, (unsigned long long)ck, (unsigned long long)n_checks, (unsigned long long)calls,
+                (unsigned long long)untr);
+         n_checks = 0;
+-        rt_log("perf: frame %llu: released textures kept %d, dropped under VRAM pressure %llu", (unsigned long long)f * 60,
+-               nreleased, (unsigned long long)n_pressure_drops);
+-        n_pressure_drops = 0;
++        rt_log("perf: frame %llu: released textures kept %d (%.0f MiB), dropped under VRAM pressure %llu, yielded %.0f MiB",
++               (unsigned long long)f * 60, nreleased, rel_bytes / 1048576.0, (unsigned long long)n_pressure_drops,
++               n_yield_bytes / 1048576.0);
++        n_pressure_drops = n_yield_bytes = 0;
+     }
+     unlock();
+ }
+-- 
+2.56.0
+

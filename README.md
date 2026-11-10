@@ -338,6 +338,14 @@ distribution). After `just update`, `build` may need a rebase onto the new upstr
   guest storage bytes per group. Logging only. Lab, Death Mountain start (input-20261110-004353, frame 3600): driver, VMA and
   kernel agree (VRAM 11.5 / 11.1 / 11.6 GiB, GTT 5.6 with 4.85 shadow): no hidden memory; render targets 5.5 GiB (3.3 released),
   ASTC as BC3 2.0 GiB from 0.9 GiB of ASTC, mirrors 1.0 GiB.
+- `0039-vk_texture-NX2NAVI_TEX_RELEASED_YIELD.patch`: #132/#141. `NX2NAVI_TEX_RELEASED_YIELD=<percent>` (**default 0**):
+  every 8 submits, when the driver's device-local usage minus VMA's free space inside its blocks passes that share of the
+  budget, the oldest released entries go, render targets included, down to 5 points below (at most 64 per query). The
+  slack term matters: without it a drop never lowered the driver figure (VMA keeps part-empty blocks: allocations 10.8 ->
+  7.7 GiB, blocks stayed 10.4) and the list was emptied every query, 4.6 GiB re-created per second. Lab, Death Mountain
+  start, frame 3600 (standing): off 11.5 GiB driver VRAM, released 3.3 GiB; 60% -> 9.7 GiB, released 1.3 GiB, 55.0 vs 53.6
+  fps, worst-frame texture upload 428 vs 775 ms (load); 70% never fires there (68.8%). Castle 1500 and crash spot 1700
+  pass with 60%, picture clean. Proposed play default: 85.
 - Guest memory and the missing-geometry holes (#141), all in `runtime/memory.c`, built into `nx2navi.crash` (not swapped):
   `0034-memory-log-SetHeapSize...`, `0035-memory-log-the-first-MapPhysicalMemory...`, `0040-memory-at-the-first-refused...`
   and `0041-memory-the-MapPhysicalMemory-high-water...` are log lines (`mem: SetHeapSize`, `mem: MapPhysicalMemory
