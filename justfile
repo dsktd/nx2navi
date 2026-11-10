@@ -151,6 +151,18 @@ play *args:
     printf '{"name":"nx2navi","log":"%s","since":%s,"progress":{"regex":"frame (?P<done>[0-9]+):"},"pid":%s}\n' "$PWD/$log" "$(date +%s)" "$$" > "$job"
     trap 'rm -f "$job"' EXIT
     ulimit -c unlimited || true
+    # CPU pinning (UNCERTAIN.md): on a CPU with several L3 cache domains (a Ryzen 9's two CCDs) keep the game
+    # on the first one. NX2NAVI_CPUS=off leaves it unpinned, NX2NAVI_CPUS=<list> pins to that taskset list.
+    cpus=${NX2NAVI_CPUS:-auto}
+    if [ "$cpus" = auto ]; then
+        cpus=off
+        if [ "$(cat /sys/devices/system/cpu/cpu*/cache/index3/shared_cpu_list 2>/dev/null | sort -u | wc -l)" -gt 1 ]; then
+            cpus=$(cat /sys/devices/system/cpu/cpu0/cache/index3/shared_cpu_list)
+        fi
+    fi
+    if [ "$cpus" != off ] && command -v taskset >/dev/null; then
+        taskset -pc "$cpus" $$ >/dev/null && echo "cpus: pinned to $cpus (NX2NAVI_CPUS=off to disable)"
+    fi
     {{dev}} env {{radv}} NX2NAVI_HDR=${NX2NAVI_HDR:-native} NX2NAVI_REPLAY_ASYNC=${NX2NAVI_REPLAY_ASYNC:-1} NX2NAVI_VK_RECORDER=${NX2NAVI_VK_RECORDER:-1} NX2NAVI_TEX_RELEASED_MIB=${NX2NAVI_TEX_RELEASED_MIB:-3072} NX2NAVI_GPU_WAIT=${NX2NAVI_GPU_WAIT:-0} NX2NAVI_INPUT_RECORD="build/{{ver}}/logs/input-$ts.txt" {{wrapper}} "build/{{ver}}/nx2navi${NX2NAVI_EXE:+.$NX2NAVI_EXE}" {{args}} 2>&1 | tee "$log" | grep -a -v -E "no such proc|preparation progress|PushComputeConstants"
 
 # Play under gdb like `debug`, and record every input to NX2navi/build/{{ver}}/logs/input-<time>.txt: the recording
