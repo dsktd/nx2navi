@@ -479,3 +479,72 @@ After those: Kakariko's movement frames (40.7 ms; 121 frames over 40 ms in 200-2
 50-98 MiB of uploads per frame, 60-111 ms, finish wait 1 ms: an area load on the route) decide the p99 there; the
 upload path item of the Kakariko list stands. Shrinking the written ranges (item 3 of the first list) no longer buys
 frame time, only completion-thread time.
+
+## Guest optimisation level (2026-11-09 night)
+
+Question: what does a higher optimisation level for the lifted game code buy? It is compiled at `-O1`
+(`build-linux.py`, upstream: "its size makes -O2 slow to build"), `-march=x86-64-v3`, no LTO or PGO. **Answer:
+nothing measurable; the default stays `-O1`.** `-O2` is not slow to build here, but the frame does not get shorter
+and the guest threads do not use less CPU.
+
+Setup: a clean source tree `~/claude/nx2navi/NX2navi-opt` (detached at `build` 14db217, so the runtime is the same
+in every variant), its own lift copy and out dir, the game's caches reflink-copied; one binary per variant
+(`nx2navi.o1`, `.o2`, `.o2n`), only the guest flags differ. Lab replay of `input-20261109-191317.txt` with the
+`just play` environment, `NX2NAVI_TRACE=perf,present`, `NX2NAVI_GPU_WAIT=0`, `NX2NAVI_FPS_LIMIT=240`, windows in the
+recording's game ticks (from the `input: script frame F tick T` lines). **Field, standing: ticks 6300-10200** is the
+only valid window: the Kakariko part of this recording goes out of sync within seconds (Cal watched it), and two runs
+of one binary differ by 7 fps there. CPU per thread from `/proc/<pid>/task/*/stat` sampled every 2 s over the window
+(scripts in `NX2navi-opt/gopt-scripts/`: `lab.sh`, `an.py`, `sampler.py`, `cpu.py`).
+
+| variant (guest flags) | build, wall | 5 slowest TUs | binary | field fps | p99 ms | replay thread ms/frame | guest main CPU ms/frame | all guest threads CPU ms/frame |
+|---|---|---|---|---|---|---|---|---|
+| A `-O1` (today) | 304 s (lift, runtime, 551 guest TUs) | main_0282 84 s, 0240 70, 0203 60, 0255 59, 0202 59 | 318 MB | 41.0, 39.6, 38.8 (three runs) | 28.9, 29.9, 33.4 | 20.7-21.7 | 7.20 | 54.98 |
+| B `-O2` | 381 s (lift, guest) | main_0282 109 s, 0284 72, 0272 63, 0089 63, 0044 62 | 324 MB | 41.9, 40.5 | 28.7, 29.6 | 20.2-21.0 | 7.10 | 54.99 |
+| C `-O2 -march=znver3` | 332 s (lift, guest) | main_0282 98 s, 0284 64, 0272 56, 0255 48, 0240 47 | 325 MB | 39.0, 40.3 | 32.3, 32.7 | 21.1-21.4 | 7.12 | 54.85 |
+| D PGO | not built | | | | | | | |
+
+Build times are on 32 threads at niceness 19 with other agents' compiles beside them (so B against C is noise); no
+translation unit is pathological at `-O2`, nothing needs to stay at `-O1`. `-march=native` cannot be passed: the Nix
+clang wrapper drops it, so the CPU is named (`znver3` for the 5950X). Kakariko, indicative only: 40 and 46 fps at A,
+52 at B, 49 at C, inside the spread of the desync.
+
+Why nothing moves:
+
+- The frame is the **replay thread**: 21 ms of recording per 24-26 ms frame, 21-22 ms of CPU per frame on `vk replay`
+  and 12 on `vk recorder`. That is runtime code, already at `-O2`, the same objects in every variant. This is section
+  4 of "After fixes 1+2" again.
+- The lifted code runs on about 25 guest threads. The busiest, `guest main`, uses 7.1-7.2 ms of CPU per frame, the next
+  five 5.7-6.4 ms each; none is near the 25 ms frame. Their sum, 55 ms per frame, is the same to 0.2 ms in all three
+  variants, and the CPU of a guest thread also covers the runtime's NVN, kernel and service code that it calls, which
+  the guest flags do not touch. `-O1` already does the inlining and register allocation that matters for
+  machine-lifted code (loads and stores through the guest memory base with `-fno-strict-aliasing`); `-O2` adds
+  vectorisation and more aggressive inlining, for which that code offers nothing.
+- So **PGO was skipped**: there is no guest hot spot on the frame's path for a profile to improve, and an instrumented
+  build plus profile replay would cost about 15 minutes of lab time for a number that cannot show. It becomes worth a
+  look only once the replay thread is under ~10 ms and a guest thread is what the frame waits for; the plumbing is
+  ready (`--guest-flags=-fprofile-generate --link-flags=-fprofile-generate`, then
+  `--guest-flags=-fprofile-use=<merged.profdata>`).
+- Castle slot and crash spot were not re-run per variant: no variant is adopted, and all three replayed the 19:13
+  recording through the menu, the field and into Kakariko.
+
+No `nx2navi.opt` was delivered: no variant is measurably better.
+
+Tooling that stays (commits 25bbd3e, fae6fd8, f41e756):
+
+- `build-linux.py --guest-opt 1|2|3`, `--guest-flags '...'`, `--guest-obj NAME`, `--link-flags '...'`; `just game`
+  reads `NX2NAVI_GUEST_OPT` and `NX2NAVI_GUEST_FLAGS`. The default is unchanged and its objects stay in
+  `obj/{main,sdk,subsdk0}`; any other variant has `obj/guest-<tag>/` (`guest-O2`, `guest-O2-znver3`), so switching
+  between variants only relinks.
+- **ccache** (flake package) in front of clang through a PATH entry, so ninja's command lines are as before and
+  nothing was rebuilt. Cache: `~/claude/nx2navi/.ccache` (gitignored, 40 GB limit, 0.1 GB now, compressed). Checked:
+  the `-O2` guest built into a new object folder, 342 s and 557 misses; the same again into another folder, 52 s
+  and 557 hits, 0 misses (the 52 s are the lift step, which always runs: about 45 s).
+- Rebuild times in `NX2navi-opt`: nothing changed 54 s; one lifted file touched 58 s (one compile, link). Both are
+  the lift step plus a link; the kit's two bring-up fixes rewrite their files on every lift, which ccache now absorbs.
+- The lift step runs with `OPENBLAS_NUM_THREADS=1`: 32 workers with 32 BLAS threads each hit the container's 2048
+  task limit once and the lift hung on `pthread_create failed`.
+- Kept on disk: `NX2navi-opt/build/v111/obj/guest-O1`, `guest-O2`, `guest-O2-znver3` (385-393 MB each), the three
+  binaries, the lift copy (`NX2navi-opt/build/extracted`, 1.2 GB) and the reflink copies of the game caches (24 GB
+  apparent, shared blocks: shader-cache 15 GB, pipeline-cache.bin 4.1 GB, mesa-cache 0.9 GB, shader and seed
+  programs 1.2 GB). The tree is only needed to repeat this experiment; `git -C NX2navi worktree remove NX2navi-opt`
+  drops it.

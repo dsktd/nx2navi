@@ -55,6 +55,13 @@ sh tools/fetch_refs.sh
 nixVulkanIntel build/v111/nx2navi
 ```
 
+Guest optimisation level and compiler cache (`build-linux.py`, #132): the lifted game code builds at `-O1`;
+`NX2NAVI_GUEST_OPT=2 just game` (and `NX2NAVI_GUEST_FLAGS=-march=znver3`) builds another level into its own
+`obj/guest-<tag>/`, so switching only relinks. Measured 2026-11-09: `-O2` and `-O2 -march=znver3` change neither the
+field's frame rate (39-42 fps in every variant) nor the guest threads' CPU per frame (55.0 / 55.0 / 54.9 ms), so the
+default stays `-O1` and PGO was not built (`NOTES-perf-2026-11-09.md` "Guest optimisation level"). Every compile goes
+through ccache (`.ccache/`, 40 GB limit): a second build of the same variant is all hits, 52 s against 342 s.
+
 `--cpu v2` on `build_game.py` only for a CPU without AVX2. The shader preparation opens a window: run it in the desktop
 session. The game binary finds `libSDL3.so.0` and the Vulkan loader through the shell's `LD_LIBRARY_PATH`, so start it
 from the shell (a desktop entry can call `nix develop ~/claude/nx2navi --command nixVulkanIntel <path>/nx2navi`).
