@@ -338,7 +338,7 @@ distribution). After `just update`, `build` may need a rebase onto the new upstr
   guest storage bytes per group. Logging only. Lab, Death Mountain start (input-20261110-004353, frame 3600): driver, VMA and
   kernel agree (VRAM 11.5 / 11.1 / 11.6 GiB, GTT 5.6 with 4.85 shadow): no hidden memory; render targets 5.5 GiB (3.3 released),
   ASTC as BC3 2.0 GiB from 0.9 GiB of ASTC, mirrors 1.0 GiB.
-- `0039-vk_texture-NX2NAVI_TEX_RELEASED_YIELD.patch`: #132/#141. `NX2NAVI_TEX_RELEASED_YIELD=<percent>` (**default 0**):
+- `0042-vk_texture-NX2NAVI_TEX_RELEASED_YIELD.patch`: #132/#141. `NX2NAVI_TEX_RELEASED_YIELD=<percent>` (**default 0**):
   every 8 submits, when the driver's device-local usage minus VMA's free space inside its blocks passes that share of the
   budget, the oldest released entries go, render targets included, down to 5 points below (at most 64 per query). The
   slack term matters: without it a drop never lowered the driver figure (VMA keeps part-empty blocks: allocations 10.8 ->
