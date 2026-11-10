@@ -15,6 +15,11 @@ shellname := if mesa == "stable" { "#mesa-stable" } else { "" }
 # draws, which with the pipeline library off otherwise go black while they build
 pipeskip := env("NX2NAVI_PIPE_SKIP", "any")
 nup := env("NX2NAVI_NUP", "")
+# The lifted game code's optimisation level (1, 2, 3; empty = build-linux.py's default) and extra compile flags for it,
+# e.g. NX2NAVI_GUEST_OPT=2 NX2NAVI_GUEST_FLAGS=-march=znver3 just game. Each variant keeps its own objects
+# (obj/guest-<tag>), so switching only relinks. NOTES-perf-2026-11-09.md "Guest optimisation level"
+guestopt := env("NX2NAVI_GUEST_OPT", "")
+guestflags := env("NX2NAVI_GUEST_FLAGS", "")
 # the Steam Deck's hostname or IP for `just deck`
 host := env("NX2NAVI_DECK", "")
 
@@ -88,7 +93,7 @@ xlate:
 # Lift (the kit, with its bring-up fixes), glue, compile and link build/{{ver}}/nx2navi (a CPU without AVX2: just game v2).
 # tracy=1 builds build/{{ver}}/nx2navi.tracy with the Tracy profiler client instead (README "Profiling with Tracy")
 game cpu="v3" tracy="":
-    cd "{{src}}" && {{dev}} python3 -I "{{flake}}/build-linux.py" --src "{{src}}" --extracted "{{work}}/extracted/{{ver}}" --out "build/{{ver}}" --cpu {{cpu}} {{ if tracy != "" { "--tracy --exe nx2navi.tracy" } else { "" } }}
+    cd "{{src}}" && {{dev}} python3 -I "{{flake}}/build-linux.py" --src "{{src}}" --extracted "{{work}}/extracted/{{ver}}" --out "build/{{ver}}" --cpu {{cpu}} {{ if tracy != "" { "--tracy --exe nx2navi.tracy" } else { "" } }} {{ if guestopt != "" { "--guest-opt " + guestopt } else { "" } }} {{ if guestflags != "" { "--guest-flags=" + quote(guestflags) } else { "" } }}
 
 # Prepare every shader of the game files and warm the GPU driver's cache (opens a window: run from the desktop session)
 shaders: && fmzpow

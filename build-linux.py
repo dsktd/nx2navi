@@ -8,27 +8,38 @@ the other game versions. This driver runs the kit's own code for the lift and th
 the flags build_game.py documents for Linux, through Ninja. Nothing in the checkout is modified.
 
     build-linux.py --src <checkout> [--extracted build/extracted/v111] [--out build/v111] [--cpu v3|v2] [--jobs N]
-                   [--exe nx2navi] [--tracy] [--rt-obj NAME]
+                   [--exe nx2navi] [--tracy] [--rt-obj NAME] [--guest-opt 1|2|3] [--guest-flags '...']
+                   [--guest-obj NAME] [--link-flags '...']
 
 Steps (each incremental), after make_game.py's exefs and romfs steps have filled <extracted>:
   lift      make_game.step_lift: the kit lifts <extracted>/exefs into <extracted>/build-cache/lift with its fixes
   glue      romfs_index.py -> <out>/romfs-index.bin and romfs_config.h; make_game.modules_c -> <out>/gen/modules.c
-  compile   Ninja: the lifted C at -O1, the runtime (SDL3 and platform/linux.c) at -O2, linked into <out>/nx2navi
+  compile   Ninja: the lifted C at -O1 (--guest-opt), the runtime (SDL3 and platform/linux.c) at -O2, linked into <out>/nx2navi
   copy      the translator (build/xlate/nx2navi_xlate and its .id, from tools/build_xlate.py) beside the game
 
 Environment: NX2NAVI_VMA_INCLUDE names the directory holding vk_mem_alloc.h (the flake sets it).
 --exe names the binary in <out> (its ninja file is build.<exe>.ninja); --tracy compiles the runtime with the Tracy
 client (-DTRACY_ENABLE, runtime/rt_tracy.h zones) and links libTracyClient from NX2NAVI_TRACY_PREFIX (the flake
 sets it to nixpkgs tracy); its runtime objects go to obj/runtime-tracy. README "Profiling with Tracy".
+--guest-opt is the optimisation level of the lifted game code (default 1, upstream's choice for its build time);
+--guest-flags appends to its compile line (later flags win, so '-march=znver3' replaces the --cpu level for the
+game code only; the Nix clang wrapper drops -march=native, name the CPU) and --link-flags to the link line (PGO:
+-fprofile-generate on both, then --guest-flags '-fprofile-use=<file.profdata>'). A level other than 1 or any
+--guest-flags puts the game objects under obj/guest-<tag>/, the tag derived from the level and the flags (O2,
+O2-znver3; --guest-obj names it instead), and leaves obj/{main,sdk,subsdk0} alone: every variant keeps its objects,
+switching between them compiles nothing. NOTES-perf-2026-11-09.md "Guest optimisation level".
 """
 import argparse
+import hashlib
 import os
+import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
-GEN_FLAGS = ['-O1', '-fno-strict-aliasing', '-Wno-return-type', '-Wno-unused-label', '-fvisibility=hidden']
+# the level (-O1 unless --guest-opt says otherwise) goes in front in write_ninja
+GEN_FLAGS = ['-fno-strict-aliasing', '-Wno-return-type', '-Wno-unused-label', '-fvisibility=hidden']
 # -fdeclspec: third_party/ffx_api/ffx_api.h declares its entry points __declspec(dllexport) on every OS
 RT_FLAGS = ['-O2', '-g', '-Wall', '-fno-strict-aliasing', '-fdeclspec']
 LINK_FLAGS = ['-fuse-ld=lld', '-no-pie', '-Wl,-z,noexecstack', '-Wl,-rpath,$$ORIGIN']
@@ -99,7 +110,15 @@ PER_FILE_FLAGS = {
 }
 
 
-def write_ninja(src, out, lift, gen, cpu, exe='nx2navi', tracy=None, rt_obj=None):
+def guest_tag(opt, flags):
+    """The object folder of a guest variant: O2, O2-znver3; flags that make a long name are hashed."""
+    words = [re.sub(r'[^A-Za-z0-9.]+', '-', f.lstrip('-').removeprefix('march=')).strip('-') for f in flags.split()]
+    tag = '-'.join([f'O{opt}'] + words)
+    return tag if len(tag) <= 40 else f'O{opt}-{hashlib.sha256(flags.encode()).hexdigest()[:10]}'
+
+
+def write_ninja(src, out, lift, gen, cpu, exe='nx2navi', tracy=None, rt_obj=None, guest_opt='1', guest_flags='',
+                guest_obj=None, link_flags=''):
     runtime = src / 'runtime'
     rt_extra = f' -DTRACY_ENABLE -I {npath(tracy / "include" / "tracy")}' if tracy else ''
     ld_extra = f' -L {npath(tracy / "lib")} -Wl,-rpath,{npath(tracy / "lib")}' if tracy else ''
@@ -122,9 +141,10 @@ def write_ninja(src, out, lift, gen, cpu, exe='nx2navi', tracy=None, rt_obj=None
         'ninja_required_version = 1.10',
         f'builddir = {npath(out)}',
         'cc = clang',
-        f'genflags = {" ".join(GEN_FLAGS)} {march} {inc}',
+        f'genflags = -O{guest_opt} {" ".join(GEN_FLAGS)} {march} {inc}' + (f' {guest_flags}' if guest_flags else ''),
         f'rtflags = {" ".join(RT_FLAGS)} {march} -DRT_CPU_LEVEL={3 if cpu == "v3" else 2} {rt_inc}{rt_extra}',
-        f'ldflags = {" ".join(LINK_FLAGS)} -Wl,-Map={npath(out / (exe + ".map"))}{ld_extra}',
+        f'ldflags = {" ".join(LINK_FLAGS)} -Wl,-Map={npath(out / (exe + ".map"))}{ld_extra}'
+        + (f' {link_flags}' if link_flags else ''),
         f'libs = {" ".join(LINK_LIBS)}{libs_extra}',
         '',
         'rule cc_gen', '  command = $cc $genflags -MD -MF $out.d -c $in -o $out', '  deps = gcc', '  depfile = $out.d',
@@ -135,9 +155,12 @@ def write_ninja(src, out, lift, gen, cpu, exe='nx2navi', tracy=None, rt_obj=None
         '  rspfile_content = $in_newline', '  description = LINK $out', '',
     ]
     objs = []
+    if guest_obj is None and (guest_opt != '1' or guest_flags):
+        guest_obj = 'guest-' + guest_tag(guest_opt, guest_flags)
+    guest_dir = out / 'obj' / guest_obj if guest_obj else out / 'obj'
     for mod in MODULES:
         for f in sorted((lift / mod).glob('*.c')):
-            o = out / 'obj' / mod / (f.stem + '.o')
+            o = guest_dir / mod / (f.stem + '.o')
             lines.append(f'build {npath(o)}: cc_gen {npath(f)}')
             objs.append(o)
     sources = runtime_sources(runtime) + [gen / 'modules.c'] + EXTRA_SOURCES
@@ -182,6 +205,10 @@ def main():
     ap.add_argument('--exe', default='nx2navi', help='the binary name in <out> (default nx2navi)')
     ap.add_argument('--tracy', action='store_true', help='build with the Tracy client (NX2NAVI_TRACY_PREFIX)')
     ap.add_argument('--rt-obj', help='runtime objects under obj/<name> (default runtime; runtime-tracy with --tracy): a build beside another one')
+    ap.add_argument('--guest-opt', choices=('1', '2', '3'), default='1', help='-O level of the lifted game code (default 1)')
+    ap.add_argument('--guest-flags', default='', help='appended to the lifted code\'s compile line, e.g. -march=znver3')
+    ap.add_argument('--guest-obj', help='game objects under obj/<name> (default obj/ at the stock flags, else guest-<level and flags>)')
+    ap.add_argument('--link-flags', default='', help='appended to the link line')
     a = ap.parse_args()
     src = a.src.resolve()
     extracted = (a.extracted or src / 'build' / 'extracted' / 'v111').resolve()
@@ -195,7 +222,8 @@ def main():
         tracy = Path(os.environ.get('NX2NAVI_TRACY_PREFIX') or '')
         if not (tracy / 'lib' / 'libTracyClient.so').is_file():
             sys.exit('build-linux: --tracy needs NX2NAVI_TRACY_PREFIX (the nixpkgs tracy store path; the flake sets it)')
-    ninja = write_ninja(src, out, lift, gen, a.cpu, a.exe, tracy, a.rt_obj)
+    ninja = write_ninja(src, out, lift, gen, a.cpu, a.exe, tracy, a.rt_obj, a.guest_opt, a.guest_flags, a.guest_obj,
+                        a.link_flags)
     run(['ninja', '-C', out, '-f', ninja.name, f'-j{a.jobs}'])
     step_copy(src, out)
     print(f'\nbuild-linux: {out / a.exe} ({(out / a.exe).stat().st_size / 1e6:.0f} MB)')
