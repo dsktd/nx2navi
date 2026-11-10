@@ -1,0 +1,18 @@
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitTexture.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitTexture.cs
+@@ -1116,6 +1116,15 @@
+             else
+             {
+                 type = context.TranslatorContext.GpuAccessor.QuerySamplerType(imm);
++
++                // NX2NAVI: a size query that reads component 2 of a texture known only as plain 2D (no PC type: the
++                // accessor's default) asks for its layer count, so the texture is a 2D array. Left as 2D, the SPIR-V
++                // took component 2 of a two-component size: an invalid module, which Mesa rejects (RADV then faults
++                // building the pipeline).
++                if (query == TexQuery.TexHeaderDimension && (componentMask & 4) != 0 && type == SamplerType.Texture2D)
++                {
++                    type |= SamplerType.Array;
++                }
+             }
+ 
+             TextureFlags flags = isBindless ? TextureFlags.Bindless : TextureFlags.None;

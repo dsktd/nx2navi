@@ -405,6 +405,22 @@ distribution). After `just update`, `build` may need a rebase onto the new upstr
   (**default 0**, RING=1 as before): a mark writes the n thumbnails before / after it to `logs/burst-<present>/`, see
   "Mark this moment". Built and unit-checked off the GPU (synthetic frame: stats 0.09 ms + PNG 1.19 ms per 320x180
   frame on the writer thread); first real run is Cal's next session. Binary `nx2navi.burst`.
+- `0050-xlate-txq-layer-count-2d-array.patch` (translator, applied only by `tools/build-xlate-private.py` like 0002; not
+  in the play build yet) and `tools/txq-array-fix.py` (the same fix as a post-pass on cached SPIR-V): #161, the
+  2026-11-10 pipeline faults (`fault caught at libvulkan_radeon.so+0x19be92, address 0x40`, 17 in one session, each a
+  mesh that is never drawn). The rejected module is the one that reads the layer count (TXQ .z) of a texture the
+  translator knows only as plain 2D (res.json note "无 PC 类型，按 2D"): it emits `OpCompositeExtract ... 2` on the
+  ivec2 of `OpImageQuerySizeLod`, `spirv-val` says "Vector access is out of bounds", Mesa's spirv_to_nir returns NULL
+  and RADV dereferences it. 16 of the 17 are the vertex shader (the fragment named in the log is innocent), one is
+  fragment 25d7025a. The fragment partners sample the same handle as a 2D array, so the fix types it as one: the
+  translator patch does it at the size query (the res.json type becomes 259, the runtime then binds an array view);
+  the post-pass retypes the variable and the query in place and refuses a texture used for anything else.
+  `tools/txq-array-fix.py --cache <shader-cache> <backup dir>` rewrites a whole cache (backup, temp + rename): 222 of
+  132,449 modules in the 2026-11-10 cache are affected. Post-pass files keep res.json type 3, so the view stays 2D
+  and the layer count likely reads 1 (an animation that picks a layer would stay on the first) until a retranslation
+  with 0050. State: 17 rewritten live through the reload loop (originals in `build/v111/reload-bak/`), all
+  `spirv-val` clean; none was drawn again before the report, so a successful pipeline build is **not yet seen**.
+  0050 compiles (scratch build `.lab/xlate-txq/build`) but has not translated an affected shader.
 
 ## Mark this moment
 

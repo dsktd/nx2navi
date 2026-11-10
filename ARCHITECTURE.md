@@ -237,7 +237,8 @@ All are in `~/claude/nx2navi/patches/`, as local commits on `build`. Status come
 - 0012: `NX2NAVI_UNJITTER`. Auto.
 - 0033-oneshot: `ONESHOT_WAIT_MS`, 30000. On (unchanged default).
 - 0032: skip redundant pipeline cache saves. In `nx2navi.crash`, not swapped.
-- 0033-guard: driver-fault guard around pipeline creation. In `nx2navi.crash`, not swapped.
+- 0033-guard: driver-fault guard around pipeline creation. In `nx2navi.crash`, not swapped. The fault it catches most (2026-11-10) is Mesa rejecting invalid
+  SPIR-V: a layer-count size query on a texture typed 2D by default (README, patch 0050 and `tools/txq-array-fix.py`).
 
 **Shaders**
 - 0002: xlate honours fmz. Private translator build only.
