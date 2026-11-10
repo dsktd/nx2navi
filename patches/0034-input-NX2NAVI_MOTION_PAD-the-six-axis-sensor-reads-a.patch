@@ -1,0 +1,309 @@
+From 9bd67976f6b4f4893b29a48ed99851bb2929a92c Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Mon, 9 Nov 2026 23:34:32 -0500
+Subject: [PATCH] input: NX2NAVI_MOTION_PAD, the six-axis sensor reads another
+ open gamepad's gyro and accelerometer when the one in use has none (a virtual
+ pad beside the real controller); that pad never becomes the one the game
+ reads
+
+---
+ runtime/cfg.c       |  6 +--
+ runtime/cfg_probe.c | 15 ++++++++
+ runtime/input.c     | 92 ++++++++++++++++++++++++++++++++++++---------
+ runtime/input_map.c | 29 ++++++++++++++
+ runtime/input_map.h |  8 ++++
+ 5 files changed, 129 insertions(+), 21 deletions(-)
+
+diff --git a/runtime/cfg.c b/runtime/cfg.c
+index eaef6ba..e061d12 100644
+--- a/runtime/cfg.c
++++ b/runtime/cfg.c
+@@ -46,7 +46,7 @@ static const char *const known[] = {
+     "FULLSCREEN", "FXAA", "GAME_ASPECT", "GAME_RES", "GPA", "GPA_EMPTY", "GPA_TWIN", "GPL", "GPL_DRAW_BUILD", "GPU", "GPU_INDEX", "GPU_NAME", "HDR", "HDR_GAME_NITS", "HDR_HUE",
+     "HDR_PEAK_NITS", "HDR_UI_NITS", "HIGHFPS_FIX", "INPUT", "INPUT_RECORD", "INPUT_SCRIPT", "LANG", "LIB_PREBUILD",
+     "LIB_PREBUILD_KEEP", "LIB_PREBUILD_THREADS", "LOCALE", "LOD_GUARD", "LSTICK_DEADZONE", "MARK_CHORD", "MARK_HOLD_MS", "MARK_RING", "MEMORY", "MENU_LANG", "MENU_SOUND_VOLUME", "MENU_TEST",
+-    "MENU_CURSOR", "MENU_CURSOR_LOG", "MENU_TEST_DIR", "MENU_TEST_SET", "MINIMAL_LAYOUT", "MIRROR_GAP", "MODS_DIR", "MODS_DISABLED", "MODS_ORDER", "MODS_REBUILD", "MOTION", "MOUSE_MODE", "MOUSE_DIRECT_PATCH", "MOUSE_SENS", "MOVIE_HOST", "MOVIE_PACE",
++    "MENU_CURSOR", "MENU_CURSOR_LOG", "MENU_TEST_DIR", "MENU_TEST_SET", "MINIMAL_LAYOUT", "MIRROR_GAP", "MODS_DIR", "MODS_DISABLED", "MODS_ORDER", "MODS_REBUILD", "MOTION", "MOTION_PAD", "MOUSE_MODE", "MOUSE_DIRECT_PATCH", "MOUSE_SENS", "MOVIE_HOST", "MOVIE_PACE",
+     "MVOBJ_ALL", "MVOBJ_BANKS", "MVOBJ_EQUAL", "MVOBJ_EXACT", "MVOBJ_EXEC", "MVOBJ_NOC4", "MVOBJ_ONLY", "MVOBJ_TIMES", "MVPREV_CHECK", "MVPREV_GROW", "MVPREV_SKIP", "MVPREV_TRUST", "MV_CHECK",
+     "MV_SURVEY",
+     "ONESHOT_WAIT_MS", "ONE_PER_CORE", "OPERATION_MODE", "OUTPUT_RES", "PAD_LAYOUT", "PACE_HZ", "PASS_CRUMBS", "PATCH_OUTPUT", "PATCH_RES_FIXED", "PATCH_SCENE", "PATCH_WIDE_ASPECT", "PATCH_WIDE_HUD", "PATCH_WIDE_MOVIE", "PATCH_WIDE_OUT", "PATCH_WIDE_SCENE", "PCSS", "PCSS_K", "PERF_OVERLAY", "PERF_SLOW_MS", "PIPELINE_CACHE", "PIPE_MEMO", "PIPE_PREBUILD", "PIPE_SKIP", "PIPE_SYNC", "PIPE_WAIT",
+@@ -83,7 +83,7 @@ static const struct { const char *key, *section; } sections[] = {
+     {"MODS_DIR", "mods"}, {"MODS_ORDER", "mods"}, {"MODS_DISABLED", "mods"}, {"MODS_REBUILD", "mods"},
+     {"MENU_LANG", "language"}, {"LANG", "language"}, {"OPERATION_MODE", "language"},
+     {"VOLUME", "audio"}, {"AUDIO_CHANNELS", "audio"}, {"MENU_SOUND_VOLUME", "audio"},
+-    {"MOTION", "input"}, {"RUMBLE_STRENGTH", "input"}, {"RUMBLE_CURVE", "input"}, {"RUMBLE_TRIGGERS", "input"},
++    {"MOTION", "input"}, {"MOTION_PAD", "input"}, {"RUMBLE_STRENGTH", "input"}, {"RUMBLE_CURVE", "input"}, {"RUMBLE_TRIGGERS", "input"},
+     {"PAD_LAYOUT", "input"}, {"PROMPTS", "input"}, {"STICK_DEADZONE", "input"}, {"LSTICK_DEADZONE", "input"}, {"RSTICK_DEADZONE", "input"},
+     {"STICK_SENS", "input"},
+     {"MENU_CURSOR", "input"}, {"MOUSE_MODE", "input"}, {"MOUSE_SENS", "input"}, {"WALK_KEY", "input"}, {"WALK_SCALE", "input"}, {"INPUT_RECORD", "input"},
+@@ -149,7 +149,7 @@ static const CfgMeta metas[] = {
+     {"ASSUME_FOCUS", "1", "0|1", LIVE},   // read on every focus change (ov_system.c)
+     // Sound, Controls, Menu
+     {"VOLUME", "100", "0..100", LIVE}, {"MENU_SOUND_VOLUME", "80", "0..100", LIVE}, {"AUDIO_CHANNELS", "stereo", "auto|stereo|5.1", RESTART},
+-    {"MOTION", "1", "0|1", LIVE}, {"RUMBLE_STRENGTH", "130", "0..300", LIVE}, {"RUMBLE_CURVE", "0.6", "0.2..1.5", LIVE},
++    {"MOTION", "1", "0|1", LIVE}, {"MOTION_PAD", "auto", NULL, RESTART}, {"RUMBLE_STRENGTH", "130", "0..300", LIVE}, {"RUMBLE_CURVE", "0.6", "0.2..1.5", LIVE},
+     {"RUMBLE_TRIGGERS", "0", "0|1", LIVE}, {"PAD_LAYOUT", "nintendo", "auto|nintendo|xbox", LIVE},
+     {"PROMPTS", "nintendo", "nintendo|xbox|pc", RESTART},
+     {"STICK_DEADZONE", "8", "0..50", LIVE}, {"STICK_SENS", "1", "0.1..3", RESTART},
+diff --git a/runtime/cfg_probe.c b/runtime/cfg_probe.c
+index 15ace01..666f908 100644
+--- a/runtime/cfg_probe.c
++++ b/runtime/cfg_probe.c
+@@ -282,6 +282,21 @@ int probe_cfg(void) {
+           "pad stick: a square gate's corner stays on the unit circle");
+     input_pad_stick(0, 32767 / 2 + 1, 0.2f, st);
+     CHECK(abs(st[1] - 32767 * 3 / 8) <= 3, "pad stick: half deflection past a 20% zone is (0.5 - 0.2) / 0.8 of full");
++    {
++        const char *nm[3] = {"Xbox 360 Controller", "Steam Controller", "DualSense Wireless Controller"};
++        const unsigned char none[3] = {0, 0, 0}, raw[3] = {0, 1, 0}, both[3] = {0, 1, 1}, own[3] = {1, 1, 0};
++        CHECK(input_motion_pick(3, nm, own, 0, "") == 0, "motion pad: the primary with sensors feeds them");
++        CHECK(input_motion_pick(3, nm, raw, 0, "auto") == 1, "motion pad: without them the first other one with sensors");
++        CHECK(input_motion_pick(3, nm, raw, 0, "off") == -1 && input_motion_pick(3, nm, own, 0, "off") == 0,
++              "motion pad: off keeps only the primary's own sensors");
++        CHECK(input_motion_pick(3, nm, both, 0, "Dual") == 2 && input_motion_pick(3, nm, both, 0, "Wii") == -1,
++              "motion pad: a name forces that pad, none without a match");
++        CHECK(input_motion_pick(3, nm, none, 0, "") == -1 && input_motion_pick(0, nm, none, -1, "") == -1,
++              "motion pad: none without sensors");
++        CHECK(input_motion_only(3, nm, raw, 1, "") && !input_motion_only(3, nm, raw, 0, "") &&
++              !input_motion_only(1, nm + 1, raw + 1, 0, "") && !input_motion_only(3, nm, raw, 1, "off"),
++              "motion pad: the raw Steam Controller beside another pad only lends its sensors, alone it is read");
++    }
+     plat_setenv("NX2NAVI_STICK_DEADZONE", "12");
+     plat_setenv("NX2NAVI_LSTICK_DEADZONE", NULL);
+     plat_setenv("NX2NAVI_RSTICK_DEADZONE", NULL);
+diff --git a/runtime/input.c b/runtime/input.c
+index ab7747b..3fe0b6f 100644
+--- a/runtime/input.c
++++ b/runtime/input.c
+@@ -4,7 +4,8 @@
+ // system's back end (input_wsys.h: input_win.c with Win32, input_sdl.c with SDL), which also owns the cursor capture.
+ // Keys and their map: docs/controls.md.
+ // The gamepad also rumbles (input_rumble) and, when it has a gyro and an accelerometer, feeds the six-axis sensor from a
+-// thread of its own (input_motion_start). Every SDL call on the gamepad is made under `lock`.
++// thread of its own (input_motion_start); without them another open gamepad that has both can lend its sensors (a
++// virtual pad beside the real controller, input_motion_pick). Every SDL call on the gamepad is made under `lock`.
+ #include <math.h>
+ #include <stdint.h>
+ #include <stdlib.h>
+@@ -41,6 +42,7 @@ static int pad_east_a;               // ... and labels its east face button A (N
+ static int pad_layout = -1;          // PAD_LAYOUT_* in effect for the open gamepad, -1 to pick again; live (cfg_version)
+ static unsigned pad_layout_seen;
+ static volatile int32_t pad_layout_shown = -1;   // pad_layout for the menu (any thread), -1 without a gamepad
++static SDL_Gamepad *motion_pad;      // the gamepad that feeds the six-axis sensor: pad, another one, NULL none
+ static SDL_JoystickID sensor_pad;    // the gamepad whose sensors the motion thread set up, 0 none
+ static int sensor_ok;                // ... and it has both sensors, enabled
+ static int motion_thread;            // 0 not started, 1 running, -1 off (NX2NAVI_MOTION=0, no SDL)
+@@ -396,7 +398,7 @@ static void stick(SDL_GamepadAxis ax, SDL_GamepadAxis ay, float dead, int32_t ou
+     input_pad_stick(SDL_GetGamepadAxis(pad, ax), -(int32_t)SDL_GetGamepadAxis(pad, ay), dead, out);
+ }
+ 
+-// Every connected gamepad is kept open; `pad` is the one the game reads (and the one that rumbles and feeds motion):
++// Every connected gamepad is kept open; `pad` is the one the game reads (and the one that rumbles; motion_pad feeds motion):
+ // the first one found, then whichever one the player presses (pad_follow). Taking only the first gamepad SDL lists
+ // left the game deaf when that one was a device nobody holds: a virtual pad of Steam Input or DS4Windows, a wheel, a
+ // receiver's idle second slot, listed before the controller in the player's hands.
+@@ -405,6 +407,53 @@ static SDL_Gamepad *pads[MAX_PADS];
+ static int npads;
+ static int pad_pressed_logged;       // the primary's first press was logged (once per primary)
+ 
++static int pad_sensors(SDL_Gamepad *p) {
++    return SDL_GamepadHasSensor(p, SDL_SENSOR_GYRO) && SDL_GamepadHasSensor(p, SDL_SENSOR_ACCEL);
++}
++
++// Under lock: the open gamepads' names and sensors for input_motion_pick / input_motion_only; the primary's index.
++static int pad_table(const char *names[MAX_PADS], unsigned char sensors[MAX_PADS]) {
++    int primary = -1;
++    for (int i = 0; i < npads; i++) {
++        names[i] = SDL_GetGamepadName(pads[i]);
++        sensors[i] = (unsigned char)pad_sensors(pads[i]);
++        if (pads[i] == pad) primary = i;
++    }
++    return primary;
++}
++
++// NX2NAVI_MOTION_PAD (auto, off or part of a gamepad's name).
++static const char *motion_mode(void) {
++    const char *m = cfg_get("NX2NAVI_MOTION_PAD");
++    return m ? m : "";
++}
++
++// Under lock: 1 when p only lends its sensors (input_motion_only): it is never made the gamepad the game reads.
++static int pad_motion_only(SDL_Gamepad *p) {
++    const char *names[MAX_PADS];
++    unsigned char sensors[MAX_PADS];
++    pad_table(names, sensors);
++    for (int i = 0; i < npads; i++)
++        if (pads[i] == p) return input_motion_only(npads, names, sensors, i, motion_mode());
++    return 0;
++}
++
++// Under lock: picks the gamepad that feeds the six-axis sensor again (gamepad added, removed or followed); logs a
++// change. The sensors of the new one are enabled by the motion thread (sensors_ready).
++static void motion_select(void) {
++    const char *names[MAX_PADS];
++    unsigned char sensors[MAX_PADS];
++    int primary = pad_table(names, sensors);
++    int m = input_motion_pick(npads, names, sensors, primary, motion_mode());
++    SDL_Gamepad *p = m >= 0 ? pads[m] : NULL;
++    if (p == motion_pad) return;
++    motion_pad = p, sensor_pad = 0, sensor_ok = 0;
++    if (p && p != pad)
++        rt_log("input: motion from \"%s\" (buttons from \"%s\")", names[m], pad ? SDL_GetGamepadName(pad) : "none");
++    else if (!p && npads && *motion_mode() && strcmp(motion_mode(), "auto"))
++        rt_log("input: no gamepad with gyro and accelerometer for NX2NAVI_MOTION_PAD=%s", motion_mode());
++}
++
+ // Under lock: makes p the gamepad the game reads, with its labels, rumble and layout; logs it.
+ static void pad_primary(SDL_Gamepad *p, const char *why) {
+     pad = p;
+@@ -424,10 +473,11 @@ static void pad_primary(SDL_Gamepad *p, const char *why) {
+                                                                                       : PAD_LABEL_NONE);
+     }
+     pad_layout = -1;
+-    int motion = SDL_GamepadHasSensor(pad, SDL_SENSOR_GYRO) && SDL_GamepadHasSensor(pad, SDL_SENSOR_ACCEL);
++    int motion = pad_sensors(pad);
+     rt_log("input: gamepad \"%s\" %s (%s, %s, east button %s)", SDL_GetGamepadName(pad), why,
+            pad_rumble ? "rumble" : "no rumble", motion ? "gyro and accelerometer" : "no motion sensors",
+            pad_east_a ? "labelled A" : "not labelled A");
++    motion_select();
+ }
+ 
+ // Steam Input's virtual pad ("Steam Virtual Gamepad", "Steam Deck Controller") carries the player's Steam layout; the
+@@ -457,6 +507,7 @@ static void scan_pads(void) {
+             plat_xchg32(&pad_layout_shown, -1);
+             for (int k = 0; k < 4; k++) plat_xchg32(&pad_labels[k], PAD_LABEL_NONE);
+         }
++        if (pads[i] == motion_pad) motion_pad = NULL, sensor_pad = 0, sensor_ok = 0;
+         SDL_CloseGamepad(pads[i]);
+         pads[i] = pads[--npads];
+     }
+@@ -474,7 +525,13 @@ static void scan_pads(void) {
+     SDL_free(ids);
+     int v = pad_steam_input();
+     if (v >= 0 && pads[v] != pad) pad_primary(pads[v], "in use (Steam Input, preferred)");
+-    else if (!pad && npads) pad_primary(pads[0], "in use");
++    else if ((!pad || pad_motion_only(pad)) && npads) {
++        // A gamepad that only lends its sensors (the raw Steam Controller beside a virtual pad) is never the primary.
++        int k = 0;
++        while (k < npads - 1 && pad_motion_only(pads[k])) k++;
++        if (pads[k] != pad) pad_primary(pads[k], "in use");
++    }
++    motion_select();
+ }
+ 
+ // Under lock: 1 when p has a button down, a trigger pulled or a stick past half way (a drifting stick does not count).
+@@ -491,7 +548,8 @@ static void pad_follow(void) {
+     if (npads < 2 || (pad && pad_active(pad))) return;
+     int steam = pad_steam_input() >= 0;
+     for (int i = 0; i < npads; i++)
+-        if (pads[i] != pad && !(steam && pad_steam_raw(pads[i])) && pad_active(pads[i])) {
++        if (pads[i] != pad && !(steam && pad_steam_raw(pads[i])) && pads[i] != motion_pad && !pad_motion_only(pads[i]) &&
++            pad_active(pads[i])) {
+             pad_primary(pads[i], "in use (pressed)");
+             return;
+         }
+@@ -1012,19 +1070,18 @@ void input_motion_axes(const float a[3], const float g[3], double acc[3], double
+ 
+ // Under lock: (re)enable the sensors when the open gamepad changed; 1 if it has both and they are on.
+ static int sensors_ready(void) {
+-    SDL_JoystickID id = SDL_GetGamepadID(pad);
++    SDL_JoystickID id = SDL_GetGamepadID(motion_pad);
+     if (id == sensor_pad) return sensor_ok;
+     sensor_pad = id;
+     // Nothing drains the SDL event queue: no event per sample (the data still updates, SDL_SendJoystickSensor)
+     SDL_SetEventEnabled(SDL_EVENT_GAMEPAD_SENSOR_UPDATE, false);
+-    sensor_ok =SDL_GamepadHasSensor(pad, SDL_SENSOR_GYRO) && SDL_GamepadHasSensor(pad, SDL_SENSOR_ACCEL) &&
+-                SDL_SetGamepadSensorEnabled(pad, SDL_SENSOR_GYRO, true) &&
+-                SDL_SetGamepadSensorEnabled(pad, SDL_SENSOR_ACCEL, true);
+-    if (sensor_ok) rt_log("input: motion sensors on (gyro %.0f Hz, accelerometer %.0f Hz)",
+-                          (double)SDL_GetGamepadSensorDataRate(pad, SDL_SENSOR_GYRO),
+-                          (double)SDL_GetGamepadSensorDataRate(pad, SDL_SENSOR_ACCEL));
++    sensor_ok = pad_sensors(motion_pad) && SDL_SetGamepadSensorEnabled(motion_pad, SDL_SENSOR_GYRO, true) &&
++                SDL_SetGamepadSensorEnabled(motion_pad, SDL_SENSOR_ACCEL, true);
++    if (sensor_ok) rt_log("input: motion sensors of \"%s\" on (gyro %.0f Hz, accelerometer %.0f Hz)",
++                          SDL_GetGamepadName(motion_pad), (double)SDL_GetGamepadSensorDataRate(motion_pad, SDL_SENSOR_GYRO),
++                          (double)SDL_GetGamepadSensorDataRate(motion_pad, SDL_SENSOR_ACCEL));
+     else rt_log("input: \"%s\" has no gyro and accelerometer: the six-axis sensor reads a controller at rest",
+-                SDL_GetGamepadName(pad));
++                SDL_GetGamepadName(motion_pad));
+     return sensor_ok;
+ }
+ 
+@@ -1049,11 +1106,10 @@ static void motion_main(void *arg) {
+         float a[3], g[3];
+         int have = 0;
+         plat_mutex_lock(&lock);
+-        if (pad && SDL_GamepadConnected(pad)) {
+-            SDL_UpdateGamepads();
+-            have = sensors_ready() && SDL_GetGamepadSensorData(pad, SDL_SENSOR_ACCEL, a, 3) &&
+-                   SDL_GetGamepadSensorData(pad, SDL_SENSOR_GYRO, g, 3);
+-        }
++        if (pad || motion_pad) SDL_UpdateGamepads();
++        if (motion_pad && SDL_GamepadConnected(motion_pad))
++            have = sensors_ready() && SDL_GetGamepadSensorData(motion_pad, SDL_SENSOR_ACCEL, a, 3) &&
++                   SDL_GetGamepadSensorData(motion_pad, SDL_SENSOR_GYRO, g, 3);
+         plat_mutex_unlock(&lock);
+         if (!have || !input_motion_enabled()) continue;
+         double acc[3], gyro[3];
+diff --git a/runtime/input_map.c b/runtime/input_map.c
+index db7f885..a009e76 100644
+--- a/runtime/input_map.c
++++ b/runtime/input_map.c
+@@ -351,6 +351,35 @@ void input_mouse_stick(int32_t dx, int32_t dy, double dt_s, float sens, int32_t
+     out[1] = (int32_t)lrint(y);
+ }
+ 
++static int motion_auto(const char *mode) { return !mode || !*mode || !strcmp(mode, "auto"); }
++
++// A candidate for lending its sensors under mode (not "off"): the raw Steam Controller beside a virtual pad, or a match.
++static int motion_lender(const char *name, const char *mode) {
++    if (!name) return 0;
++    return motion_auto(mode) ? !strncmp(name, "Steam Controller", 16) : strstr(name, mode) != NULL;
++}
++
++int input_motion_pick(int n, const char *const names[], const unsigned char sensors[], int primary, const char *mode) {
++    int off = mode && !strcmp(mode, "off");
++    if (off || motion_auto(mode)) {
++        if (primary >= 0 && primary < n && sensors[primary]) return primary;
++        if (off) return -1;
++        for (int i = 0; i < n; i++)
++            if (i != primary && sensors[i]) return i;
++        return -1;
++    }
++    for (int i = 0; i < n; i++)
++        if (sensors[i] && names[i] && strstr(names[i], mode)) return i;
++    return -1;
++}
++
++int input_motion_only(int n, const char *const names[], const unsigned char sensors[], int i, const char *mode) {
++    if ((mode && !strcmp(mode, "off")) || i < 0 || i >= n || !sensors[i] || !motion_lender(names[i], mode)) return 0;
++    for (int k = 0; k < n; k++)
++        if (k != i && !(sensors[k] && motion_lender(names[k], mode))) return 1;
++    return 0;
++}
++
+ void input_pad_stick(int32_t x, int32_t y, float dead, int32_t out[2]) {
+     double fx = x / (double)STICK_MAX, fy = y / (double)STICK_MAX, m = sqrt(fx * fx + fy * fy);
+     out[0] = out[1] = 0;
+diff --git a/runtime/input_map.h b/runtime/input_map.h
+index 2b297e4..27baba4 100644
+--- a/runtime/input_map.h
++++ b/runtime/input_map.h
+@@ -125,6 +125,14 @@ float input_pad_deadzone(int stick);
+ // How far a stick (x, y in -32768..32767) is from the centre, in percent of full deflection (100 at an axis's end; a
+ // square gate's corner reads more).
+ double input_stick_percent(int32_t x, int32_t y);
++// The gamepad that feeds the six-axis sensor, of n open ones (names, sensors[i] 1 with a gyro and an accelerometer;
++// primary is the one the game reads, -1 none). mode is NX2NAVI_MOTION_PAD: "" or "auto" the primary when it has both
++// sensors, else the first other one that has them; "off" the primary or none; any other text the first one with both
++// sensors whose name contains it (case-sensitive), none without a match. The index, -1 none.
++int input_motion_pick(int n, const char *const names[], const unsigned char sensors[], int primary, const char *mode);
++// 1 when gamepad i only lends its sensors and is never made the one the game reads: it has both sensors, is the raw
++// "Steam Controller" (auto) or matches mode, and another open gamepad is neither. mode "off": never.
++int input_motion_only(int n, const char *const names[], const unsigned char sensors[], int i, const char *mode);
+ 
+ // ---- the remapping rows' edits, on a copy of input_map. Pure.
+ // action's keys (table order) / its gamepad buttons in layout, at most max; returns how many.
+-- 
+2.56.0
+

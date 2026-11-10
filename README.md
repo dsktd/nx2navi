@@ -334,6 +334,17 @@ yakin quick-menu item (add it to the `[menu] items` of your yakin config yoursel
 { label = "Mark glitch", icon = "screenshot", target = "desktop:spawn:touch /home/purplg/claude/nx2navi/NX2navi/build/v111/mark.req" },
 ```
 
+## Motion from a second gamepad (patch 0034)
+
+`NX2NAVI_MOTION_PAD` (default `auto`, restart): when the gamepad in use has no gyro and accelerometer, the first other
+open gamepad with both feeds the six-axis sensor, e.g. yakin's virtual "Xbox 360 Controller" (uinput, no sensors)
+beside the kernel hid-steam "Steam Controller". Log: `input: motion from "Steam Controller" (buttons from "Xbox 360
+Controller")`. That pad's buttons, sticks and rumble stay ignored and it is never made the pad in use (auto: the raw
+"Steam Controller" beside another pad). `off` keeps only the in-use pad's sensors; any other text forces the first pad
+with sensors whose name contains it. `NX2NAVI_MOTION=0` still turns motion off. SDL passes evdev sensor axes through
+unchanged, so `input_motion_axes` holds if hid-steam reports in SDL's convention like hid-playstation; not checked on
+the hardware. Probe: `--probe-cfg` (motion pad checks). Castle-recording replay (frame 1500) unchanged.
+
 ## Recording bundles
 
 `just play` copies the profile's `save`, `save-tx` and `save-backup` into `build/v111/logs/profile-<ts>/` before the
