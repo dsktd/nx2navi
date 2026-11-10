@@ -66,6 +66,7 @@ class Session:
         self.last_data = time.time()
         self.samples = []
         self.byfmt = None
+        self.faults = {}
         os.makedirs(OUT, exist_ok=True)
         self.csv = csv.writer(open(os.path.join(OUT, self.name + ".csv"), "a", newline=""))  # noqa: SIM115
 
@@ -146,7 +147,13 @@ class Session:
             emit("mark", f"mark {m.group(1)} at present {m.group(2)}; {self.summary()}")
             return
         if FAULT.search(text):
-            emit("fault", text.strip()[:220])
+            # One report per kind of fault (digits masked), then a count with the next status line.
+            kind = re.sub(r"stage 0 [0-9a-f]+", "stage 0 *", text.strip())[:220]
+            self.faults[kind] = self.faults.get(kind, 0) + 1
+            if self.faults[kind] == 1:
+                emit("fault", text.strip()[:220])
+            elif self.faults[kind] in (10, 100, 1000):
+                emit("fault", f"{self.faults[kind]} times now: {kind}")
 
     def poll(self):
         got = False
