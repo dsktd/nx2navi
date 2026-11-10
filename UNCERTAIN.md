@@ -4,7 +4,7 @@ Things that are on or available without proof they help. One line each; remove a
 
 | Setting | Default | Status | Turn off / on |
 |---|---|---|---|
-| CPU pinning to one cache domain | on (`just play`) | Cal: feels faster and steadier (2026-11-09); lab A/B pending | `NX2NAVI_CPUS=off` |
+| CPU pinning to one cache domain | on (`just play`) | lab 2026-11-10: same mean (42.6/43.0 unpinned, 42.2/42.7 pinned), steadier tail (p99 29.0/28.7 to 27.8/27.3 ms); Cal: feels faster and steadier. Keep. | `NX2NAVI_CPUS=off` |
 | `NX2NAVI_GPU_WAIT` | 0 | off fixed the horizon bands by observation, not re-proven | `=1` |
 | `NX2NAVI_EVENT_WAITS` | off | fixes AO flicker, causes fullscreen flicker and a soft picture | `=1` |
 | `NX2NAVI_ONESHOT_WAIT_MS` | 30000 | a low cap would cut combat hitches; picture untested | `=<ms>` |
