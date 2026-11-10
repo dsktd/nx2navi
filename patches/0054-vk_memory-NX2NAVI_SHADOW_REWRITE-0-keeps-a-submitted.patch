@@ -1,0 +1,45 @@
+From 89284cf155ad2a9c14969ce2edb3387db293acb1 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 17:32:11 -0500
+Subject: [PATCH] vk_memory: NX2NAVI_SHADOW_REWRITE=0 keeps a submitted GPU
+ write's shadow bytes even when the next part writes the range again (debug,
+ default 1 = as before) (#164)
+
+---
+ runtime/vk_memory.c | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/runtime/vk_memory.c b/runtime/vk_memory.c
+index 47cf83c..71ea187 100644
+--- a/runtime/vk_memory.c
++++ b/runtime/vk_memory.c
+@@ -993,8 +993,15 @@ static void shadow_forget(PoolRec *r) {
+     plat_mutex_unlock(&shadow_lock);
+ }
+ 
++// NX2NAVI_SHADOW_REWRITE=0 (debug, #164): a submitted GPU write not copied back yet keeps its bytes in the shadow even
++// when the next part writes the range again. With the default 1, a CPU write anywhere on such a page (the particle
++// emitters keep CPU parameters next to GPU-integrated records) copies the guest's not yet written back bytes over
++// the GPU's results.
++static int shadow_rewrite = 1;
++
+ // shadow_lock held: whether the part about to be submitted writes [lo, hi) again.
+ static int spend_again(uint64_t lo, uint64_t hi) {
++    if (!shadow_rewrite) return 0;
+     for (int i = 0; i < nspend; i++)
+         if (!spend[i].sub && spend[i].lo <= lo && spend[i].hi >= hi) return 1;
+     return 0;
+@@ -1628,6 +1635,10 @@ static void mirror_mode(int discrete) {
+         shadow_nt = 1;
+         rt_log("mem: shadow copies of 4 KiB and more use non-temporal stores (NX2NAVI_SHADOW_NT=1)");
+     }
++    if (!rt_knob("SHADOW_REWRITE", "1")) {
++        shadow_rewrite = 0;
++        rt_log("mem: submitted GPU writes keep their shadow bytes even when written again (NX2NAVI_SHADOW_REWRITE=0)");
++    }
+     const char *sh = cfg_get("NX2NAVI_SHADOW");
+ #ifdef _WIN32
+     shadow_on = sh && *sh ? strcmp(sh, "0") != 0 : plat_is_wine();
+-- 
+2.56.0
+
