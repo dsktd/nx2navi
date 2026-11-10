@@ -1,0 +1,91 @@
+From 03909db2a0233e3448c69a84a7d91b49a5663ddb Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Mon, 9 Nov 2026 22:58:40 -0500
+Subject: [PATCH] platform: plat_fault_guard, so a driver fault inside
+ vkCreate*Pipelines fails that one pipeline instead of ending the game (#141)
+
+RADV (Mesa 26.2.6 radv_shader_spirv_to_nir) writes through the NULL that spirv_to_nir returns for a module it
+rejects (libvulkan_radeon.so+0x19be92, writing 0x40): the 2026-11-09 22:31 play session ended there. vk_pipeline's
+create_pipeline (its call sites went into the previous commit by accident, together with a test line this commit
+removes) arms the guard: on Linux the fault handler jumps back for a fault of the guarded thread outside this
+executable, the pipeline is not built, its draws are skipped, and the log names its shaders. Proven with every 7th
+module truncated to its header: same fault offset, 4 caught, the replay to frame 1500 completes.
+---
+ runtime/platform/linux.c    | 14 ++++++++++++++
+ runtime/platform/platform.h | 15 +++++++++++++++
+ runtime/vk_pipeline.c       |  1 -
+ 3 files changed, 29 insertions(+), 1 deletion(-)
+
+diff --git a/runtime/platform/linux.c b/runtime/platform/linux.c
+index 45487f3..84aeb78 100644
+--- a/runtime/platform/linux.c
++++ b/runtime/platform/linux.c
+@@ -924,6 +924,8 @@ uint64_t plat_mem_written(uint64_t addr, uint64_t n, uint64_t *pages, uint64_t m
+ static int (*fault_hook)(uint64_t addr);
+ static void (*crash_fn)(const PlatCrash *c);
+ static __thread const char *crash_ctx;   // plat_crash_context: what this thread is doing, for the crash report
++static __thread PlatFaultJmp *fault_guard;   // plat_fault_guard: where a fault in another module jumps back to
++void plat_fault_guard_set(PlatFaultJmp *j) { fault_guard = j; }
+ 
+ static void fault_handler(int sig, siginfo_t *si, void *uc) {
+     ucontext_t *u = uc;
+@@ -931,6 +933,18 @@ static void fault_handler(int sig, siginfo_t *si, void *uc) {
+     if (sig == SIGSEGV && fault_hook && (err & 2) && fault_hook((uint64_t)(uintptr_t)si->si_addr)) return;
+     uintptr_t rip = (uintptr_t)u->uc_mcontext.gregs[REG_RIP];
+     Dl_info at, self;
++    if (fault_guard && (sig == SIGSEGV || sig == SIGBUS) && dladdr((void *)rip, &at) && at.dli_fname &&
++        dladdr((void *)plat_crash_hook, &self) && at.dli_fbase != self.dli_fbase) {
++        PlatFaultJmp *j = fault_guard;
++        fault_guard = NULL;
++        const char *m = strrchr(at.dli_fname, '/');
++        char b[320];
++        int n = snprintf(b, sizeof b, "[host] fault caught at %s+%#llx, address %#llx: the thread was %s\n",
++                         m ? m + 1 : at.dli_fname, (unsigned long long)(rip - (uintptr_t)at.dli_fbase),
++                         (unsigned long long)(uintptr_t)si->si_addr, crash_ctx ? crash_ctx : "in a guarded call");
++        if (n > 0 && write(2, b, (size_t)(n < (int)sizeof b ? n : (int)sizeof b - 1)) < 0) {}
++        siglongjmp(j->b, 1);   // restores the signal mask; leaves the signal stack
++    }
+     if (crash_fn) {
+         int found = dladdr((void *)rip, &at) && at.dli_fname;
+         PlatCrash c = {sig == SIGSEGV ? "access violation" : sig == SIGBUS ? "bus error"
+diff --git a/runtime/platform/platform.h b/runtime/platform/platform.h
+index 6cd0b13..a50a807 100644
+--- a/runtime/platform/platform.h
++++ b/runtime/platform/platform.h
+@@ -247,6 +247,21 @@ void plat_crash_hook(void (*fn)(const PlatCrash *c));
+ // What this thread is doing, named by the crash notes (a stack overflow leaves no room for the full report); NULL
+ // clears it. s must stay valid until it is cleared.
+ void plat_crash_context(const char *s);
++// A fault guard around a call into another module (the GPU driver): plat_fault_guard(j) returns 0 and arms the guard;
++// a fault of this thread at an instruction outside this executable then comes back to it a second time with 1 (the
++// guard is disarmed, the fault is noted on stderr with the crash context) instead of ending the process. What the
++// faulting call held is leaked. plat_fault_unguard() disarms it after the call; the function that armed it must still
++// be running. Linux only: on Windows the guard never fires.
++#ifdef _WIN32
++typedef int PlatFaultJmp;
++#define plat_fault_guard(j) ((void)(j), 0)
++#define plat_fault_unguard() ((void)0)
++#else
++typedef struct { sigjmp_buf b; } PlatFaultJmp;
++void plat_fault_guard_set(PlatFaultJmp *j);
++#define plat_fault_guard(j) (plat_fault_guard_set(&(j)), sigsetjmp((j).b, 1))
++#define plat_fault_unguard() plat_fault_guard_set(NULL)
++#endif
+ int plat_mem_read(uint64_t addr, void *out, size_t n);    // copies n bytes, 0 instead of faulting on unmapped memory
+ int plat_mem_readable(uint64_t addr, uint64_t n);         // every page of [addr, addr + n) can be read; no fault
+ void *plat_aligned_alloc(size_t size, size_t align);      // free with plat_aligned_free; NULL on failure
+diff --git a/runtime/vk_pipeline.c b/runtime/vk_pipeline.c
+index b757ccb..ef6dcb9 100644
+--- a/runtime/vk_pipeline.c
++++ b/runtime/vk_pipeline.c
+@@ -969,7 +969,6 @@ static VkShaderModule make_module(const uint32_t *w, uint64_t words) {
+         w = fixed = pooled;
+     }
+     VkShaderModuleCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = (size_t)words * 4, .pCode = w};
+-    { /*TESTHACK*/ static volatile int32_t nmod; const char *e = getenv("TESTHACK_BAD_MODULE"); if (e && plat_inc32(&nmod) % atoi(e) == 0) ci.codeSize = 20; }
+     VkShaderModule m = VK_NULL_HANDLE;
+     VkResult r = vkCreateShaderModule(P.device, &ci, NULL, &m);
+     free(fixed);
+-- 
+2.56.0
+
