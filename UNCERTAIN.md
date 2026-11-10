@@ -18,5 +18,6 @@ Things that are on or available without proof they help. One line each; remove a
 | `NX2NAVI_OQ_FORCE` | 0 | Cal plays with `=1` since 2026-11-10: Goron City holes gone, but it was his second visit (first-visit effect not ruled out) | `=1` |
 | CPU pinning lives in `just play` only | - | the Flatpak launcher does not pin; move into the runtime if pinning proves itself | - |
 | `NX2NAVI_MOTION_PAD` | auto | no effect while yakin holds the controller | `=off` |
-| `NX2NAVI_SHADOW_NT` | off | lab field window: shadow sync 2.9 -> 2.0 ms/frame, 42.4 -> 43.6 fps, p99 -1 ms (two runs); castle and crash shots clean; in `nx2navi.replay`; needs a play session | `=1` |
+| `NX2NAVI_SHADOW_NT` | off | lab field window: shadow sync 2.9 -> 2.0 ms/frame, 42.4 -> 43.6 fps, p99 -1 ms (two runs); with Cal's set (YIELD, ALIAS, AO_ORDER) in `nx2navi.next`: 42.8/42.0 -> 43.4 fps, replay 19.9/20.3 -> 19.4 ms, castle and crash shots match; two NT runs and one run without NT had host-side slow patches (void); needs a play session | `=1` |
 | `NX2NAVI_SHADOW_GAP_KIB` | 64 | `=2048`: write-watch queries 232 -> 160 a frame, sync -0.05 ms only; harmless, little gain | `=2048` |
+| `NX2NAVI_POOL_KH` | 0 | lab field: replay -0.4 ms, +0.8 fps (3 on, 2 valid off runs, inside the spread); shots match; in `nx2navi.bind` | `=1` |

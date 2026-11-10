@@ -1,0 +1,52 @@
+From cf7a0e5c654ea9508b669642ea3e75bb4ca4cff7 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 08:02:31 -0500
+Subject: [PATCH] vk_exec_draw: NX2NAVI_POOL_KH=1 keeps each texture slot's
+ descriptor hash beside its registration, so a pool refill whose token moved
+ only by its address generation skips the texture-table read (default 0)
+ (#132)
+
+---
+ runtime/vk_exec_draw.c | 24 +++++++++++++++++++++++-
+ 1 file changed, 23 insertions(+), 1 deletion(-)
+
+diff --git a/runtime/vk_exec_draw.c b/runtime/vk_exec_draw.c
+index 219c7f4..9e1a724 100644
+--- a/runtime/vk_exec_draw.c
++++ b/runtime/vk_exec_draw.c
+@@ -1984,9 +1984,31 @@ static int pool_on(void) {
+ static struct { uint64_t kh; uint32_t agen, egen, mask; VkImageView view[VK_POOL_KINDS]; } pool_memo[POOL_MEMO];
+ static uint64_t pool_memo_hits;
+ 
++// NX2NAVI_POOL_KH=1: the descriptor hash of each slot is kept here beside the registration it came from (the token's
++// high half), so a refill whose token moved only by its address generation does not read the slot's record in the
++// texture table, a cache miss per refill (3.7% of the replay thread in the field). A slot's hash changes only with a
++// new registration, and slots are never unregistered. Default 0: read it every time.
++static struct { uint64_t kh; uint32_t reg; } *pool_kh;
++
++static int pool_kh_on(void) {
++    static int on = -1;
++    if (on < 0) {
++        on = rt_knob("POOL_KH", "0");
++        if (on && !(pool_kh = calloc(VK_POOL_TEX, sizeof *pool_kh))) rt_fatal("vk: out of memory");
++    }
++    return on;
++}
++
++static uint64_t pool_khash(uint32_t id, uint64_t tok) {   // texture lock held
++    if (!pool_kh_on()) return vk_texture_slot_khash_locked((int)id);
++    uint32_t reg = (uint32_t)(tok >> 32);
++    if (pool_kh[id].reg != reg) pool_kh[id].kh = vk_texture_slot_khash_locked((int)id), pool_kh[id].reg = reg;
++    return pool_kh[id].kh;
++}
++
+ static int pool_fill(VkExec *ex, uint32_t id, uint32_t mask, uint64_t tok) {
+     vk_texture_create_deferred_locked();
+-    uint64_t kh = tok ? vk_texture_slot_khash_locked((int)id) : 0;
++    uint64_t kh = tok ? pool_khash(id, tok) : 0;
+     uint32_t ag = (uint32_t)tok;
+     typeof(pool_memo[0]) *m = kh ? &pool_memo[(kh >> 20) % POOL_MEMO] : NULL;
+     if (m && m->kh == kh && m->agen == ag && m->egen == vk_texture_entry_gen() && (m->mask & mask) == mask) {
+-- 
+2.56.0
+

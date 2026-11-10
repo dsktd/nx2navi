@@ -395,6 +395,12 @@ distribution). After `just update`, `build` may need a rebase onto the new upstr
 - `0047-vk_exec_draw-NX2NAVI_AO_TRACE-1-logs-the-ambient-occ.patch`: `NX2NAVI_AO_TRACE=1` logs `ao: f<frame> fence <n>
   depth|occlusion|blur|mask` lines with the bound images in replay order. The logging slows the replay (28 -> 22 fps)
   and runs with it showed single-frame bright, hazy flashes that runs without it did not: debug only.
+- `0048-vk_exec_draw-NX2NAVI_POOL_KH-1-keeps-each-texture-sl.patch`: #132, `NX2NAVI_POOL_KH=1` (**default 0**) keeps each
+  texture slot's descriptor hash in a dense array beside the registration it came from, so a bindless pool refill whose
+  token moved only by its address generation skips the read of the slot's texture-table record (`pool_fill` ->
+  `vk_texture_slot_khash_locked`, 3.7% of the replay thread, a cache miss per refill). Lab field window (`nx2navi.bind`,
+  same binary): replay 20.29/19.96 -> 19.54/19.71/19.76 ms, 41.7/42.5 -> 43.2/42.9/42.8 fps, p99 unchanged; inside the
+  run spread, indicative. Castle 1500 and crash 1700 shots match knob off. NOTES-perf "Binding caches".
 
 ## Mark this moment
 

@@ -726,3 +726,27 @@ the `rtl` run before); its shadow figure is still 1.99 ms.
   SHADOW_GAP_KIB=2048`; shots at 1480/1490/1500 and 1680/1690/1700 match the knob-off run (RMSE 0.3% at the menu,
   2% at the castle from Navi's position, frame timing).
 - **Step 5** (bind_resources, slot hash) not started: vk_exec_draw.c is being edited by the AO work.
+
+## Binding caches and NT with Cal's set (2026-11-10 morning, #132)
+
+Same window and method as "Replay thread" (ticks 6300-10200, pinned, `NX2NAVI_TRACE=perf,present,nvn`; scripts
+`.lab/combo/`, `.lab/bind/`). Cal's set = `TEX_RELEASED_YIELD=85 ALIAS_EXTRA_MIB=512 AO_ORDER=1`.
+
+| run | fps | replay ms | p99 ms |
+|---|---|---|---|
+| `nx2navi.next` set | 42.8, 42.0 | 19.92, 20.32 | 26.4, 26.6 |
+| set + `SHADOW_NT=1` | 43.4, (37.3 void), (42.3 tail) | 19.43, 22.98, 19.89 | 25.7, 99.4, 34.7 |
+| `nx2navi.bind` `POOL_KH=0` | (30.9 void), 41.7, 42.5 | 27.4, 20.29, 19.96 | 90.5, 26.7, 26.4 |
+| `POOL_KH=1` | 43.2, 42.9, 42.8 | 19.54, 19.71, 19.76 | 26.1, 25.8, 26.4 |
+
+Void runs: a 130-330 frame CPU-bound patch (GPU waits for submissions, shadow sync time 2x for the same bytes,
+write-watch queries 3x) that hit runs with and without NT alike, so it is the host, not the knob. Shots: NT vs not
+and POOL_KH on vs off match at castle 1480-1500 (RMSE 3.3-3.4%, Navi, water and grass motion) and crash 1680-1700
+(<0.5%).
+
+Profile reading (prof-s1, inclusive): `pool_sync_entries` 13.8% (dirty walk 5.3, freshness checks 3.1, refills 2.2,
+token reads 1.8), `bind_resources` 13.0 (self 3.3, `ssbo_info`/`bind_range` 3.0, `tex_info_lookup` 2.1, `ubo_info`
+1.9). Per-draw lookups already have memos (TD, AC, bind skip, push skip, set reuse); the pool refill's
+`vk_texture_slot_khash_locked` (3.7%, one miss on the slot record per refill) had none: 0048 `POOL_KH`.
+`pool_tsc` (1.7-2%) costs only under `NX2NAVI_TRACE=perf`, so lab replays carry it and play does not.
+Next leads: `bind_range`'s `vk_mem_resolve` per buffer binding; the per-submission freshness walk.
