@@ -143,7 +143,7 @@ export_game() {   # export [file]: the game folder without saves, logs, settings
     echo "packing $to (about 30 GB, several minutes)"
     (cd "$SRC" && tar -c --exclude="build/$VER/profile" --exclude="build/$VER/logs" --exclude="build/$VER/nx2navi.ini*" \
         --exclude="build/$VER/obj" --exclude="build/$VER/gen" --exclude="build/$VER/dump*" --exclude="build/$VER/reload-bak" \
-        --exclude="build/$VER/mesa-cache" --exclude='*.map' --exclude='*.rsp' --exclude="build/extracted/$VER/build-cache" \
+        --exclude="build/$VER/mesa-cache" --exclude="build/$VER/pipeline-cache.bin" --exclude='*.map' --exclude='*.rsp' --exclude="build/extracted/$VER/build-cache" \
         NX2NAVI-EXPORT "build/$VER" "build/extracted/$VER" | zstd -T0 -3 -q -o "$to")
     rm -f "$SRC/NX2NAVI-EXPORT"
     echo "done: $to. For your own devices only. Copy it to the other device and pick it under Import."
