@@ -93,24 +93,25 @@ Read at run time:
 ```
  guest threads (lifted)              host runtime                         GPU
  ----------------------              ------------                         ---
- game render thread (t1)  --nvn*--> nvn_api_cmd.c records op streams
-  + producer thread (t6)            into host buffers (not game memory)
+ main thread 0x1003 + 4 job workers --nvn*--> nvn_api_cmd.c records op
+  (guest code 4 ms each per frame)            streams into host buffers
         |
  nvnQueueSubmitCommands ---------> nvn_submit_prepare; hand-off
-   (submit finish wait 5.1 ms) <-- [frame bound: game at most 1 frame ahead]
-        |                               |
-        |                          replay thread (t2, vk_exec*.c):
-        |                           texture pool refresh (~2.7 ms field)
-        |                           shadow sync of guest pages (2.7 ms)
+   (finish wait 9.3 ms: for the     [frame bound: game at most 1 frame ahead]
+    replay thread, then the GPU)        |
+        |                          replay thread (vk_exec*.c), ~22 ms per frame, THE BOUND:
+        |                           texture pool refresh (2.7-3.2 ms field)
+        |                           shadow sync of guest pages (2.8-3.1 ms)
         |                           uniform snapshot (0.5 ms, vk_usnap)
         |                           pipeline lookup / build or skip
         |                           draws, mesh draws, compute
         |                               | packets (ring)
-        |                          recorder thread (vk_rec.c) vkCmd* ---> queue
+        |                          recorder thread (vk_rec.c) vkCmd* ---> queue (GPU busy 10 ms)
         |                               |                                  |
-        |                          completion thread (t5, vk_sync.c) <-- timeline
-        |                           write-back compare (5.4 ms, 4 thr)
+        |                          completion thread (vk_sync.c) <------- timeline
+        |                           write-back compare (4.2 ms, 4 thr)
         |                           write-back, frees, events
+ presenting thread 0x1008 (sleeps until the main thread wakes it, then 4 submits)
  nvnQueuePresentTexture --> pacer (nvn_api_obj.c:737-752) --> vkQueuePresent (mailbox)
 ```
 
@@ -120,19 +121,25 @@ Read at run time:
 - **Draws.** Mesh and task shaders run through `VK_EXT_mesh_shader` (play log 18). Textures are bindless pools: 16 kinds x 32768 slots (play log 49).
 - **Present.** The present goes through the pacer, then `vkQueuePresent` in mailbox mode.
 
-Costs per frame in a Hyrule Field window of Cal's real play, mean frame 22.9 ms, about 43 fps (`~/claude/nx2navi/NOTES-perf-2026-11-09.md`, section 2):
+Costs per frame in the Hyrule Field standing window, lab replay of Cal's 19:13 recording, mean frame 23.4-25.9 ms, 40-43 fps (`~/claude/nx2navi/NOTES-perf-2026-11-09.md`, "Round 3"; `NX2NAVI_TRACE=nvn` and `perf`):
 
-| What | Cost | Notes |
-|---|---|---|
-| Submit finish wait (game thread) | 5.07 ms | includes the completion callbacks |
-| Write-back compare | 5.42 ms | 66 MiB compared |
-| Shadow sync | 2.71 ms | 771 pools touched |
-| Audio mix | 1.39 ms | |
-| Pipeline binds | about 610 | |
-| Unzoned game-thread time | 17.8 ms | |
+| What | Thread | Cost | Notes |
+|---|---|---|---|
+| Translating and recording a frame | replay | about 22 ms | the bound; notes "After fixes 1+2", section 4 |
+| of it: texture pool entry refresh | replay | 2.7-3.2 ms | 32.8k slots walked, 17k refilled, 5.7k storage checks; 6.3 ms in the graveyard |
+| of it: shadow sync | replay | 2.8-3.1 ms | 915 pool syncs, 10 MiB copied; write-watch queries 1.5 ms |
+| Submit finish wait (`nvnQueueSubmitCommands`) | main 0x1003 | 9.3 ms | waits for the replay thread to record and submit the frame's first submission, then the GPU |
+| Waiting for the job workers (`svc 0x34`) | main | 7.9 ms | 23 waits per frame |
+| Guest code | main | 4.1 ms | 16% of its frame |
+| Guest code / runtime calls | each of 4 workers | 3.8 / 1.6 ms | idle the other 20 ms |
+| Sleep until woken by the main thread | presenting 0x1008 | 24.6 ms | then 4 submits and the present |
+| GPU busy | | 10.2 ms | |
+| Write-back compare | completion | 4.2 ms | 66 MiB compared, off the frame's path |
+| Audio mix | audio | 1.5 ms | |
+| Pipeline binds | | about 690 | |
 
-- **Where the game waits.** On the submit finish wait and on `pool_fini` (section 3 of the notes; play log 835: 44 waits, 1490 ms).
-- **The critical path.** The game's render thread. The replay thread never blocked a present ("frame bound 1800 calls, 0 waited", play log 770, 835).
+- **Where the game waits.** In the submit finish wait, which is the replay thread's backlog, and on `pool_fini` at area changes.
+- **The critical path.** The replay thread. "frame bound 1800 calls, 0 waited" only says the present never waits for it; the game waits for it in the finish wait instead. Letting the game go before the GPU is through (`NX2NAVI_FINISH_DEFER`, patch 0036) gains nothing, and neither does faster guest code (16% of the main thread; the -O2 A/B agrees): what shortens the frame is a cheaper replay thread per draw.
 
 ## 6. Memory model
 
