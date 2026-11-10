@@ -136,10 +136,13 @@ debug *args:
 
 # `just play` on the combined build with the unproven switches of UNCERTAIN.md that passed the lab: the flicker fix,
 # the memory switches and the faster shadow copies; live shader reload and shot.req / dump.req are on, so Tally can
-# capture frames and swap shaders while Cal sits in a scene. Each can still be overridden from the environment.
+# capture frames and swap shaders while Cal sits in a scene; a mark saves the 120 frames before and after it as
+# thumbnails (logs/burst-<present>/, scan with tools/burst-scan). Each can still be overridden from the environment
+# (NX2NAVI_EXE=next is the build before the burst capture).
 # NX2NAVI_MARK_RING / NX2NAVI_MARK_BURST (patch 0049) and any other NX2NAVI_ knob pass through from the environment
 try *args:
-    NX2NAVI_EXE="${NX2NAVI_EXE:-next}" NX2NAVI_TEX_RELEASED_YIELD="${NX2NAVI_TEX_RELEASED_YIELD:-85}" \
+    NX2NAVI_EXE="${NX2NAVI_EXE:-burst}" NX2NAVI_MARK_RING="${NX2NAVI_MARK_RING:-120}" NX2NAVI_MARK_BURST="${NX2NAVI_MARK_BURST:-120}" \
+    NX2NAVI_TEX_RELEASED_YIELD="${NX2NAVI_TEX_RELEASED_YIELD:-85}" \
     NX2NAVI_ALIAS_EXTRA_MIB="${NX2NAVI_ALIAS_EXTRA_MIB:-512}" NX2NAVI_AO_ORDER="${NX2NAVI_AO_ORDER:-1}" \
     NX2NAVI_SHADOW_NT="${NX2NAVI_SHADOW_NT:-1}" \
     NX2NAVI_SHADER_RELOAD="${NX2NAVI_SHADER_RELOAD:-1}" NX2NAVI_DUMP_REQ="${NX2NAVI_DUMP_REQ:-1}" \
