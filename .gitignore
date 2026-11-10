@@ -16,3 +16,4 @@ flatpak/.flatpak-builder/
 flatpak/*.flatpak
 REPORT-*.md
 tools/__pycache__/
+.lab-cache/

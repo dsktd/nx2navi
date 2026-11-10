@@ -1,0 +1,51 @@
+#!/usr/bin/env python3
+# pipeline-cache-strip <in> <out>: copies a RADV pipeline-cache.bin without the shader entries that carry IR text.
+# RADV_DEBUG=hang (lab-run LAB_HANG=1) keeps every shader's NIR, ACO IR and disassembly as text (keep_shader_info) under
+# cache keys a normal run never asks for; by 2026-11-09 they were 4.0 of the 4.3 GB. The input is only read.
+# Format (mesa src/vulkan/runtime/vk_pipeline_cache.c, vk_pipeline_cache_get_data): a 32-byte
+# VkPipelineCacheHeaderVersionOne, a u32 count, then per object at 4-byte alignment: i32 type, u32 key size,
+# u32 data size, the key, padding to 8 bytes, the data.
+import mmap
+import os
+import struct
+import sys
+
+MARKS = (b"ACO shader stage", b"shader: MESA_SHADER")
+
+
+def strip(src, dst):
+    with open(src, "rb") as f:
+        m = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+    (n,) = struct.unpack_from("<I", m, 32)
+    tmp = f"{dst}.{os.getpid()}.tmp"
+    kept = dropped = 0
+    with open(tmp, "wb") as out:
+        out.write(m[:36])
+        o = 36
+        for _ in range(n):
+            o = (o + 3) & ~3
+            start = o
+            _, ks, ds = struct.unpack_from("<iII", m, o)
+            o = (o + 12 + ks + 7) & ~7
+            data = m[o : o + ds]
+            o += ds
+            if any(k in data for k in MARKS):
+                dropped += ds
+                continue
+            out.write(b"\0" * (-out.tell() % 4))
+            out.write(m[start : start + 12 + ks] + b"\0" * (-(out.tell() + 12 + ks) % 8))
+            out.write(data)
+            kept += 1
+        if o != len(m):
+            os.unlink(tmp)
+            sys.exit(f"{src}: parse ended at {o} of {len(m)} bytes; not written")
+        out.seek(32)
+        out.write(struct.pack("<I", kept))
+    os.rename(tmp, dst)
+    print(f"{dst}: {kept} of {n} objects kept, {dropped >> 20} MB of IR text dropped, {os.path.getsize(dst) >> 20} MB")
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 3:
+        sys.exit("usage: pipeline-cache-strip <in> <out>")
+    strip(sys.argv[1], sys.argv[2])

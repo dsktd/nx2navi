@@ -278,6 +278,41 @@ distribution). After `just update`, `build` may need a rebase onto the new upstr
   dedupe paints wrong terrain at the castle slot and finds under 1% to share; LRU alone is untested (Status has the
   numbers). Kept for the trace: `NX2NAVI_TRACE=tex` gets a third line per 600 frames (what other-key repeats differ in,
   whether their entry is live / released / gone, dedupe shares, collisions, unshares).
+- `0030-vk_texture-address-generations-that-name-the-bucket-.patch`: #132 round 3, texture-pool entry refresh. Two
+  switches, both **default 0** (no measurable gain): `NX2NAVI_TEX_STATE_GEN=1` makes an address generation name the
+  state of its bucket (a 64-bit sum of one term per entry; a state seen before gets its generation back), so the
+  release + take-back of a transient render target no longer hands ~400 slots a new token; `NX2NAVI_TEX_CHECK_SKIP=1`
+  skips the per-submit check of slots whose texture never uploads. Lab, field standing window: refills 17.2k -> 13.7k
+  slots per switch, entry refresh 2.66 -> 2.67 ms, 42.7 -> 43.1 fps (noise); the check skip is worth under 0.2 ms.
+  Castle slot and crash spot pass with both on, picture clean. Kept for the trace: `NX2NAVI_TRACE=perf` logs two lines
+  per 600 pool switches (refills, how many wrote nothing, and the refresh split into whole-table walk, dirty walks,
+  refills, descriptor writes, freshness checks). NOTES-perf-2026-11-09 "Round 3".
+- `0031-platform-linux-the-crash-report-names-what-the-threa.patch`: #141. `plat_crash_context` was a no-op on Linux; a
+  fault now prints `[host] crash: the thread was building a graphics pipeline stage ...` (shader key prefixes) before
+  the FATAL lines. Reason: the 2026-11-09 22:31 graveyard crash is a NULL write in `radv_shader_spirv_to_nir`
+  (libvulkan_radeon.so+0x19be92, Mesa 26.2.6: `spirv_to_nir` returned NULL and RADV does not check), i.e. Mesa rejected
+  a SPIR-V module of one pipeline build, and the log did not say which. Built into `nx2navi.crash` (not swapped).
+- `0033-platform-plat_fault_guard-so-a-driver-fault-inside-v.patch`: #141 guard. The four `vkCreate*Pipelines` calls run
+  under `plat_fault_guard` (Linux: sigsetjmp; a fault of that thread outside the executable jumps back): a module
+  Mesa rejects now costs one pipeline (`vk_pipeline: the driver faulted building ... stage <key>: not built`, its draws
+  are skipped) instead of the session. The call sites landed in 0032 by accident (two agents in `vk_pipeline.c`), with a
+  `TESTHACK` line that 0033 removes, so 0032 does not build without 0033. Test: every 7th module truncated to its
+  header gives the same fault (+0x19be92, address 0x40), 4 caught, replay to frame 1500 completes; castle (1500) and
+  crash spot (1700) pass. Which module Mesa rejected on 2026-11-09 is still unknown: the next occurrence names it.
+  Built into `nx2navi.crash` (not swapped).
+- `0032-vk_pipeline-the-cache-save-is-skipped-when-the-drive.patch`: slow exit. The exit save rewrote the whole
+  pipeline cache (4.3 GB: copy, write, fsync) even when the autosave had just written it: castle slot exit 24.5 s ->
+  1.3 s (in-process 17 ms; the rest is process teardown). A save is skipped when the driver's data size is unchanged
+  since the last load or write (the driver only adds). Logs `pipeline cache N MB loaded (read, driver import)`, slow
+  saves, and `gfx: exit took N ms` per stage. Why 4.3 GB: `LAB_HANG=1` runs (RADV_DEBUG=hang keeps every shader's IR
+  text) wrote 9184 entries, 4.0 GB, under keys normal runs never ask for; the rest is 120 MB. lab-run now gives hang
+  runs a scratch cache and waits for the game to exit (killing it mid-save left 79 `pipeline-cache.bin.*.tmp`, ~36 GB).
+  `tools/pipeline-cache-strip <in> <out>` writes a copy without those entries: load 4.6 s -> 0.6 s, working set
+  4.7 -> 0.8 GB, no pipeline stalls on the castle replay.
+- `0033-vk_exec_draw-NX2NAVI_ONESHOT_WAIT_MS-caps-how-long-a.patch`: `NX2NAVI_ONESHOT_WAIT_MS=<n>` (default 30000,
+  unchanged) caps the wait of a draw into never-rendered targets for its pipeline. A fight frame waited 637.6 ms on
+  one such graphics draw (54 vertices, fresh 960x540 targets) despite PIPE_SKIP=any. Low values skip it instead; a
+  true one-shot would stay empty, so off by default and not yet lab-checked.
 
 ## Mark this moment
 

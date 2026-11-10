@@ -45,7 +45,9 @@ hostlog=$(ls -t "$ROOT"/NX2navi/build/v111/logs/play-*.log 2>/dev/null | head -1
 rm -rf "$OUT"; mkdir -p "$OUT"
 case $rec in /*) ;; *) rec=$PWD/$rec;; esac
 envs=(); for kv in "$@"; do envs+=("$kv"); done
-radv=nogpl; [ -n "${LAB_HANG:-}" ] && { radv=nogpl,hang; mkdir -p "$OUT/hang"; envs+=("XDG_CACHE_HOME=${XDG_CACHE_HOME:-$HOME/.cache}" "HOME=$OUT/hang"); }
+# hang mode keeps every shader's IR text (keep_shader_info) under keys of their own: those entries filled 4.0 of the
+# 4.3 GB of the shared pipeline-cache.bin (2026-11-09), so a hang run writes a scratch cache instead
+radv=nogpl; [ -n "${LAB_HANG:-}" ] && { radv=nogpl,hang; mkdir -p "$OUT/hang"; envs+=("NX2NAVI_PIPELINE_CACHE=$OUT/pipeline-cache.bin" "XDG_CACHE_HOME=${XDG_CACHE_HOME:-$HOME/.cache}" "HOME=$OUT/hang"); }
 if [ -n "${LAB_VALIDATE:-}" ]; then
   vvl=$(nix build nixpkgs#vulkan-validation-layers --no-link --print-out-paths | tail -1) || exit 4
   cat >"$OUT/vk_layer_settings.txt" <<EOF
@@ -112,7 +114,14 @@ t1=$(date +%s.%N)
   kill -0 $pgid 2>/dev/null || break; sleep 1; done
 # let the completion thread finish the PNGs: wait until the dump dir stops growing
 prev=-1; for ((i=0;i<120;i++)); do s=$(du -sb "$OUT/dump" 2>/dev/null | cut -f1); [ "$s" = "$prev" ] && break; prev=$s; sleep 2; done
-kill -- -$pgid 2>/dev/null; sleep 2; kill -9 -- -$pgid 2>/dev/null
+# SIGTERM closes the window (SDL quit): the game saves its caches and exits. Killing it 2 s later cut the pipeline
+# cache write and left pipeline-cache.bin.<pid>.<tid>.tmp files behind (77, 34 GB by 2026-11-09): wait up to
+# LAB_EXIT_WAIT s (default 60) for the process group to end, then kill it
+te=$(date +%s.%N); kill -- -$pgid 2>/dev/null
+for ((i=0; i<${LAB_EXIT_WAIT:-60}*10; i++)); do kill -0 -- -$pgid 2>/dev/null || break; sleep 0.1; done
+printf 'exit %.1f s%s\n' "$(awk "BEGIN{print $(date +%s.%N)-$te}")" "$(kill -0 -- -$pgid 2>/dev/null && echo ' (killed)')"
+kill -9 -- -$pgid 2>/dev/null
+grep -aE 'gfx: exit took|pipeline cache (saved|[0-9]+ MB loaded)' "$log" | cut -c1-160
 D=$OUT/dump
 printf 'time-to-dump %.0f s (hit=%s), dump %s\n' "$(awk "BEGIN{print $t1-$t0}")" $hit "$(du -sh $D 2>/dev/null | cut -f1)"
 grep -aE "vk_dump: frame $frame: |FATAL" "$log" | tail -2 | cut -c1-150

@@ -1,0 +1,71 @@
+From 1f3982f64aa4746db53e5fb2842e714064275d3c Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Mon, 9 Nov 2026 23:02:16 -0500
+Subject: [PATCH] vk_exec_draw: NX2NAVI_ONESHOT_WAIT_MS caps how long a
+ one-shot draw waits for its pipeline (default 30000, unchanged)
+
+In a fight (play log 2026-11-09 21:58, frame 44891) a 54-vertex draw into 960x540 targets never rendered before waited 637.6 ms for its graphics pipeline: such a pass counts as one-shot and waits up to 30 s even with PIPE_SKIP=any. A low cap skips it for the frames the build takes; a true one-shot (a LUT drawn once) would stay empty, so it is off by default.
+---
+ runtime/cfg.c          |  2 +-
+ runtime/vk_exec_draw.c | 18 ++++++++++++++++--
+ 2 files changed, 17 insertions(+), 3 deletions(-)
+
+diff --git a/runtime/cfg.c b/runtime/cfg.c
+index 46f1212..eaef6ba 100644
+--- a/runtime/cfg.c
++++ b/runtime/cfg.c
+@@ -49,7 +49,7 @@ static const char *const known[] = {
+     "MENU_CURSOR", "MENU_CURSOR_LOG", "MENU_TEST_DIR", "MENU_TEST_SET", "MINIMAL_LAYOUT", "MIRROR_GAP", "MODS_DIR", "MODS_DISABLED", "MODS_ORDER", "MODS_REBUILD", "MOTION", "MOUSE_MODE", "MOUSE_DIRECT_PATCH", "MOUSE_SENS", "MOVIE_HOST", "MOVIE_PACE",
+     "MVOBJ_ALL", "MVOBJ_BANKS", "MVOBJ_EQUAL", "MVOBJ_EXACT", "MVOBJ_EXEC", "MVOBJ_NOC4", "MVOBJ_ONLY", "MVOBJ_TIMES", "MVPREV_CHECK", "MVPREV_GROW", "MVPREV_SKIP", "MVPREV_TRUST", "MV_CHECK",
+     "MV_SURVEY",
+-    "ONE_PER_CORE", "OPERATION_MODE", "OUTPUT_RES", "PAD_LAYOUT", "PACE_HZ", "PASS_CRUMBS", "PATCH_OUTPUT", "PATCH_RES_FIXED", "PATCH_SCENE", "PATCH_WIDE_ASPECT", "PATCH_WIDE_HUD", "PATCH_WIDE_MOVIE", "PATCH_WIDE_OUT", "PATCH_WIDE_SCENE", "PCSS", "PCSS_K", "PERF_OVERLAY", "PERF_SLOW_MS", "PIPELINE_CACHE", "PIPE_MEMO", "PIPE_PREBUILD", "PIPE_SKIP", "PIPE_SYNC", "PIPE_WAIT",
++    "ONESHOT_WAIT_MS", "ONE_PER_CORE", "OPERATION_MODE", "OUTPUT_RES", "PAD_LAYOUT", "PACE_HZ", "PASS_CRUMBS", "PATCH_OUTPUT", "PATCH_RES_FIXED", "PATCH_SCENE", "PATCH_WIDE_ASPECT", "PATCH_WIDE_HUD", "PATCH_WIDE_MOVIE", "PATCH_WIDE_OUT", "PATCH_WIDE_SCENE", "PCSS", "PCSS_K", "PERF_OVERLAY", "PERF_SLOW_MS", "PIPELINE_CACHE", "PIPE_MEMO", "PIPE_PREBUILD", "PIPE_SKIP", "PIPE_SYNC", "PIPE_WAIT",
+     "PREWARM_WAIT_MS", "PREWARM_XLATE", "PROBE_MOVIE", "PROBE_MOVIE_SHOT", "PROFILE", "PROFILE_CHAINS", "PROFILE_DIR", "PROFILE_FRAMES",
+     "PROFILE_MAIN", "PROFILE_RENDER", "PROMPTS", "PUSH_SKIP", "PUSH_STAGE", "RDOC", "RDOC_DIR", "RDOC_DLL", "REALTIME", "REC_END", "REEXEC",
+     "RENDER_SCALE", "REPLAY_ASYNC", "RTSS",
+diff --git a/runtime/vk_exec_draw.c b/runtime/vk_exec_draw.c
+index 01431fb..43c9c49 100644
+--- a/runtime/vk_exec_draw.c
++++ b/runtime/vk_exec_draw.c
+@@ -46,6 +46,20 @@
+ #define NVN_STAGE_MESH 7
+ #define ONESHOT_WAIT_MS 30000u   // prepare_draw: how long a one-shot draw waits for its pipeline before it is skipped
+ 
++// NX2NAVI_ONESHOT_WAIT_MS=<n>: a one-shot draw waits at most n ms for its pipeline, then is skipped (default 30000). A pass
++// counts as one-shot when its targets were never rendered before, which a per-frame effect pass also is right after
++// its target was made anew: in a fight (2026-11-09) a 54-vertex draw into fresh 960x540 targets held the frame 638 ms.
++// A low value skips such a draw for the frames its build takes, but a true one-shot (a LUT drawn once) stays empty.
++static uint32_t oneshot_wait_ms(void) {
++    static uint32_t ms;
++    if (!ms) {
++        const char *e = cfg_get("NX2NAVI_ONESHOT_WAIT_MS");
++        ms = e && *e ? (uint32_t)strtoul(e, NULL, 10) : ONESHOT_WAIT_MS;
++        if (!ms) ms = 1;
++    }
++    return ms;
++}
++
+ enum { W_PROGRAM, W_SHADER, W_PIPELINE, W_NO_VS, W_INDEX, W_UB, W_BIND, W_SSBO_ALIGN, W_SSBO_SLOT, W_RESTART, W_INDIRECT, W_MESH, W_COUNT };
+ 
+ static void warn_once(int key, const char *fmt, ...) {
+@@ -2981,7 +2995,7 @@ static int prepare_draw_ex(VkExec *ex, int prim, int32_t count, int restart, int
+     uint32_t wait_ms = 0;
+     uint64_t t0 = 0;
+     if (oneshot > 0) {
+-        wait_ms = ONESHOT_WAIT_MS;
++        wait_ms = oneshot_wait_ms();
+     } else if (skip < 2 && count <= 6 && (uint64_t)sc.extent.width * sc.extent.height * 2 >= (uint64_t)ex->pass_w * ex->pass_h) {
+         uint64_t f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
+         if (f != wait_frame) wait_frame = f, wait_left_ns = 50000000;
+@@ -3009,7 +3023,7 @@ static int prepare_draw_ex(VkExec *ex, int prim, int32_t count, int restart, int
+             perf_count(PERF_CNT_ONESHOT_WAIT);
+             why = "one-shot";
+             if (!w0) w0 = kern_now_ns();
+-            p = vk_pipeline_graphics_async(&s, &info, &pending, ONESHOT_WAIT_MS);
++            p = vk_pipeline_graphics_async(&s, &info, &pending, oneshot_wait_ms());
+         }
+         PM.valid = !pending && p && info;
+         if (PM.valid) PM.s = s, PM.info = info, PM.ep = vk_pipeline_epoch;
+-- 
+2.56.0
+
