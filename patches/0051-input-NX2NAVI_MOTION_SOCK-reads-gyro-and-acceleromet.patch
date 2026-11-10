@@ -1,0 +1,444 @@
+From 8d43a399dfd866b99499625ec6d36dd80d83b37c Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 16:41:09 -0500
+Subject: [PATCH] input: NX2NAVI_MOTION_SOCK reads gyro and accelerometer from
+ a controller daemon's Unix socket when no gamepad has sensors (auto:
+ $XDG_RUNTIME_DIR/yakin/motion.sock; off; a path), with --probe-motion-sock
+
+---
+ runtime/cfg.c               |   6 +-
+ runtime/host.h              |   1 +
+ runtime/input.c             |  29 ++++++++-
+ runtime/main.c              |   4 +-
+ runtime/motion_sock.c       | 111 +++++++++++++++++++++++++++++++++
+ runtime/motion_sock.h       |  33 ++++++++++
+ runtime/motion_sock_probe.c | 120 ++++++++++++++++++++++++++++++++++++
+ 7 files changed, 299 insertions(+), 5 deletions(-)
+ create mode 100644 runtime/motion_sock.c
+ create mode 100644 runtime/motion_sock.h
+ create mode 100644 runtime/motion_sock_probe.c
+
+diff --git a/runtime/cfg.c b/runtime/cfg.c
+index 70a4e58..6ec791a 100644
+--- a/runtime/cfg.c
++++ b/runtime/cfg.c
+@@ -46,7 +46,7 @@ static const char *const known[] = {
+     "FULLSCREEN", "FXAA", "GAME_ASPECT", "GAME_RES", "GPA", "GPA_EMPTY", "GPA_TWIN", "GPL", "GPL_DRAW_BUILD", "GPU", "GPU_INDEX", "GPU_NAME", "HDR", "HDR_GAME_NITS", "HDR_HUE",
+     "HDR_PEAK_NITS", "HDR_UI_NITS", "HIGHFPS_FIX", "INPUT", "INPUT_RECORD", "INPUT_SCRIPT", "LANG", "LIB_PREBUILD",
+     "LIB_PREBUILD_KEEP", "LIB_PREBUILD_THREADS", "LOCALE", "LOD_GUARD", "LSTICK_DEADZONE", "MARK_BURST", "MARK_CHORD", "MARK_HOLD_MS", "MARK_RING", "MEMORY", "MENU_LANG", "MENU_SOUND_VOLUME", "MENU_TEST",
+-    "MENU_CURSOR", "MENU_CURSOR_LOG", "MENU_TEST_DIR", "MENU_TEST_SET", "MINIMAL_LAYOUT", "MIRROR_GAP", "MODS_DIR", "MODS_DISABLED", "MODS_ORDER", "MODS_REBUILD", "MOTION", "MOTION_PAD", "MOUSE_MODE", "MOUSE_DIRECT_PATCH", "MOUSE_SENS", "MOVIE_HOST", "MOVIE_PACE",
++    "MENU_CURSOR", "MENU_CURSOR_LOG", "MENU_TEST_DIR", "MENU_TEST_SET", "MINIMAL_LAYOUT", "MIRROR_GAP", "MODS_DIR", "MODS_DISABLED", "MODS_ORDER", "MODS_REBUILD", "MOTION", "MOTION_PAD", "MOTION_SOCK", "MOUSE_MODE", "MOUSE_DIRECT_PATCH", "MOUSE_SENS", "MOVIE_HOST", "MOVIE_PACE",
+     "MVOBJ_ALL", "MVOBJ_BANKS", "MVOBJ_EQUAL", "MVOBJ_EXACT", "MVOBJ_EXEC", "MVOBJ_NOC4", "MVOBJ_ONLY", "MVOBJ_TIMES", "MVPREV_CHECK", "MVPREV_GROW", "MVPREV_SKIP", "MVPREV_TRUST", "MV_CHECK",
+     "MV_SURVEY",
+     "ONESHOT_WAIT_MS", "ONE_PER_CORE", "OPERATION_MODE", "OUTPUT_RES", "PAD_LAYOUT", "PACE_HZ", "PASS_CRUMBS", "PATCH_OUTPUT", "PATCH_RES_FIXED", "PATCH_SCENE", "PATCH_WIDE_ASPECT", "PATCH_WIDE_HUD", "PATCH_WIDE_MOVIE", "PATCH_WIDE_OUT", "PATCH_WIDE_SCENE", "PCSS", "PCSS_K", "PERF_OVERLAY", "PERF_SLOW_MS", "PIPELINE_CACHE", "PIPE_MEMO", "PIPE_PREBUILD", "PIPE_SKIP", "PIPE_SYNC", "PIPE_WAIT",
+@@ -83,7 +83,7 @@ static const struct { const char *key, *section; } sections[] = {
+     {"MODS_DIR", "mods"}, {"MODS_ORDER", "mods"}, {"MODS_DISABLED", "mods"}, {"MODS_REBUILD", "mods"},
+     {"MENU_LANG", "language"}, {"LANG", "language"}, {"OPERATION_MODE", "language"},
+     {"VOLUME", "audio"}, {"AUDIO_CHANNELS", "audio"}, {"MENU_SOUND_VOLUME", "audio"},
+-    {"MOTION", "input"}, {"MOTION_PAD", "input"}, {"RUMBLE_STRENGTH", "input"}, {"RUMBLE_CURVE", "input"}, {"RUMBLE_TRIGGERS", "input"},
++    {"MOTION", "input"}, {"MOTION_PAD", "input"}, {"MOTION_SOCK", "input"}, {"RUMBLE_STRENGTH", "input"}, {"RUMBLE_CURVE", "input"}, {"RUMBLE_TRIGGERS", "input"},
+     {"PAD_LAYOUT", "input"}, {"PROMPTS", "input"}, {"STICK_DEADZONE", "input"}, {"LSTICK_DEADZONE", "input"}, {"RSTICK_DEADZONE", "input"},
+     {"STICK_SENS", "input"},
+     {"MENU_CURSOR", "input"}, {"MOUSE_MODE", "input"}, {"MOUSE_SENS", "input"}, {"WALK_KEY", "input"}, {"WALK_SCALE", "input"}, {"INPUT_RECORD", "input"},
+@@ -149,7 +149,7 @@ static const CfgMeta metas[] = {
+     {"ASSUME_FOCUS", "1", "0|1", LIVE},   // read on every focus change (ov_system.c)
+     // Sound, Controls, Menu
+     {"VOLUME", "100", "0..100", LIVE}, {"MENU_SOUND_VOLUME", "80", "0..100", LIVE}, {"AUDIO_CHANNELS", "stereo", "auto|stereo|5.1", RESTART},
+-    {"MOTION", "1", "0|1", LIVE}, {"MOTION_PAD", "auto", NULL, RESTART}, {"RUMBLE_STRENGTH", "130", "0..300", LIVE}, {"RUMBLE_CURVE", "0.6", "0.2..1.5", LIVE},
++    {"MOTION", "1", "0|1", LIVE}, {"MOTION_PAD", "auto", NULL, RESTART}, {"MOTION_SOCK", "auto", NULL, LIVE}, {"RUMBLE_STRENGTH", "130", "0..300", LIVE}, {"RUMBLE_CURVE", "0.6", "0.2..1.5", LIVE},
+     {"RUMBLE_TRIGGERS", "0", "0|1", LIVE}, {"PAD_LAYOUT", "nintendo", "auto|nintendo|xbox", LIVE},
+     {"PROMPTS", "nintendo", "nintendo|xbox|pc", RESTART},
+     {"STICK_DEADZONE", "8", "0..50", LIVE}, {"STICK_SENS", "1", "0.1..3", RESTART},
+diff --git a/runtime/host.h b/runtime/host.h
+index ea4cc7a..aa74fd5 100644
+--- a/runtime/host.h
++++ b/runtime/host.h
+@@ -335,6 +335,7 @@ void rt_boot(void);                                        // boot.c
+ // modules, registers its host functions, then seals (hostfn_seal, or implicitly at the first rt_call). Return the
+ // process exit code.
+ int probe_cfg(void);                                       // cfg_probe.c
++int probe_motion_sock(void);                               // motion_sock_probe.c
+ int probe_dpi(void);                                       // dpi_probe_win.c (Windows only)
+ int probe_mods(void);                                      // mods_probe.c
+ void discord_init(void);                                   // discord_rpc.c: the Rich Presence thread, game runs only
+diff --git a/runtime/input.c b/runtime/input.c
+index 3fe0b6f..155e771 100644
+--- a/runtime/input.c
++++ b/runtime/input.c
+@@ -5,7 +5,8 @@
+ // Keys and their map: docs/controls.md.
+ // The gamepad also rumbles (input_rumble) and, when it has a gyro and an accelerometer, feeds the six-axis sensor from a
+ // thread of its own (input_motion_start); without them another open gamepad that has both can lend its sensors (a
+-// virtual pad beside the real controller, input_motion_pick). Every SDL call on the gamepad is made under `lock`.
++// virtual pad beside the real controller, input_motion_pick); without either, a Unix socket a controller daemon
++// serves (motion_sock.c, NX2NAVI_MOTION_SOCK). Every SDL call on the gamepad is made under `lock`.
+ #include <math.h>
+ #include <stdint.h>
+ #include <stdlib.h>
+@@ -18,6 +19,7 @@
+ #include "input.h"
+ #include "input_map.h"
+ #include "input_wsys.h"
++#include "motion_sock.h"
+ #include "nvn_api.h"
+ #include "ui/menu.h"
+ #include "vk.h"
+@@ -1096,11 +1098,30 @@ int input_motion_enabled(void) {
+     return on;
+ }
+ 
++// NX2NAVI_MOTION_SOCK (live): auto ($XDG_RUNTIME_DIR/yakin/motion.sock), off, or a socket path, into path; 0 off.
++// Read on the motion thread only.
++static int motion_sock_cfg(char *path, int size) {
++    static unsigned seen;
++    static int on = -1;
++    static char p[256];
++    unsigned v = cfg_version();
++    if (on < 0 || v != seen) {
++        seen = v;
++        const char *m = cfg_get("NX2NAVI_MOTION_SOCK");
++        if (!m || !*m || !strcmp(m, "auto")) on = motion_sock_default(p, sizeof p);
++        else if (!strcmp(m, "off") || !strcmp(m, "0")) on = 0;
++        else on = snprintf(p, sizeof p, "%s", m) < (int)sizeof p;
++    }
++    if (on) snprintf(path, (size_t)size, "%s", p);
++    return on;
++}
++
+ // 250 Hz: the gamepads update (reports read, rumble expiry) and the newest gyro and accelerometer sample goes into the
+ // fusion. Without a gamepad with sensors, or with motion off (NX2NAVI_MOTION=0, live), nothing is fed and the six-axis
+ // sensor reads at rest.
+ static void motion_main(void *arg) {
+     (void)arg;
++    static MotionSock sock = MOTION_SOCK_INIT;
+     for (;;) {
+         plat_wait_ns(4000000);
+         float a[3], g[3];
+@@ -1110,7 +1131,13 @@ static void motion_main(void *arg) {
+         if (motion_pad && SDL_GamepadConnected(motion_pad))
+             have = sensors_ready() && SDL_GetGamepadSensorData(motion_pad, SDL_SENSOR_ACCEL, a, 3) &&
+                    SDL_GetGamepadSensorData(motion_pad, SDL_SENSOR_GYRO, g, 3);
++        int lent = motion_pad && sensor_ok;   // a gamepad's own or lent sensors come first
+         plat_mutex_unlock(&lock);
++        // Without them, the socket of a controller daemon whose virtual pad has none (NX2NAVI_MOTION_SOCK)
++        char path[256];
++        if (!lent && input_motion_enabled() && motion_sock_cfg(path, sizeof path))
++            have = motion_sock_poll(&sock, path, kern_now_ns(), a, g);
++        else if (sock.fd >= 0) motion_sock_close(&sock);
+         if (!have || !input_motion_enabled()) continue;
+         double acc[3], gyro[3];
+         input_motion_axes(a, g, acc, gyro);
+diff --git a/runtime/main.c b/runtime/main.c
+index a1b3642..a76ffd6 100644
+--- a/runtime/main.c
++++ b/runtime/main.c
+@@ -2,6 +2,7 @@
+ //
+ //   nx2navi.exe [--exefs DIR] [--romfs DIR] [--profile DIR] <mode>
+ //     --selftest        layout, dispatch table and host-function registry; needs no game files
++//     --probe-motion-sock  the motion socket client against a server it plays itself (motion_sock.c); no game files
+ //     --probe-mods      the mods folder scan, order and switches (mods.c); needs no game files
+ //     --probe-loader    load and relocate the modules, check them against the measured 1.2.1 values
+ //     --probe-kernel, --probe-ipc, --probe-services, --probe-fs    host probes
+@@ -473,7 +474,7 @@ static int probe_crash(int null) {
+ 
+ static int usage(const char *argv0) {
+     fprintf(stderr, "usage: %s [--exefs DIR] [--romfs DIR] [--profile DIR] [--selftest | --probe-loader | "
+-                    "--probe-cfg | --probe-dpi | --probe-mods | --probe-kernel | --probe-ipc | --probe-services | --probe-fs | --probe-gfx-abi | "
++                    "--probe-cfg | --probe-motion-sock | --probe-dpi | --probe-mods | --probe-kernel | --probe-ipc | --probe-services | --probe-fs | --probe-gfx-abi | "
+                     "--probe-nvn | --probe-nvn-tex | --probe-window | --probe-shader | --probe-vkmem | "
+                     "--probe-vkexec | --probe-astc | --probe-movie | --probe-crash-call | --probe-crash-null | --probe-discord | "
+                     "--prepare-shaders | --warm-shaders | --boot |--seconds S [--shot PNG]]\n", argv0);
+@@ -571,6 +572,7 @@ int main(int argc, char **argv) {
+     if (!strcmp(mode, "--probe-crash-call")) return probe_crash(0);
+     if (!strcmp(mode, "--probe-crash-null")) return probe_crash(1);
+     if (!strcmp(mode, "--probe-cfg")) return probe_cfg();
++    if (!strcmp(mode, "--probe-motion-sock")) return probe_motion_sock();
+ #ifdef _WIN32
+     if (!strcmp(mode, "--probe-dpi")) return probe_dpi();   // the Win32 DPI awareness of nx2navi.manifest
+ #endif
+diff --git a/runtime/motion_sock.c b/runtime/motion_sock.c
+new file mode 100644
+index 0000000..2e568b5
+--- /dev/null
++++ b/runtime/motion_sock.c
+@@ -0,0 +1,111 @@
++// Motion from a Unix socket: see motion_sock.h. Called from the motion thread only (input.c motion_main).
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++#include "host.h"
++#include "motion_sock.h"
++
++static const char magic[8] = "YAKMOT1";   // with its NUL: 8 bytes
++
++int motion_sock_default(char *out, int size) {
++    const char *dir = getenv("XDG_RUNTIME_DIR");
++    if (!dir || !*dir) return 0;
++    int n = snprintf(out, (size_t)size, "%s/yakin/motion.sock", dir);
++    return n > 0 && n < size;
++}
++
++#ifdef _WIN32
++int motion_sock_poll(MotionSock *s, const char *path, uint64_t now, float a[3], float g[3]) {
++    (void)s, (void)path, (void)now, (void)a, (void)g;
++    return 0;
++}
++void motion_sock_close(MotionSock *s) { s->fd = -1; }
++#else
++#include <errno.h>
++#include <fcntl.h>
++#include <sys/socket.h>
++#include <sys/un.h>
++#include <unistd.h>
++
++static void drop(MotionSock *s, uint64_t now, const char *why) {
++    if (s->fd >= 0) close(s->fd);
++    s->fd = -1, s->fill = 0, s->last_ns = 0;
++    s->retry_ns = now + MOTION_SOCK_RETRY_MS * 1000000ull;
++    if (why) rt_log("input: motion socket %s", why);
++}
++
++void motion_sock_close(MotionSock *s) {
++    if (s->fd >= 0) close(s->fd), rt_log("input: motion socket closed (gamepad sensors in use or motion off)");
++    s->fd = -1, s->fill = 0, s->last_ns = 0, s->retry_ns = 0;
++}
++
++static void open_sock(MotionSock *s, const char *path, uint64_t now) {
++    struct sockaddr_un sa = {.sun_family = AF_UNIX};
++    if (strlen(path) >= sizeof sa.sun_path) {
++        s->retry_ns = UINT64_MAX;   // never fits: do not retry
++        rt_log("input: motion socket path too long: %s", path);
++        return;
++    }
++    memcpy(sa.sun_path, path, strlen(path) + 1);
++    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
++    if (fd < 0) { drop(s, now, NULL); return; }
++    // A Unix socket connects at once or fails (missing, refused, backlog full: EAGAIN): a quiet retry in a second
++    if (connect(fd, (struct sockaddr *)&sa, sizeof sa) && errno != EINPROGRESS) {
++        close(fd);
++        drop(s, now, NULL);
++        return;
++    }
++    s->fd = fd, s->magic = sizeof magic, s->fill = 0, s->last_ns = 0;
++    rt_log("input: motion socket %s connected", path);
++}
++
++static float f32(const unsigned char *p) {
++    uint32_t u = (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
++    float f;
++    memcpy(&f, &u, 4);
++    return f;
++}
++
++int motion_sock_poll(MotionSock *s, const char *path, uint64_t now, float a[3], float g[3]) {
++    if (s->fd < 0) {
++        if (!path || !*path || now < s->retry_ns) return 0;
++        open_sock(s, path, now);
++        if (s->fd < 0) return 0;
++    }
++    unsigned char in[4096];
++    for (;;) {
++        ssize_t n = recv(s->fd, in, sizeof in, MSG_DONTWAIT);
++        if (n == 0) { drop(s, now, "closed by the server"); return 0; }
++        if (n < 0) {
++            if (errno == EINTR) continue;
++            if (errno == EAGAIN || errno == EWOULDBLOCK) break;
++            drop(s, now, "read failed");
++            return 0;
++        }
++        const unsigned char *p = in;
++        while (n > 0) {
++            if (s->magic) {
++                int k = n < s->magic ? (int)n : s->magic;
++                if (memcmp(p, magic + sizeof magic - s->magic, (size_t)k)) {
++                    drop(s, now, "sent a bad magic (not YAKMOT1)");
++                    return 0;
++                }
++                s->magic -= k, p += k, n -= k;
++                continue;
++            }
++            int k = MOTION_SOCK_RECORD - s->fill;
++            if (n < k) k = (int)n;
++            memcpy(s->buf + s->fill, p, (size_t)k);
++            s->fill += k, p += k, n -= k;
++            if (s->fill < MOTION_SOCK_RECORD) break;
++            s->fill = 0, s->records++, s->last_ns = now;   // bytes 0..7: the server's timestamp, unused
++            for (int i = 0; i < 3; i++) s->a[i] = f32(s->buf + 8 + 4 * i), s->g[i] = f32(s->buf + 20 + 4 * i);
++        }
++    }
++    if (!s->last_ns || now - s->last_ns > MOTION_SOCK_STALE_MS * 1000000ull) return 0;
++    memcpy(a, s->a, sizeof s->a);
++    memcpy(g, s->g, sizeof s->g);
++    return 1;
++}
++#endif
+diff --git a/runtime/motion_sock.h b/runtime/motion_sock.h
+new file mode 100644
+index 0000000..54b11fe
+--- /dev/null
++++ b/runtime/motion_sock.h
+@@ -0,0 +1,33 @@
++// Motion from a Unix socket (motion_sock.c): raw gyro and accelerometer samples served by a controller daemon
++// whose virtual gamepad has no sensors of its own. Read-only client of one SOCK_STREAM socket: the server sends the
++// 8 bytes "YAKMOT1\0", then 32-byte little-endian records: u64 CLOCK_MONOTONIC microseconds, f32 accelerometer x, y, z
++// in m/s^2, f32 gyro x, y, z in rad/s, in SDL3's gamepad sensor convention (what SDL_SENSOR_ACCEL / _GYRO carry).
++// Never blocks: connects without waiting, retries every second while the socket is missing or after the server
++// dropped us, and reads what has arrived. Off Linux and macOS it never connects.
++#ifndef MOTION_SOCK_H
++#define MOTION_SOCK_H
++#include <stdint.h>
++
++enum { MOTION_SOCK_RECORD = 32, MOTION_SOCK_RETRY_MS = 1000, MOTION_SOCK_STALE_MS = 250 };
++
++typedef struct MotionSock {
++    int fd;                       // -1 closed
++    int magic;                    // bytes of the magic still expected (8 after a connect, 0 once it matched)
++    int fill;                     // bytes of a partial record in buf
++    unsigned char buf[MOTION_SOCK_RECORD];
++    uint64_t retry_ns;            // no connect before this
++    uint64_t last_ns;             // when the newest record arrived, 0 none since the connect
++    uint64_t records;             // records read, all connections
++    float a[3], g[3];             // the newest record
++} MotionSock;
++
++#define MOTION_SOCK_INIT {.fd = -1}
++
++// The default socket: $XDG_RUNTIME_DIR/yakin/motion.sock into out; 0 without XDG_RUNTIME_DIR or room.
++int motion_sock_default(char *out, int size);
++// Poll at time now (any monotonic ns clock): (re)connects to path when due, reads what arrived. 1 with the newest
++// sample in a and g (SDL units and axes) when one arrived within MOTION_SOCK_STALE_MS, else 0.
++int motion_sock_poll(MotionSock *s, const char *path, uint64_t now, float a[3], float g[3]);
++// Closes the connection (no motion wanted); the next poll connects again at once.
++void motion_sock_close(MotionSock *s);
++#endif
+diff --git a/runtime/motion_sock_probe.c b/runtime/motion_sock_probe.c
+new file mode 100644
+index 0000000..3575ddc
+--- /dev/null
++++ b/runtime/motion_sock_probe.c
+@@ -0,0 +1,120 @@
++// --probe-motion-sock: the motion socket client (motion_sock.c) against a server this probe plays itself, one thread:
++// magic, records split across writes, the newest record into the fusion (input_motion_axes, motion_feed), stale
++// samples, a bad magic, the server going away and the retry a second later. Needs no game files or gamepad.
++#include <math.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++
++#include "host.h"
++#include "input.h"
++#include "motion_sock.h"
++
++#ifdef _WIN32
++int probe_motion_sock(void) {
++    printf("probe-motion-sock: skipped (no Unix sockets)\n");
++    return 0;
++}
++#else
++#include <stdlib.h>
++#include <sys/socket.h>
++#include <sys/un.h>
++#include <unistd.h>
++
++static int fails;
++#define CHECK(c, what) do { if (!(c)) { fails++; fprintf(stderr, "FAIL motion-sock: %s\n", what); } } while (0)
++enum { MS = 1000000 };
++
++static void put_record(unsigned char *p, uint64_t us, const float a[3], const float g[3]) {
++    for (int i = 0; i < 8; i++) p[i] = (unsigned char)(us >> (8 * i));
++    for (int i = 0; i < 6; i++) {
++        uint32_t u;
++        memcpy(&u, i < 3 ? &a[i] : &g[i - 3], 4);
++        for (int b = 0; b < 4; b++) p[8 + 4 * i + b] = (unsigned char)(u >> (8 * b));
++    }
++}
++
++static int listen_at(const char *path) {
++    struct sockaddr_un sa = {.sun_family = AF_UNIX};
++    snprintf(sa.sun_path, sizeof sa.sun_path, "%s", path);
++    unlink(path);
++    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
++    if (fd < 0 || bind(fd, (struct sockaddr *)&sa, sizeof sa) || listen(fd, 4)) return -1;
++    return fd;
++}
++
++int probe_motion_sock(void) {
++    char dir[] = "/tmp/nx2navi-motion-XXXXXX", path[128];
++    if (!mkdtemp(dir)) return 1;
++    snprintf(path, sizeof path, "%s/motion.sock", dir);
++    MotionSock s = MOTION_SOCK_INIT;
++    float a[3], g[3];
++    uint64_t t = 1000ull * MS;
++
++    CHECK(!motion_sock_poll(&s, path, t, a, g) && s.fd < 0, "no socket: no motion, not connected");
++    int lfd = listen_at(path);
++    if (lfd < 0) return 1;
++    CHECK(!motion_sock_poll(&s, path, t + 500 * MS, a, g) && s.fd < 0, "retry waits a second");
++    t += 1001 * MS;
++    CHECK(!motion_sock_poll(&s, path, t, a, g) && s.fd >= 0, "connects once due, no sample yet");
++    int c = accept(lfd, NULL, NULL);
++
++    // Synthetic rotation: yaw 2 rad/s about SDL's y, lying flat (gravity on SDL's +y as the accelerometer reads it)
++    const float acc[3] = {0, 9.80665f, 0}, gyro[3] = {0.25f, 2.0f, -0.5f};
++    unsigned char out[8 + 3 * 32];
++    memcpy(out, "YAKMOT1", 8);
++    for (int i = 0; i < 3; i++) put_record(out + 8 + 32 * i, (uint64_t)i * 4000, acc, gyro);
++    CHECK(write(c, out, 5) == 5, "write");   // half the magic
++    CHECK(!motion_sock_poll(&s, path, t + 1 * MS, a, g), "partial magic: no sample");
++    CHECK(write(c, out + 5, 8 + 32 + 13 - 5) == 8 + 32 + 13 - 5, "write");   // rest of magic, a record and a part
++    CHECK(motion_sock_poll(&s, path, t + 2 * MS, a, g) && s.records == 1, "one record after the split magic");
++    CHECK(a[1] == acc[1] && g[0] == gyro[0] && g[1] == gyro[1] && g[2] == gyro[2], "record values unchanged");
++    CHECK(write(c, out + 8 + 32 + 13, sizeof out - 8 - 32 - 13) == (ssize_t)(sizeof out - 8 - 32 - 13), "write");
++    CHECK(motion_sock_poll(&s, path, t + 3 * MS, a, g) && s.records == 3, "partial record completed, newest kept");
++
++    // Into the fusion as the motion thread feeds it: Switch z = SDL y, Switch y = -SDL z; rad/s -> revolutions/s
++    MotionFusion *m = motion_new();
++    double ac[3], gy[3];
++    for (int i = 0; i < 50; i++) {
++        input_motion_axes(a, g, ac, gy);
++        motion_feed(m, ac, gy, t + (uint64_t)i * 4 * MS);
++    }
++    MotionState st;
++    CHECK(motion_read(m, &st, 1, t + 49 * 4 * MS) == 1, "fusion has a sample");
++    CHECK(fabsf(st.gyro[2] - 2.0f / (float)(2 * M_PI)) < 1e-5f && fabsf(st.gyro[1] - 0.5f / (float)(2 * M_PI)) < 1e-5f &&
++              fabsf(st.gyro[0] - 0.25f / (float)(2 * M_PI)) < 1e-5f, "gyro in revolutions/s on Switch axes");
++    CHECK(fabsf(st.acc[1] + 0.0f) < 1e-5f && fabsf(st.acc[2] + 1.0f) < 1e-4f, "lying flat reads z = -1 G");
++    CHECK(fabsf(st.angle[2] - 50 * 0.004f * 2.0f / (float)(2 * M_PI)) < 1e-3f, "yaw angle integrates (50 samples of 4 ms)");
++    printf("probe-motion-sock: fusion gyro %.4f %.4f %.4f rev/s, acc %.3f %.3f %.3f G, yaw %.4f rev\n", st.gyro[0],
++           st.gyro[1], st.gyro[2], st.acc[0], st.acc[1], st.acc[2], st.angle[2]);
++
++    // Silent server: the sample goes stale after 250 ms; the connection stays
++    CHECK(motion_sock_poll(&s, path, t + 200 * MS, a, g), "fresh at 197 ms");
++    CHECK(!motion_sock_poll(&s, path, t + 260 * MS, a, g) && s.fd >= 0, "stale at 257 ms, still connected");
++    put_record(out, 1, acc, gyro);
++    CHECK(write(c, out, 32) == 32, "write");
++    CHECK(motion_sock_poll(&s, path, t + 300 * MS, a, g), "fresh again with a new record");
++
++    // Server drops us: no motion, a retry a second later connects again
++    close(c);
++    t += 400 * MS;
++    CHECK(!motion_sock_poll(&s, path, t, a, g) && s.fd < 0, "disconnect noticed");
++    CHECK(!motion_sock_poll(&s, path, t + 900 * MS, a, g) && s.fd < 0, "no reconnect before a second");
++    t += 1001 * MS;
++    CHECK(!motion_sock_poll(&s, path, t, a, g) && s.fd >= 0, "reconnected");
++    c = accept(lfd, NULL, NULL);
++    CHECK(write(c, "NOTYAK!", 8) == 8, "write");
++    CHECK(!motion_sock_poll(&s, path, t + MS, a, g) && s.fd < 0, "bad magic drops the connection");
++    close(c);
++
++    // Socket removed: quiet retries, no motion; close() stops at once
++    close(lfd);
++    unlink(path);
++    t += 1001 * MS;
++    CHECK(!motion_sock_poll(&s, path, t, a, g) && s.fd < 0, "socket gone: not connected");
++    motion_sock_close(&s);
++    rmdir(dir);
++    printf("probe-motion-sock: %s (%d failures)\n", fails ? "FAIL" : "ok", fails);
++    return fails != 0;
++}
++#endif
+-- 
+2.56.0
+

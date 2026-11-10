@@ -250,6 +250,7 @@ All are in `~/claude/nx2navi/patches/`, as local commits on `build`. Status come
 **Input**
 - 0014: Steam Input pad. On.
 - 0034-input: `NX2NAVI_MOTION_PAD`, auto. On.
+- 0051-input: `NX2NAVI_MOTION_SOCK`, auto (yakin socket, only without gamepad sensors). In `nx2navi.motion` only.
 
 **Debug and tooling**
 - 0005 (`NX2NAVI_WATCH`), 0007 (shot crop), 0011 (`DUMP_REQ`), 0015 (mark this moment), 0017 (`DUMP_DRAWS`), 0020 (`OQ_FORCE`).

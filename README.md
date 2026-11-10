@@ -421,6 +421,7 @@ distribution). After `just update`, `build` may need a rebase onto the new upstr
   with 0050. State: 17 rewritten live through the reload loop (originals in `build/v111/reload-bak/`), all
   `spirv-val` clean; none was drawn again before the report, so a successful pipeline build is **not yet seen**.
   0050 compiles (scratch build `.lab/xlate-txq/build`) but has not translated an affected shader.
+- `0051-input-NX2NAVI_MOTION_SOCK-reads-gyro-and-acceleromet.patch`: `NX2NAVI_MOTION_SOCK` (default `auto`, live), see "Motion from yakin's socket".
 
 ## Mark this moment
 
@@ -460,6 +461,16 @@ with sensors whose name contains it. `NX2NAVI_MOTION=0` still turns motion off. 
 unchanged, so `input_motion_axes` holds if hid-steam reports in SDL's convention like hid-playstation; not checked on
 the hardware. Probe: `--probe-cfg` (motion pad checks). Castle-recording replay (frame 1500) unchanged.
 
+
+## Motion from yakin's socket (patch 0051)
+
+`NX2NAVI_MOTION_SOCK` (default `auto`, live): when neither the gamepad in use nor a `MOTION_PAD` lender has sensors,
+the motion thread reads `$XDG_RUNTIME_DIR/yakin/motion.sock` (`runtime/motion_sock.c`): magic `YAKMOT1\0`, then
+32-byte records (u64 monotonic us, accel xyz m/s^2, gyro xyz rad/s, SDL axes), fed through `input_motion_axes` like
+SDL samples. Non-blocking, retries every second, no motion once samples are 250 ms old. `off`, or a socket path.
+Log: `input: motion socket ... connected` / `closed by the server` / `sent a bad magic`. Probe: `--probe-motion-sock`
+(in-process server: split magic and records, units into the fusion, stale, disconnect, retry, bad magic). Fake
+server: `tools/yakmot-fake [path] [yaw rad/s]`. Build: `build/v111/nx2navi.motion`; try: `NX2NAVI_EXE=motion just try`.
 ## Recording bundles
 
 `just play` copies the profile's `save`, `save-tx` and `save-backup` into `build/v111/logs/profile-<ts>/` before the
