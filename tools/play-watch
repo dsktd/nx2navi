@@ -35,7 +35,7 @@ MARK = re.compile(r"mark (\d+) at present (\d+)")
 FRAMETIME = re.compile(r"frametime: 60 s: \d+ frames in [\d.]+ s, mean ([\d.]+) fps, 1% low ([\d.]+) fps")
 PINS = re.compile(r"texture pins at submit \d+: (\d+) live, (\d+) waiting")
 BYFMT = re.compile(r"mem: textures frame (\d+), own memory by vk format/astc/rt/released: (.*)")
-FAULT = re.compile(r"fault caught|device lost|DEVICE_LOST|VK_ERROR|ERROR_OUT_OF|out of memory", re.I)
+FAULT = re.compile(r"fault caught|device lost|DEVICE_LOST|VK_ERROR|ERROR_OUT_OF|out of memory", re.IGNORECASE)
 
 
 QUIET = False
@@ -56,7 +56,7 @@ class Session:
     def __init__(self, path):
         self.path = path
         self.name = os.path.basename(path)[5:-4]
-        self.fh = open(path, "r", errors="replace")
+        self.fh = open(path, errors="replace")  # noqa: SIM115 (followed for the whole session)
         self.state = {}
         self.first_live = None
         self.next_gib = None
@@ -67,7 +67,7 @@ class Session:
         self.samples = []
         self.byfmt = None
         os.makedirs(OUT, exist_ok=True)
-        self.csv = csv.writer(open(os.path.join(OUT, self.name + ".csv"), "a", newline=""))
+        self.csv = csv.writer(open(os.path.join(OUT, self.name + ".csv"), "a", newline=""))  # noqa: SIM115
 
     def summary(self):
         s = self.state
