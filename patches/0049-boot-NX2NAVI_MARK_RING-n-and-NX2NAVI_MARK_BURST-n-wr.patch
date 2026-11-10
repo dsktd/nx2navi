@@ -1,0 +1,172 @@
+From 7abe4e71e99945fe771a522a60321ec9900bd682 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 15:44:32 -0500
+Subject: [PATCH] boot: NX2NAVI_MARK_RING=<n> and NX2NAVI_MARK_BURST=<n> write
+ the n thumbnails before and after a mark to logs/burst-<present>/, read on a
+ background thread (defaults off; RING=1 unchanged) (#156)
+
+---
+ runtime/boot.c   | 93 +++++++++++++++++++++++++++++++++++-------------
+ runtime/cfg.c    |  2 +-
+ runtime/flight.h |  2 +-
+ 3 files changed, 71 insertions(+), 26 deletions(-)
+
+diff --git a/runtime/boot.c b/runtime/boot.c
+index dd95bcb..0ed026b 100644
+--- a/runtime/boot.c
++++ b/runtime/boot.c
+@@ -336,27 +336,67 @@ static void series_shot(const tex_t *t, const int crop[4], uint64_t n) {
+ // counted by the back end only.
+ // Mark this moment: F9, the gamepad chord (input.c, NX2NAVI_MARK_CHORD, default L3+R3 held 0.5 s) or a file mark.req
+ // beside the shader cache folder (any tool: `touch build/v111/mark.req`). A mark logs "mark N at present P", saves this
+-// present as logs/shot-<P>.png, touches dump.req when NX2NAVI_DUMP_REQ=1 (vk_dump.c dumps the next frame), and with
+-// NX2NAVI_MARK_RING=1 writes the thumbnail ring's last MARK_RING_N frames (320x180, blitted on the GPU each present:
+-// gfx_present.c) to logs/mark-<N>/f<frame>.png on a background thread.
++// present as logs/shot-<P>.png and touches dump.req when NX2NAVI_DUMP_REQ=1 (vk_dump.c dumps the next frame).
++// The thumbnail ring (320x180, blitted on the GPU each present: gfx_present.c) also writes frames around a mark:
++// NX2NAVI_MARK_RING=1 the last 30 to logs/mark-<N>/f<frame>.png (as before); NX2NAVI_MARK_RING=<n> (n >= 2) the last n
++// and NX2NAVI_MARK_BURST=<n> the next n, both to logs/burst-<P>/<frame>.png. A background thread reads each frame once
++// the ring holds it, oldest first, into memory (then PNGs), so the present path pays only the GPU blit; one log line per
++// frame with its mean luminance and near-black/near-white fractions (tools/burst-scan reads the folder).
+ #define MARK_RING_N 30
++#define MARK_SLACK 16   // ring slots beyond the frames a mark writes: the reader's lead before a slot is reused
+ int mark_ring_on;
++static int mark_before, mark_after, mark_legacy;
+ 
+-typedef struct { int no, n; uint64_t first; char dir[PLAT_PATH_MAX]; uint8_t px[]; } MarkRing;
++typedef struct { int no; uint64_t first, last; char dir[PLAT_PATH_MAX]; } MarkRing;
+ 
+ static void mark_ring_write(void *arg) {
+     MarkRing *m = arg;
++    size_t one = (size_t)FLIGHT_THUMB_W * FLIGHT_THUMB_H * 4, count = (size_t)(m->last - m->first + 1);
++    uint8_t *all = malloc(one * count);   // read everything first: a slow disk (a pipeline cache save) must not lose frames
++    int written = 0, missed = 0;
++    uint64_t idle = 0, f = m->first;
++    for (; all && f <= m->last;) {
++        if (vk_thumbs_latest() < f) {   // not presented yet (a burst frame): wait, 5 s without a present ends it
++            if ((idle += 2) > 5000) break;
++            plat_wait_ns(2000000);
++            continue;
++        }
++        idle = 0;
++        uint8_t *px = all + one * (size_t)(f - m->first);
++        if (!vk_thumbs_read(f, px)) px[3] = 0, missed++;   // overwritten before it was read, or no thumbnail for it
++        else px[3] = 255;
++        f++;
++    }
+     plat_file_mkdir_p(m->dir);
+-    for (int i = 0; i < m->n; i++) {
++    for (uint64_t g = m->first; all && g < f; g++) {
++        uint8_t *px = all + one * (size_t)(g - m->first);
++        if (!px[3]) continue;
++        uint64_t sum = 0;
++        uint32_t dark = 0, bright = 0, n = FLIGHT_THUMB_W * FLIGHT_THUMB_H;
++        for (size_t k = 0; k < one; k += 4) {
++            uint32_t y = (54u * px[k] + 183u * px[k + 1] + 19u * px[k + 2]) >> 8;   // Rec. 709 weights
++            sum += y, dark += y < 8, bright += y > 247;
++            px[k + 3] = 255;
++        }
+         char path[PLAT_PATH_MAX + 32];
+-        snprintf(path, sizeof path, "%s/f%llu.png", m->dir, (unsigned long long)(m->first + (uint64_t)i));
+-        uint8_t *px = m->px + (size_t)i * FLIGHT_THUMB_W * FLIGHT_THUMB_H * 4;
+-        if (px[3]) rt_write_png(path, px, FLIGHT_THUMB_W, FLIGHT_THUMB_H);   // alpha 0: the ring no longer held it
++        snprintf(path, sizeof path, mark_legacy ? "%s/f%llu.png" : "%s/%llu.png", m->dir, (unsigned long long)g);
++        rt_write_png(path, px, FLIGHT_THUMB_W, FLIGHT_THUMB_H);
++        if (!mark_legacy)
++            rt_log("mark %d: frame %llu luma %.1f black %.3f white %.3f", m->no, (unsigned long long)g,
++                   (double)sum / n, (double)dark / n, (double)bright / n);
++        written++;
+     }
+-    rt_log("mark %d: %d ring frames written to %s", m->no, m->n, m->dir);
++    rt_log("mark %d: %d ring frames written to %s (%d missed)", m->no, written, m->dir, missed + (int)(m->last + 1 - f));
++    free(all);
+     free(m);
+ }
+ 
++static int mark_knob(const char *name) {
++    const char *v = cfg_get(name);
++    int n = v ? atoi(v) : 0;
++    return n < 0 ? 0 : n > 1000 ? 1000 : n;
++}
++
+ static void mark_poll(uint64_t n) {
+     static int init, dump_req, marks;
+     static char mark_req[PLAT_PATH_MAX], dump_path[PLAT_PATH_MAX];
+@@ -365,8 +405,13 @@ static void mark_poll(uint64_t n) {
+         if (!gfx_shader_beside_cache("mark.req", mark_req, sizeof mark_req)) mark_req[0] = 0;
+         dump_req = cfg_get("NX2NAVI_DUMP_REQ") && atoi(cfg_get("NX2NAVI_DUMP_REQ")) == 1 &&
+                    gfx_shader_beside_cache("dump.req", dump_path, sizeof dump_path);
+-        if (cfg_get("NX2NAVI_MARK_RING") && atoi(cfg_get("NX2NAVI_MARK_RING")) == 1) {
+-            vk_thumbs_enable(MARK_RING_N + 2);   // NX2NAVI_FLIGHT's larger ring, when it came first, serves too
++        mark_before = mark_knob("NX2NAVI_MARK_RING");
++        mark_after = mark_knob("NX2NAVI_MARK_BURST");
++        mark_legacy = mark_before == 1 && !mark_after;
++        if (mark_before == 1) mark_before = MARK_RING_N;
++        if (mark_before || mark_after) {
++            // NX2NAVI_FLIGHT's ring, when it came first, serves instead (frames it no longer holds count as missed)
++            vk_thumbs_enable((mark_before > mark_after ? mark_before : mark_after) + MARK_SLACK);
+             mark_ring_on = 1;
+         }
+     }
+@@ -379,21 +424,21 @@ static void mark_poll(uint64_t n) {
+         FILE *f = fopen(dump_path, "w");
+         if (f) fclose(f);
+     }
+-    uint64_t last = mark_ring_on ? vk_thumbs_latest() : 0;
+-    if (!last) return;
+-    size_t one = (size_t)FLIGHT_THUMB_W * FLIGHT_THUMB_H * 4;
+-    MarkRing *m = calloc(1, sizeof *m + one * MARK_RING_N);
++    if (!mark_ring_on) return;
++    uint64_t last = vk_thumbs_latest();   // a frame or two behind n: the present thread's fence
++    if (!last && !mark_after) return;
++    MarkRing *m = calloc(1, sizeof *m);
+     if (!m) return;
+-    m->no = marks, m->n = MARK_RING_N;
+-    m->first = last >= MARK_RING_N ? last - MARK_RING_N + 1 : 1;
+-    for (int i = 0; i < m->n; i++) {
+-        uint8_t *px = m->px + one * (size_t)i;
+-        if (!vk_thumbs_read(m->first + (uint64_t)i, px)) px[3] = 0;
+-        else for (size_t k = 3; k < one; k += 4) px[k] = 255;
+-    }
++    m->no = marks;
++    m->first = mark_before && last ? (last >= (uint64_t)mark_before ? last - (uint64_t)mark_before + 1 : 1) : last + 1;
++    m->last = last + (uint64_t)mark_after;
+     char name[64];
+-    snprintf(name, sizeof name, "logs/mark-%d", marks);
+-    if (!gfx_shader_beside_cache(name, m->dir, sizeof m->dir)) snprintf(m->dir, sizeof m->dir, "mark-%d", marks);
++    if (mark_legacy) snprintf(name, sizeof name, "logs/mark-%d", marks);
++    else snprintf(name, sizeof name, "logs/burst-%llu", (unsigned long long)n);
++    if (!gfx_shader_beside_cache(name, m->dir, sizeof m->dir)) snprintf(m->dir, sizeof m->dir, "%s", name + 5);
++    if (!mark_legacy)
++        rt_log("mark %d: ring frames %llu-%llu (newest held %llu) to %s", marks, (unsigned long long)m->first,
++               (unsigned long long)m->last, (unsigned long long)last, m->dir);
+     if (!plat_thread_spawn(mark_ring_write, m, "mark ring", 0)) mark_ring_write(m);
+ }
+ 
+diff --git a/runtime/cfg.c b/runtime/cfg.c
+index e373b59..70a4e58 100644
+--- a/runtime/cfg.c
++++ b/runtime/cfg.c
+@@ -45,7 +45,7 @@ static const char *const known[] = {
+     "FLIGHT_SPIKE_MS", "FLIGHT_THUMBS", "FLUSH_SPAN", "FOV", "FOV_PATCH", "FG_HUDLESS_SHOW", "FPS60", "FPS_LIMIT", "FRAMEGEN", "FREEZE_IDLE", "FREE_CORES",
+     "FULLSCREEN", "FXAA", "GAME_ASPECT", "GAME_RES", "GPA", "GPA_EMPTY", "GPA_TWIN", "GPL", "GPL_DRAW_BUILD", "GPU", "GPU_INDEX", "GPU_NAME", "HDR", "HDR_GAME_NITS", "HDR_HUE",
+     "HDR_PEAK_NITS", "HDR_UI_NITS", "HIGHFPS_FIX", "INPUT", "INPUT_RECORD", "INPUT_SCRIPT", "LANG", "LIB_PREBUILD",
+-    "LIB_PREBUILD_KEEP", "LIB_PREBUILD_THREADS", "LOCALE", "LOD_GUARD", "LSTICK_DEADZONE", "MARK_CHORD", "MARK_HOLD_MS", "MARK_RING", "MEMORY", "MENU_LANG", "MENU_SOUND_VOLUME", "MENU_TEST",
++    "LIB_PREBUILD_KEEP", "LIB_PREBUILD_THREADS", "LOCALE", "LOD_GUARD", "LSTICK_DEADZONE", "MARK_BURST", "MARK_CHORD", "MARK_HOLD_MS", "MARK_RING", "MEMORY", "MENU_LANG", "MENU_SOUND_VOLUME", "MENU_TEST",
+     "MENU_CURSOR", "MENU_CURSOR_LOG", "MENU_TEST_DIR", "MENU_TEST_SET", "MINIMAL_LAYOUT", "MIRROR_GAP", "MODS_DIR", "MODS_DISABLED", "MODS_ORDER", "MODS_REBUILD", "MOTION", "MOTION_PAD", "MOUSE_MODE", "MOUSE_DIRECT_PATCH", "MOUSE_SENS", "MOVIE_HOST", "MOVIE_PACE",
+     "MVOBJ_ALL", "MVOBJ_BANKS", "MVOBJ_EQUAL", "MVOBJ_EXACT", "MVOBJ_EXEC", "MVOBJ_NOC4", "MVOBJ_ONLY", "MVOBJ_TIMES", "MVPREV_CHECK", "MVPREV_GROW", "MVPREV_SKIP", "MVPREV_TRUST", "MV_CHECK",
+     "MV_SURVEY",
+diff --git a/runtime/flight.h b/runtime/flight.h
+index 2c6a9c7..bb17a8c 100644
+--- a/runtime/flight.h
++++ b/runtime/flight.h
+@@ -23,5 +23,5 @@ void vk_thumbs_frame(uint64_t frame);    // the present thread names the frame o
+ int vk_thumbs_read(uint64_t frame, uint8_t *rgba);
+ uint64_t vk_thumbs_latest(void);   // the newest frame the ring holds complete, 0 for none
+ 
+-// NX2NAVI_MARK_RING=1 (boot.c): the thumbnail ring also runs for marks, which write its last frames out.
++// NX2NAVI_MARK_RING / NX2NAVI_MARK_BURST (boot.c): the thumbnail ring also runs for marks, which write frames around them.
+ extern int mark_ring_on;
+-- 
+2.56.0
+

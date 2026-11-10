@@ -401,6 +401,10 @@ distribution). After `just update`, `build` may need a rebase onto the new upstr
   `vk_texture_slot_khash_locked`, 3.7% of the replay thread, a cache miss per refill). Lab field window (`nx2navi.bind`,
   same binary): replay 20.29/19.96 -> 19.54/19.71/19.76 ms, 41.7/42.5 -> 43.2/42.9/42.8 fps, p99 unchanged; inside the
   run spread, indicative. Castle 1500 and crash 1700 shots match knob off. NOTES-perf "Binding caches".
+- `0049-boot-NX2NAVI_MARK_RING-n-and-NX2NAVI_MARK_BURST-n-wr.patch`: #156, `NX2NAVI_MARK_RING=<n>` / `NX2NAVI_MARK_BURST=<n>`
+  (**default 0**, RING=1 as before): a mark writes the n thumbnails before / after it to `logs/burst-<present>/`, see
+  "Mark this moment". Built and unit-checked off the GPU (synthetic frame: stats 0.09 ms + PNG 1.19 ms per 320x180
+  frame on the writer thread); first real run is Cal's next session. Binary `nx2navi.burst`.
 
 ## Mark this moment
 
@@ -412,6 +416,13 @@ hidden from the game while both are down), or `touch build/v111/mark.req` from a
 - touches `dump.req` when the game runs with `NX2NAVI_DUMP_REQ=1`, so the next frame is dumped;
 - with `NX2NAVI_MARK_RING=1`, writes the last 30 presents as 320x180 PNGs to `logs/mark-<N>/` (a GPU blit per present
   into a 7 MB host-visible ring, the flight recorder's; written on a background thread). Off by default.
+- with `NX2NAVI_MARK_RING=<n>` (n >= 2) the last n presents and with `NX2NAVI_MARK_BURST=<n>` the next n, both to
+  `logs/burst-<P>/<frame>.png` (320x180, the same GPU ring sized max(n) + 16 slots, about 0.23 MB per slot), plus a
+  log line per frame `mark N: frame F luma L black B white W`. Suggested: `NX2NAVI_MARK_RING=120 NX2NAVI_MARK_BURST=120`
+  (2 s each side, about 55 MB per mark on disk). A background thread copies the frames into memory as the ring holds
+  them, then writes the PNGs (about 1.3 ms CPU per frame there); the present path pays only the blit. Both off by default.
+  `tools/burst-scan logs/burst-<P>` lists frames that differ from both neighbours while those agree (a one-frame blank,
+  flash or missing object) and writes `scan.png` (previous / frame / next per suspect). Patch 0049, #156.
 
 Settings: `NX2NAVI_MARK_CHORD` (pad buttons joined by `+`: south east west north lstick rstick l r zl zr start back
 dpad_*; `off` for none; default `lstick+rstick`), `NX2NAVI_MARK_HOLD_MS` (500).
