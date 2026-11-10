@@ -78,7 +78,10 @@ def run(cmd, **kw):
 def kit(py, src, code, *args):
     """Run code inside the kit (tools/make_game.py imported as k), with the kit's interpreter."""
     pre = 'import sys; sys.path.insert(0, sys.argv[1]); import make_game as k; from pathlib import Path; '
-    run([py, '-I', '-c', pre + code, src / 'tools', *args], cwd=src)
+    # one BLAS thread per lift worker: numpy's default (a thread per core in each of the workers, 32 x 32 here) ran
+    # into the container's limit of 2048 tasks and the lift hung on "pthread_create failed" (2026-11-09)
+    env = {'OPENBLAS_NUM_THREADS': '1', **os.environ}
+    run([py, '-I', '-c', pre + code, src / 'tools', *args], cwd=src, env=env)
 
 
 def step_lift(src, py, extracted):
