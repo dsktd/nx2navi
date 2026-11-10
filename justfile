@@ -134,6 +134,13 @@ debug *args:
     # -nx: the user's ~/.gdbinit (a dashboard) would draw terminal panes into the log; no stdin: nothing to prompt
     {{dev}} env TERM=dumb {{radv}} {{wrapper}} nix shell nixpkgs#gdb -c gdb -nx -batch -q -x "{{flake}}/tools/crash.gdb" --args "build/{{ver}}/nx2navi" {{args}} < /dev/null 2>&1 | tee "$log" | grep -a -v -E "no such proc|preparation progress|PushComputeConstants"
 
+# `just play` on the combined build with the unproven switches of UNCERTAIN.md that passed the lab: the flicker fix,
+# the memory switches and the faster shadow copies. Each can still be overridden from the environment.
+try *args:
+    NX2NAVI_EXE="${NX2NAVI_EXE:-next}" NX2NAVI_TEX_RELEASED_YIELD="${NX2NAVI_TEX_RELEASED_YIELD:-85}" \
+    NX2NAVI_ALIAS_EXTRA_MIB="${NX2NAVI_ALIAS_EXTRA_MIB:-512}" NX2NAVI_AO_ORDER="${NX2NAVI_AO_ORDER:-1}" \
+    NX2NAVI_SHADOW_NT="${NX2NAVI_SHADOW_NT:-1}" {{just_executable()}} -f "{{justfile()}}" play {{args}}
+
 # Play casually with everything Tally needs if something goes wrong, at no measurable cost: no debugger, the log
 # teed to NX2navi/build/{{ver}}/logs/play-<time>.log, every input recorded beside it (replayable with `just replay`),
 # core dumps on, and the run registered as a job so the error watch and the screensaver see it.
