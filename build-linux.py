@@ -9,7 +9,7 @@ the flags build_game.py documents for Linux, through Ninja. Nothing in the check
 
     build-linux.py --src <checkout> [--extracted build/extracted/v111] [--out build/v111] [--cpu v3|v2] [--jobs N]
                    [--exe nx2navi] [--tracy] [--rt-obj NAME] [--guest-opt 1|2|3] [--guest-flags '...']
-                   [--guest-obj NAME] [--link-flags '...']
+                   [--guest-obj NAME] [--link-flags '...'] [--no-ccache]
 
 Steps (each incremental), after make_game.py's exefs and romfs steps have filled <extracted>:
   lift      make_game.step_lift: the kit lifts <extracted>/exefs into <extracted>/build-cache/lift with its fixes
@@ -28,6 +28,10 @@ game code only; the Nix clang wrapper drops -march=native, name the CPU) and --l
 --guest-flags puts the game objects under obj/guest-<tag>/, the tag derived from the level and the flags (O2,
 O2-znver3; --guest-obj names it instead), and leaves obj/{main,sdk,subsdk0} alone: every variant keeps its objects,
 switching between them compiles nothing. NOTES-perf-2026-11-09.md "Guest optimisation level".
+Compiler cache: with ccache on PATH (the flake has it) every compile goes through it, cache in .ccache/ beside this
+script (CCACHE_DIR overrides; 40 GB), so a translation unit is compiled once per set of flags, in any source tree
+laid out the same way (paths below the checkout are hashed relative). ccache stands in as `clang` through a PATH
+entry, so the ninja command lines do not change and nothing already built is rebuilt. --no-ccache turns it off.
 """
 import argparse
 import hashlib
@@ -115,6 +119,23 @@ def guest_tag(opt, flags):
     words = [re.sub(r'[^A-Za-z0-9.]+', '-', f.lstrip('-').removeprefix('march=')).strip('-') for f in flags.split()]
     tag = '-'.join([f'O{opt}'] + words)
     return tag if len(tag) <= 40 else f'O{opt}-{hashlib.sha256(flags.encode()).hexdigest()[:10]}'
+
+
+def ccache_env(src):
+    """The environment that puts ccache in front of clang, or None without ccache."""
+    ccache = shutil.which('ccache')
+    if not ccache:
+        return None
+    cache = Path(os.environ.get('CCACHE_DIR') or HERE / '.ccache')
+    shim = cache / 'bin'
+    shim.mkdir(parents=True, exist_ok=True)
+    for name in ('clang', 'clang++'):
+        link = shim / name
+        if not link.is_symlink() or os.readlink(link) != ccache:
+            link.unlink(missing_ok=True)
+            link.symlink_to(ccache)
+    return {**os.environ, 'PATH': f'{shim}{os.pathsep}{os.environ["PATH"]}', 'CCACHE_DIR': str(cache),
+            'CCACHE_MAXSIZE': os.environ.get('CCACHE_MAXSIZE', '40G'), 'CCACHE_BASEDIR': str(src)}
 
 
 def write_ninja(src, out, lift, gen, cpu, exe='nx2navi', tracy=None, rt_obj=None, guest_opt='1', guest_flags='',
@@ -208,6 +229,7 @@ def main():
     ap.add_argument('--guest-opt', choices=('1', '2', '3'), default='1', help='-O level of the lifted game code (default 1)')
     ap.add_argument('--guest-flags', default='', help='appended to the lifted code\'s compile line, e.g. -march=znver3')
     ap.add_argument('--guest-obj', help='game objects under obj/<name> (default obj/ at the stock flags, else guest-<level and flags>)')
+    ap.add_argument('--no-ccache', action='store_true', help='compile without ccache')
     ap.add_argument('--link-flags', default='', help='appended to the link line')
     a = ap.parse_args()
     src = a.src.resolve()
@@ -224,7 +246,7 @@ def main():
             sys.exit('build-linux: --tracy needs NX2NAVI_TRACY_PREFIX (the nixpkgs tracy store path; the flake sets it)')
     ninja = write_ninja(src, out, lift, gen, a.cpu, a.exe, tracy, a.rt_obj, a.guest_opt, a.guest_flags, a.guest_obj,
                         a.link_flags)
-    run(['ninja', '-C', out, '-f', ninja.name, f'-j{a.jobs}'])
+    run(['ninja', '-C', out, '-f', ninja.name, f'-j{a.jobs}'], env=None if a.no_ccache else ccache_env(src))
     step_copy(src, out)
     print(f'\nbuild-linux: {out / a.exe} ({(out / a.exe).stat().st_size / 1e6:.0f} MB)')
 

@@ -1,4 +1,6 @@
 NX2navi/
+NX2navi-opt/
+.ccache/
 .msys-stub/
 latest-frame.png
 .lab/

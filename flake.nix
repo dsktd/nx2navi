@@ -50,6 +50,7 @@
           llvm.lld
           llvm.bintools
           ninja
+          ccache   # build-linux.py puts it in front of clang (cache in .ccache/), see its docstring
           gnumake
           pkg-config
           git
