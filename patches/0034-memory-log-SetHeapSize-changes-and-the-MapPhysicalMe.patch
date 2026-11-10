@@ -1,0 +1,61 @@
+From b6718b2753f56033cc1b84d2099e6651eb9e0fd6 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 00:02:50 -0500
+Subject: [PATCH] memory: log SetHeapSize changes and the MapPhysicalMemory
+ high-water mark every 256 MiB, to read what the game sizes from the pool it
+ is told about (NX2NAVI_APP_POOL) (#141)
+
+---
+ runtime/memory.c | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/runtime/memory.c b/runtime/memory.c
+index 4b7928e..b75f629 100644
+--- a/runtime/memory.c
++++ b/runtime/memory.c
+@@ -49,6 +49,7 @@ static RtGuestLayout L;
+ static uint64_t mods_lo, mods_hi;   // fixed module window
+ static PlatMutex lock = PLAT_MUTEX_INIT;
+ static uint64_t heap_size, alias_bytes;
++static uint64_t alias_logged;       // alias_bytes at the last high-water log line
+ static uint8_t *alias_pages;        // 1 per mapped 4 KiB page of the alias region
+ typedef struct { uint64_t dst, src, size; } StackMap;
+ static StackMap stack_maps[MAX_STACK_MAPS];
+@@ -281,8 +282,12 @@ uint32_t mem_set_heap_size(uint64_t size, uint64_t *addr) {
+     }
+     if (size > heap_size) commit(L.heap.base + heap_size, size - heap_size, "heap");
+     if (size < heap_size) decommit(L.heap.base + size, heap_size - size, "heap");
++    int changed = size != heap_size;
+     heap_size = size;
+     plat_mutex_unlock(&lock);
++    if (changed)   // what the game sizes from the pool it is told about (GetInfo 6/21): read with NX2NAVI_APP_POOL
++        rt_log("mem: SetHeapSize %llu MiB (pool %llu MiB, images %llu MiB)", (unsigned long long)(size >> 20),
++               (unsigned long long)(L.pool >> 20), (unsigned long long)(image_bytes() >> 20));
+     if (addr) *addr = L.heap.base;
+     return R_OK;
+ }
+@@ -440,6 +445,7 @@ static uint32_t alias_map(int unmap, uint64_t a, uint64_t n) {
+     uint64_t first = (a - L.alias.base) / PAGE, count = n / PAGE;
+     plat_mutex_lock(&lock);
+     uint32_t r = R_OK;
++    uint64_t high = 0;
+     if (unmap) {
+         for (unsigned i = 0; i < nstack_maps; i++)
+             if (overlaps(a, n, stack_maps[i].src, stack_maps[i].size)) {
+@@ -459,9 +465,13 @@ static uint32_t alias_map(int unmap, uint64_t a, uint64_t n) {
+         }
+         alias_runs(first, count, 0, 1);
+         alias_bytes += fresh * PAGE;
++        if (alias_bytes >= alias_logged + (256ull << 20)) alias_logged = high = alias_bytes;
+     }
+ out:
+     plat_mutex_unlock(&lock);
++    if (high)   // the high-water mark of MapPhysicalMemory, every 256 MiB: how much the game takes when the pool allows it
++        rt_log("mem: MapPhysicalMemory high-water %llu MiB (heap %llu MiB, pool %llu MiB)", (unsigned long long)(high >> 20),
++               (unsigned long long)(heap_size >> 20), (unsigned long long)(L.pool >> 20));
+     if (r) rt_log("%sMapPhysicalMemory %#llx+%#llx failed %#x (alias %#llx used, heap %#llx)", unmap ? "Un" : "",
+                   (unsigned long long)a, (unsigned long long)n, r, (unsigned long long)alias_bytes,
+                   (unsigned long long)heap_size);
+-- 
+2.56.0
+
