@@ -1,0 +1,119 @@
+From e13910b0f4982ded1d3e7a06ae1190e87882d900 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 17:36:55 -0500
+Subject: [PATCH] boot: NX2NAVI_WATCH_REQ=1 polls watch.req (<addr>:<size>,
+ arms the write tracer once per run) and peek.req (<addr>:<size>:<presents>,
+ logs those guest words every present) beside the shader cache (debug, off by
+ default) (#164)
+
+---
+ runtime/boot.c | 86 ++++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 86 insertions(+)
+
+diff --git a/runtime/boot.c b/runtime/boot.c
+index ba957e9..a8ce86d 100644
+--- a/runtime/boot.c
++++ b/runtime/boot.c
+@@ -397,6 +397,91 @@ static int mark_knob(const char *name) {
+     return n < 0 ? 0 : n > 1000 ? 1000 : n;
+ }
+ 
++// NX2NAVI_WATCH_REQ=1 (debug, off, #164): two request files beside the shader cache, polled every 4th present.
++// watch.req holds <addr>:<size> (hex) and arms the write tracer (platform.h plat_write_trace) on that range once per
++// run, as NX2NAVI_WATCH_PC does at start. peek.req holds up to 4 lines <addr>:<size>:<presents> (hex, hex, decimal) and
++// logs the guest words of each range (at most 512 bytes) as floats and hex once per present for that many presents.
++// Pages that are not committed are left out.
++typedef struct { uint64_t a, n; int left; } Peek;
++static Peek peeks[4];
++
++static void peek_log(uint64_t n) {
++    for (int i = 0; i < 4; i++) {
++        Peek *k = &peeks[i];
++        if (k->left <= 0) continue;
++        k->left--;
++        for (uint64_t o = 0; o < k->n; o += 32) {
++            uint64_t end, a = k->a + o;
++            int st = plat_mem_state(a & ~0xfffull, (a & ~0xfffull) + 0x1000, &end);
++            if (st != PLAT_PROT_READ && st != PLAT_PROT_RW) continue;
++            char line[512];
++            int m = 0;
++            for (uint64_t w = 0; w < 32 && o + w < k->n; w += 4) {
++                uint32_t u;
++                float f;
++                memcpy(&u, (const void *)(uintptr_t)(a + w), 4);
++                memcpy(&f, &u, 4);
++                m += snprintf(line + m, sizeof line - (size_t)m, " %g(%08x)", (double)f, u);
++            }
++            rt_log("peek: present %llu %#llx:%s", (unsigned long long)n, (unsigned long long)a, line);
++        }
++    }
++}
++
++static void watch_req_poll(uint64_t n) {
++    static int init, armed;
++    static char wreq[PLAT_PATH_MAX], preq[PLAT_PATH_MAX];
++    if (!init) {
++        init = 1;
++        const char *v = cfg_get("NX2NAVI_WATCH_REQ");
++        if (!v || atoi(v) != 1 || !gfx_shader_beside_cache("watch.req", wreq, sizeof wreq) ||
++            !gfx_shader_beside_cache("peek.req", preq, sizeof preq))
++            wreq[0] = 0;
++        else
++            rt_log("watch-req: polling %s and %s (NX2NAVI_WATCH_REQ)", wreq, preq);
++    }
++    if (!wreq[0]) return;
++    peek_log(n);
++    if (n % 4) return;
++    uint64_t sz;
++    uint8_t *b;
++    if (plat_file_exists(wreq) && (b = plat_file_read(wreq, &sz))) {
++        plat_file_delete(wreq);
++        char t[128];
++        snprintf(t, sizeof t, "%.*s", (int)(sz < 127 ? sz : 127), (const char *)b);
++        free(b);
++        char *x;
++        uint64_t a = strtoull(t, &x, 16), len = *x == ':' ? strtoull(x + 1, NULL, 16) : 0x1000;
++        if (armed) rt_log("watch-req: %s ignored, the tracer is armed once per run", t);
++        else {
++            armed = 1;
++            rt_log("watch-pc: writes to %#llx+%#llx are traced (watch.req, present %llu)", (unsigned long long)a,
++                   (unsigned long long)len, (unsigned long long)n);
++            plat_write_trace(a, len);
++        }
++    }
++    if (plat_file_exists(preq) && (b = plat_file_read(preq, &sz))) {
++        plat_file_delete(preq);
++        char *t = malloc(sz + 1);
++        if (!t) { free(b); return; }
++        memcpy(t, b, sz), t[sz] = 0;
++        free(b);
++        int i = 0;
++        for (char *l = strtok(t, "\n"); l && i < 4; l = strtok(NULL, "\n")) {
++            char *x;
++            Peek k = {strtoull(l, &x, 16), 0x40, 60};
++            if (*x == ':') k.n = strtoull(x + 1, &x, 16);
++            if (*x == ':') k.left = atoi(x + 1);
++            if (k.n > 512) k.n = 512;
++            rt_log("peek: %#llx+%#llx for %d presents (peek.req)", (unsigned long long)k.a, (unsigned long long)k.n,
++                   k.left);
++            peeks[i++] = k;
++        }
++        for (; i < 4; i++) peeks[i].left = 0;
++        free(t);
++    }
++}
++
+ static void mark_poll(uint64_t n) {
+     static int init, dump_req, marks;
+     static char mark_req[PLAT_PATH_MAX], dump_path[PLAT_PATH_MAX];
+@@ -425,6 +510,7 @@ static void mark_poll(uint64_t n) {
+             mark_ring_on = 1;
+         }
+     }
++    watch_req_poll(n);
+     plat_write_trace_rearm();
+     const char *why = input_mark_key() ? "F9" : input_mark_take() ? "gamepad chord" : NULL;
+     if (!why && mark_req[0] && n % 4 == 0 && plat_file_exists(mark_req)) why = "mark.req", plat_file_delete(mark_req);
+-- 
+2.56.0
+
