@@ -337,3 +337,145 @@ Lab replay of `input-20261109-165243.txt` (live profile, no bundle) to present 4
   index at create, adopt the parked VkImage in `create_tex` for an identical `VkImageCreateInfo`), capped by bytes;
   saves the upload of textures shared between areas (the 12 MiB "other key" share here says little is shared within
   one scene; across areas it is unknown). Not implemented: the replay did not show the problem.
+
+## After fixes 1+2 (2026-11-09 evening)
+
+Trace `~/claude/kak-starting-at-3:20.tracy` (Tracy 0.13.1, 183 MB, 297 s; `~/claude/ya.tracy` is its first 167 s),
+`build/v111/nx2navi.tracy` rebuilt 19:11 with patch 0024 (GPU-only wait for the submit finish wait and the LOD guard,
+`NX2NAVI_GPU_WAIT` on) and 0025 (write-back compare on a 4-thread pool, lists under 4 MiB inline); dedupe and LRU off.
+Play log `play-20261109-191317.log`. Same method; scripts `perf-scripts/an6.py` (loader), `rep6.py` (windows),
+`anat.py` (offsets inside the frame), `gaps.py` (replay thread) in the scratchpad, exports in `perf-after2/`.
+Threads here: t7 game, t6 replay, t3 completion, t5 audio, t4 producer. The pool workers have no zones.
+
+**Not the same conditions as the before traces.** `nx2navi.ini` has `fps_limit = 60` in this run (the field before
+ran with 240, Kakariko before with 60); the limiter never engages in either area (pacing 0.0, every frame over
+16.7 ms), so it does not matter here. The field view is heavier than this afternoon's: 687 binds and 1002 touched
+pools per frame against 608 and 770 (the before trace itself ran 30 ms at 613 binds for 20 s before it settled at
+22.9). Differences of 2-3 ms between the runs are scene, not patches.
+
+**Segments** (trace time, s): menu at 60 fps until 60; field load 62.0-63.4 (704 + 331 + 341 ms, 2.1 GiB);
+**field, standing: 105.0-185.0** (80 s, 3111 frames; 66-93 is the same within 0.4 ms; 95-104 is a 60 fps
+interlude with ~100 binds, a menu, left out); leaving 185-190; Kakariko load 190-194 (one 146 ms frame, 293 MiB);
+**Kakariko: 200.0 (Cal's 3:20) to 297.3**, of which **running 200-240** (4.4 GiB uploaded), standing 240-265
+(heavy view) and standing 265-end (light view). The before Kakariko window was running throughout, so the
+running part is the like-for-like one.
+
+The play log's shadow line is only printed at frames 600 and 1800 (menu, "0 pooled + N inline", 0.1 MiB), in this log
+and in the before logs, so pooled vs inline comes from the zone values (a list of 4 MiB or more is pooled).
+
+### 1. Frame time, before vs after
+
+| window | frames | mean ms | p50 | p90 | p99 | max | mean fps | >16.7 ms | >33 ms |
+|---|---|---|---|---|---|---|---|---|---|
+| field before (ya.trace, last 30 s) | 1310 | 22.90 | 22.97 | 25.08 | 27.36 | 31.62 | 43.7 | 1310 | 0 |
+| **field after (105-185 s)** | 3111 | 25.71 | 25.87 | 28.13 | 30.41 | 37.42 | 38.9 | 3111 | 3 |
+| field after, last 30 s of it (155-185) | 1172 | 25.59 | 25.67 | 28.14 | 30.61 | 36.63 | 39.1 | 1172 | 2 |
+| Kakariko before (kak, 30 s-end, running) | 1991 | 28.07 | 27.16 | 37.06 | 50.47 | 65.54 | 35.6 | 1982 | 407 |
+| **Kakariko after, running (200-240 s)** | 1340 | 29.84 | 27.88 | 39.21 | 57.19 | 110.78 | 33.5 | 1340 | 334 |
+| Kakariko after, all (200-297 s) | 3656 | 26.61 | 24.77 | 34.67 | 49.46 | 116.58 | 37.6 | 3653 | 512 |
+| Kakariko after, standing heavy (240-265) | 824 | 30.35 | 30.16 | 35.42 | 43.58 | 116.58 | 32.9 | 824 | 176 |
+| Kakariko after, standing light (265-end) | 1492 | 21.65 | 21.87 | 24.07 | 26.11 | 46.85 | 46.2 | 1489 | 2 |
+
+No gain: the field is 2.8 ms slower (heavier view), Kakariko running 1.8 ms slower. The play log agrees (42.2,
+40.0 and 34.7 fps for its three 60 s periods). Kakariko quiet frames 27.6 ms (before 26.3), movement frames (over
+1 MiB of uploads, 17%) 40.7 ms (before 35.6, 19%): 19.9 MiB per movement frame against 10.0.
+
+### 2. Zone cost per frame, before vs after (ms; share of 4.17 / 16.7 ms for the after value)
+
+| zone | thread | field before | field after | of 4.17 / 16.7 | Kak before | Kak after (running) | of 4.17 / 16.7 |
+|---|---|---|---|---|---|---|---|
+| submit finish wait | game | 5.07 | 7.21 | 173% / 43% | 5.35 | 4.91 | 118% / 29% |
+| write-back compare | completion | 5.41 (162 zones, 66.0 MiB) | 4.15 (3 callbacks, 66.3 MiB) | 100% / 25% | 5.09 (157, 60.6 MiB) | 4.39 (3, 60.6 MiB) | 105% / 26% |
+| write-back | completion | 0.36 | 0.42 | 10% / 3% | 0.52 | 0.64 | 15% / 4% |
+| shadow sync | replay | 2.71 (770 pools) | 3.42 (1002 pools) | 82% / 20% | 2.81 (746) | 3.98 (759) | 95% / 24% |
+| bind pipeline (count) | replay | 608 | 687 | | 645 | 642 | |
+| texture upload, first-time | replay | 0 | 0 | | 0.47 (1.56 MiB) | 0.71 (2.19 MiB) | 17% / 4% |
+| texture upload, re-uploads | replay | 0.06 | 0.07 | 2% / 0% | 0.29 (0.35 MiB) | 0.64 (1.16 MiB) | 15% / 4% |
+| audio mix | audio | 1.39 (0.30 per mix) | 1.51 (0.29) | 36% / 9% | 2.92 (0.52) | 3.29 (0.55) | 79% / 20% |
+| nvn submit | producer | 0.13 | 0.15 | 4% / 1% | 0.17 | 0.19 | 5% / 1% |
+
+Write-back compare, pooled vs inline (after): one list of 4 MiB or more per frame, pooled (66.2 MiB in the field,
+60.5 in Kakariko; 4.14 ms per call, p50 4.06, p99 5.41, max 9.18; Kakariko 4.38 / p99 7.00), and two lists per frame
+inline on the completion thread (0.03 MiB each, 4-5 us). So 99.9% of the bytes go through the pool: the completion
+thread t3 takes slice 0 and waits for the three `vk wb diff` workers inside the zone. Rate: 12.8 GB/s before on one
+thread (14.7 for the big ranges), 16.7 GB/s on four (17.6 in the light Kakariko view, 12.9 in the heavy one). Four
+threads buy 1.3x, not 3x: the compare reads 2 x 66 MiB in 4.1 ms = 32 GB/s, which is what the memory delivers
+(inferred from the rate, the workers are not zoned).
+
+### 3. Unzoned game-thread time
+
+| window | frame | finish wait | unzoned game thread | before |
+|---|---|---|---|---|
+| field | 25.71 | 7.21 | 18.50 (72%) | 17.82 (78%) |
+| Kakariko running | 29.84 | 4.91 | 24.93 (84%) | 22.71 (81%) |
+| Kakariko quiet / movement frames | 27.6 / 40.7 | 4.51 / 6.85 | 23.1 / 33.9 | 21.2 / 29.1 |
+| Kakariko standing, light view | 21.65 | 3.36 | 18.28 | |
+
+### 4. Where the wait sits in the frame (this corrects section 3 above)
+
+Offsets from the frame start (present), field, mean ms:
+
+| event | before | after |
+|---|---|---|
+| write-back compares of the previous frame's GPU work (completion thread) | 6-14 (the big ranges 9.3-9.9) | 6.66-10.80 |
+| game thread's first submit = finish wait starts | 16.35 | 16.55 |
+| finish wait ends (the two tiny compares follow it) | 21.42 | 23.76 |
+| the producer's 4 submits, the game thread's second | 22.0 | 24.5 |
+| binds issued by the replay thread while the game thread waits | 134 of 608 | 234 of 687 |
+| from the last of those binds to the end of the wait (GPU) | 2.85 | 2.89 |
+
+The finish wait and the write-back compare **never overlapped**: 0.01 ms of overlap per frame before and after, in
+both areas. The compare of a frame's 66 MiB runs 6-11 ms into the next frame, when the GPU has written; the wait
+starts at 16.5 ms. Section 3's reading of `completion_main` was right about the code and wrong about the timing: the
+callbacks due before the first submission's value are two tiny lists.
+
+What the game thread waits for is the **replay thread**. It is still recording the previous frame's draws when the
+first submission of the next frame arrives 16.5 ms later (a third of the frame's binds are issued during the wait),
+then records that submission, then the GPU needs 2.9 ms. The play log's worst field frames say the same: `replay`
+(recording time between two presents) 32.4 of 37.5 ms, 35.2 of 37.4, 27.6 of 32.8, 29.2 of 32.9. The replay thread
+is saturated; `frame bound ... 0 waited` only said the present never waits, the finish wait is where the game does.
+Frame = replay recording of one frame (~21-22 ms in the field) + GPU 2.9 + the 2 ms from the wait to the present.
+The game thread's own 16.5 ms before its first submit runs in parallel and is the second limit.
+
+Replay thread per frame (field after, 25.7 ms): zoned 3.6 (shadow sync 3.4); gaps under 0.2 ms between its zones
+(draw recording between binds) 9.6; gaps of 0.2-1 ms 5.3 (11.8 per frame, one per part: 11.4 parts); gaps of 1-3 ms
+7.1 (4.4 per frame). Of the long gaps the log names one: `vk: texture pool sets: ... 0.172 ms catch-up and 3.126 ms
+entry refresh per switch (32886 slots, 16786 refilled: ... 16606 address changes ...)`, about one switch per frame,
+3.8 ms as the mean over 7200 switches (so ~4.5 in Kakariko), with `120574916 slot invalidations` per 3600 switches
+from 145 k take-backs and 145 k releases: the released-list churn of render targets re-fills half of the 32 k
+texture-pool slots every frame.
+
+### 5. Verdict per fix
+
+| fix | did it do what it was for | frame gain |
+|---|---|---|
+| 0024 GPU-only wait | Nothing to remove: the compare was not inside the wait before (0.01 ms overlap). The wait is 7.2 ms in the field (5.1 before, more binds behind it) and 4.9 in Kakariko (5.4). | 0 ms, 0 fps |
+| 0025 pooled compare | Yes, modestly: 5.41 -> 4.15 ms per frame in the field (-23%), 5.09 -> 4.39 in Kakariko running (-14%), 162 zones -> 3 callbacks; memory-bound at 16.7 GB/s. | 0 ms, 0 fps: the completion thread is not on the frame's path |
+
+Both are harmless and stay; neither was the bottleneck. Field 43.7 -> 38.9 fps and Kakariko running 35.6 -> 33.5 fps
+are scene differences (binds, pools, 2x the upload bytes per movement frame), not regressions the zones can pin on
+the patches: unzoned game-thread time and the GPU tail are unchanged per bind.
+
+### 6. What dominates now, and the next two fixes for "stable 60 fps, p99 under 16.7 ms"
+
+The replay thread's recording time per frame (~22 ms field, more in Kakariko), then the game thread's own 16.5-18.5 ms
+(field) and 23-25 ms (Kakariko running).
+
+1. **Make the replay thread cheaper, starting with what is already measured.** (a) The texture-pool entry refresh,
+   3.1-4.5 ms per frame: stop the released-list take-back/release of render targets from bumping the buckets (keep a
+   slot's view when the same image comes back at the same address, or bump per entry and not per bucket), so a
+   switch refills hundreds of slots and not 16.8 k. (b) Shadow sync, 3.4-4.0 ms and ~1000 pools per frame: item 4 of
+   the list above, now on the critical path. (c) The 0.45 ms per part between zones (11.4 parts): zone
+   `replay submit` / `part submit` / pool sync first (section 5 of the zone list), then cut. Expected: every ms off
+   the recording comes off the finish wait 1:1 until the wait is gone, so up to 7.2 ms in the field (25.7 -> 18.5 ms,
+   54 fps) and 4.9 ms in Kakariko. Upper bound at no cost: `NX2NAVI_SUBMIT_FINISH=0 just play` for a minute in the
+   field (risk: white dialogue frames).
+2. **The game thread's 16.5 ms before its first submit** (18.5 unzoned per frame in the field, 23-25 in Kakariko):
+   the floor once the wait is gone, and above 16.7 ms on its own. Unmeasured still: sample it (`perf record -t` on
+   the render thread, or Tracy sampling) to split guest code, NVN API cost and blocking, and add the `nvn block`
+   zones. 60 fps needs this under ~14 ms; nothing in the zones says yet whether that is reachable.
+
+After those: Kakariko's movement frames (40.7 ms; 121 frames over 40 ms in 200-240 s, the block at 219.4-223 s with
+50-98 MiB of uploads per frame, 60-111 ms, finish wait 1 ms: an area load on the route) decide the p99 there; the
+upload path item of the Kakariko list stands. Shrinking the written ranges (item 3 of the first list) no longer buys
+frame time, only completion-thread time.
