@@ -656,3 +656,32 @@ across the two L3 domains are not where the 7 ms go. The tail is tighter pinned:
 bound either way). Keeping `NX2NAVI_CPUS=auto` in `just play` costs nothing measurable and trims the tail; with
 other jobs on the machine (as in pair a) the pin also keeps the game off the cores they use only if those jobs are
 kept on the other CCD.
+
+## Runtime optimisation (2026-11-10 night, #148)
+
+Question: does the runtime (the replay thread's code) get faster with -O3, znver3, ThinLTO? **Answer: no measurable
+gain; the default stays `-O2 -g -march=x86-64-v3`.** `build-linux.py --runtime-flags` / `NX2NAVI_RUNTIME_FLAGS` build
+a variant into `obj/runtime-<tag>` (ccache: 65-80 s for the runtime plus relink). Lab replay of
+`input-20261109-191317.txt`, field standing window ticks 6300-10200, `taskset -c 0-7,16-23`, `NX2NAVI_TRACE=perf,present,nvn`
+(scripts `.lab/rtopt/`).
+
+| variant | build | fps | p99 ms | replay ms/frame |
+|---|---|---|---|---|
+| rt0 stock `-O2` | 65 s | 39.9, 43.3, 41.1 (sampled) | 29.1, 26.6, 27.1 | 21.4, 19.7, 20.7 |
+| rt3 `-O3 -march=znver3` | 77 s | 41.2, 41.2 | 27.3, 27.3 | 20.7, 20.6 |
+| rtl rt3 + `-flto=thin` (runtime objects only) | 80 s | 42.9, 25.9 (spikes, unexplained) | 26.2, 246 | 19.9, 28.6 |
+
+All inside the 39.9-43.3 spread of the stock binary. PGO not built (no gain from step 2). `-fno-strict-aliasing` kept
+(RT_FLAGS has it; not tested without). LTO over the 551 lifted files not tried.
+
+Why: replay-thread profile (perf_event_open is denied in the container, so `tools/cpu-sampler.so`, a CPU-time timer
+sampler, 500 Hz, 26k samples, rt0; window by wall time, indicative). 31% of the thread is libc/kernel the flags never
+reach: `ioctl` 15.8% (GPU submit 4.9%, PAGEMAP_SCAN write-watch from `ww_query` 6.8%, RADV
+`radv_update_preamble_cs` destroying and re-creating its preamble command streams on every submit ~3.5%), `memmove`
+14.9% (shadow sync `vk_mem_shadow_sync` vk_memory.c:1097 and `shadow_sync_pool` 9.9%, `vk_exec_record` 2.0%). Then
+`bind_resources` 7.1, `vk_texture_slot_khash_locked` 3.7, `put` (vk_rec) 2.7, `graphics` 2.5, `vk_texture_slot_token`
+2.5, `shader_for` 2.1, memcmp 1.7, `pool_fill` 1.7, `resolve_locked` 1.6, `vk_usnap_find` 1.5, snprintf 1.5,
+`find_stage` 1.4. The snprintf is `DUMP_ARGS` in op_draw/op_draw_idx (vk_exec_draw.c:4036): `vk_dump_armed` is set by
+any `NX2NAVI_DUMP`, and lab-run always sets one, so lab replays pay ~2% replay CPU that `just play` does not.
+Leads, none small enough for tonight: the RADV preamble rebuild per submit (why do ring sizes change each submit?),
+fewer write-watch queries per sync, cheaper shadow copies.

@@ -62,6 +62,12 @@ field's frame rate (39-42 fps in every variant) nor the guest threads' CPU per f
 default stays `-O1` and PGO was not built (`NOTES-perf-2026-11-09.md` "Guest optimisation level"). Every compile goes
 through ccache (`.ccache/`, 40 GB limit): a second build of the same variant is all hits, 52 s against 342 s.
 
+Runtime flags (#148): `NX2NAVI_RUNTIME_FLAGS="-O3 -march=znver3" just game` (`build-linux.py --runtime-flags`,
+objects in `obj/runtime-<tag>`, `-flto=thin` also goes on the link line). Measured 2026-11-10: -O3/znver3 and ThinLTO
+stay inside the run-to-run spread (40-43 fps); a third of the replay thread is libc and kernel (shadow-sync memcpy,
+write-watch and submit ioctls). `tools/cpu-sampler.c` samples one thread without perf (`perf_event_open` is denied in
+the container); `tools/cpu-sampler-report.py` symbolises. NOTES-perf "Runtime optimisation".
+
 `--cpu v2` on `build_game.py` only for a CPU without AVX2. The shader preparation opens a window: run it in the desktop
 session. The game binary finds `libSDL3.so.0` and the Vulkan loader through the shell's `LD_LIBRARY_PATH`, so start it
 from the shell (a desktop entry can call `nix develop ~/claude/nx2navi --command nixVulkanIntel <path>/nx2navi`).
