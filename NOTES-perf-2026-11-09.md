@@ -548,3 +548,92 @@ Tooling that stays (commits 25bbd3e, fae6fd8, f41e756):
   apparent, shared blocks: shader-cache 15 GB, pipeline-cache.bin 4.1 GB, mesa-cache 0.9 GB, shader and seed
   programs 1.2 GB). The tree is only needed to repeat this experiment; `git -C NX2navi worktree remove NX2navi-opt`
   drops it.
+
+## Round 3 (2026-11-09 night)
+
+Side binary `build/v111/nx2navi.new` (and `nx2navi.new.tracy`), patches 0030, 0035, 0036; nothing swapped. Lab replays
+of `input-20261109-191317.txt` with the `just play` env (`REPLAY_ASYNC=1 VK_RECORDER=1 TEX_RELEASED_MIB=3072
+GPU_WAIT=0`, ini limit 60), `NX2NAVI_TRACE=perf,present`. **Only the field standing window (105-185 s of summed
+present intervals) is a valid measure**: Cal watched a replay and the Kakariko part leaves his path at once.
+
+**Why replays drift, and what a deterministic mode needs.** `frame_rate.c` advances game time (`game_us`) by the
+measured wall interval of each present and `input.c` keys the recording to 60 Hz ticks (or world-clock ms) of that
+time. Every replay has other frame intervals, so the game steps with another dt per frame and reads the stick at other
+instants; positions diverge and add up. A "timedemo" mode would step game time by a fixed amount per presented frame
+(or by the recording's own per-present dt, logged by present index), key inputs to the present index, and report
+presents per wall second. Not built.
+
+### 1. Texture-pool entry refresh (patch 0030, both switches default 0)
+
+| run (field window) | fps | mean ms | p99 ms | entry refresh ms/switch | slots refilled (wrote nothing) | shadow sync ms/frame |
+|---|---|---|---|---|---|---|
+| `TEX_STATE_GEN=0` | 42.7 | 23.41 | 28.66 | 2.66 | 17196 (13564) | 2.80 |
+| `TEX_STATE_GEN=1` | 43.1 | 23.18 | 29.40 | 2.67 | 13713 (10032) | 2.79 |
+
+Kakariko window (indicative only, out of sync): 53.4 -> 55.2 fps, refresh 3.08 -> 2.93 ms.
+
+- State generations: 93% of the address bumps return to a known state (244k of 267k per 3600 switches), yet the refills
+  only fall by a fifth and the time not at all. The slots still refilled are seen released at the submission's first
+  sync and live again at a later one: real state changes, of which 10k write no descriptor.
+- The split of the refresh (new `perf: texture pool` lines, the timers cost ~0.4 ms themselves): whole-table walk
+  1.9-2.4 ms (in it the freshness checks 1.0-1.3 ms for 26k slots, 5.7k storage checks and ~1000 slots resolved again
+  because they hold no entry), dirty walks 0.8-1.0 ms over 6-9k slots, refills 0.8-0.9 ms in both walks together,
+  descriptor writes 0.2 ms. `TEX_CHECK_SKIP=1` (skip slots whose texture never uploads) takes under 0.2 ms off the
+  checks.
+- Graveyard (Cal's `play-20261109-215822.log`, 22 fps): 6.3 ms per switch with the same 32.9k slots and 13.8k refills as
+  the field. The refresh does not scale with slots or refills; what grows is the per-texture storage check
+  (`vk_mem_changed_snap` per mirrored entry, 7.4k live pins there) and the machine being busier.
+- Checks: castle slot and crash spot pass with both switches on, castle picture clean beside the run with both off.
+- Not done: shadow-sync batching. The sync is 2.8-3.1 ms per frame (915 pool syncs, 204-223 queries, 10 MiB copied);
+  the write-watch queries of all consumers are 1.5 ms per frame (340-360 queries over 600 MiB). Next candidates, in
+  order: the storage checks per submit by distinct entry and by written region instead of by slot; fewer write-watch
+  queries (600 MiB queried per frame for 10 MiB copied).
+
+### 2. Where the main thread's frame goes (patch 0035, `NX2NAVI_TRACE=nvn`)
+
+The thread that presents (0x1008) is not the game loop: it sleeps in `svc 0x34` (WaitForAddress) 24.6 ms of a 25.9 ms
+frame, woken by the main thread 0x1003 (sched trace: 91-95%), then submits 4 times and presents. The "16.5 ms before
+the first submit" of the Tracy analysis is that sleep. Field window, run `r3-nvn4`, per frame of 25.9 ms:
+
+| thread | entry | ms/frame | calls/frame | note |
+|---|---|---|---|---|
+| main 0x1003 | `nvnQueueSubmitCommands` | 9.26 | 2 | the submit finish wait (blocking) |
+| | `svc 0x34` WaitForAddress | 7.91 | 23.5 | waits for its job workers, 0.34 ms each |
+| | guest code | 4.12 | | the rest of the frame |
+| | `svc 0xb` SleepThread | 1.40 | 239 | 5.9 us each |
+| | `nvnCommandBufferCallCommands` | 0.68 | 563 | 1.2 us each |
+| | `svc 0x1a` (lock) | 0.57 | 26.6 | |
+| | `nvnCommandBufferAddControlMemory` | 0.57 | 26.4 | 21.5 us each |
+| | all other host functions | ~1.1 | ~9900 | |
+| workers 0x104d, 0x1050, 0x1051, 0x1052 (each) | guest code | 3.6-4.0 | | |
+| | host functions | 1.5-1.7 | | CallCommands 0.5, AddControlMemory 0.45, EndRecording 0.14 |
+| | SVC waits | 20.2-20.7 | | 0x34 17.9-18.6, 0xb 1.4-1.5, 0x1a 0.6 |
+
+So of the main thread's frame: runtime 11.6 ms host functions + 2 ms of non-wait SVC cost against 4.1 ms guest code
+and 7.9 ms waiting for workers that are busy 5.5 ms each (3.8 guest + 1.6 runtime). Guest code is 16% of the main
+thread and 15% of a worker: the lifter and -O levels cannot buy the frame (the guest-opt A/B found the same). The
+three largest runtime items and a fix each:
+
+1. **Finish wait, 9.3 ms.** It waits for the replay thread to record and submit the frame's first submission, then
+   for the GPU. See 3: only a cheaper replay thread shortens it.
+2. **Job joins, 7.9 ms in 23 waits** against ~5.5 ms of work per worker: wake-up latency and the workers' own runtime
+   cost (`AddControlMemory` 21-25 us per call on every thread, 80+ calls per frame: look at what it locks or maps),
+   plus `svc 0xb`: 240 sleeps per frame per thread at 6 us (a yield that takes the scheduler lock; a spin of a few
+   hundred ns before giving the core up would do). CCD pinning A/B: see 4.
+3. **`AddControlMemory` + `CallCommands`, 1.25 ms on the main thread** and 1 ms per worker: command recording on the
+   front end; `CallCommands` at 1.2 us for 563 calls is a copy per call, batchable.
+
+### 3. The finish wait (patch 0036, `NX2NAVI_FINISH_DEFER`, default 0)
+
+The game needs no result from the wait; it orders the GPU's reads of guest memory before the game's rewrites
+(upstream's fix for white dialogue frames). With shadow storage the GPU reads the shadow, filled at each part's
+submit, so the prototype returns once the submission is on the GPU and makes the replay thread wait for the GPU
+before the next submission's shadow sync. Field window: 42.3 and 41.0 fps with the knob (the knob-0 runs of those
+pairs ran beside other builds, load 17-23, and are void; clean baselines 42.7 and 43.1). The perf line still shows
+8.6-8.7 ms of fence wait per frame: the wait is for the replay thread, which is ~one submission behind; the GPU is
+busy 10.2 ms per frame. Castle and crash spot pass with the knob, picture clean. Frame = replay recording; the main
+thread's 9 ms is its backlog.
+
+THP: `/proc/<pid>/smaps` of a lab game shows every guest reservation with `nh` (MADV_NOHUGEPAGE) and `uw` (uffd
+write-protect) and 0 AnonHugePages on all large mappings: guest memory is not THP-backed, host THP `always` vs
+`madvise` does not matter for it.

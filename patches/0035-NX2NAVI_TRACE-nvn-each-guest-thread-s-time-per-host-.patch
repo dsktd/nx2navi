@@ -1,0 +1,316 @@
+From ef565c691f85e4c39a84cb6e0a1cb75afb62ea5b Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Mon, 9 Nov 2026 23:46:52 -0500
+Subject: [PATCH 31/32] NX2NAVI_TRACE=nvn: each guest thread's time per host
+ function and SVC, guest code as the rest, every 600 presents (#132)
+
+hostfn_entry and rt_svc time every call (rdtsc, exclusive of the calls inside it) into a table of the calling thread; a wait
+still running at a report is booked to its innermost call. The presenting thread logs itself and the six threads with the most
+guest code. Field, 25.9 ms frame: the presenting thread only waits for the main thread; the main thread spends 9.3 ms in
+nvnQueueSubmitCommands (the finish wait), 7.9 ms waiting for its job workers (svc 0x34), 4.1 ms in guest code.
+---
+ runtime/host.h   |   6 +-
+ runtime/hostfn.c | 171 ++++++++++++++++++++++++++++++++++++++++++++++-
+ runtime/kernel.c |   2 +
+ runtime/main.c   |   4 +-
+ runtime/svc.c    |  11 +++
+ 5 files changed, 190 insertions(+), 4 deletions(-)
+
+diff --git a/runtime/host.h b/runtime/host.h
+index c34b55e..ea4cc7a 100644
+--- a/runtime/host.h
++++ b/runtime/host.h
+@@ -25,7 +25,8 @@ void rt_log_raw(const char *p, size_t n);
+ const char *rt_log_path(void);                  // the log file, NULL when this run writes none
+ enum { RT_TRACE_SVC = 1, RT_TRACE_HOSTCALL = 2, RT_TRACE_IPC = 4, RT_TRACE_FS = 8, RT_TRACE_GFX = 16, RT_TRACE_PERF = 32,
+        RT_TRACE_SCHED = 64, RT_TRACE_AUDIO = 128, RT_TRACE_PRESENT = 256,
+-       RT_TRACE_COUNTERS = 512, RT_TRACE_TEX = 1024 };   // tex: texture upload classes every 600 frames (#132)   // counters: a present/clock line per 60 presents and every voice start (#128 lab)
++       RT_TRACE_COUNTERS = 512, RT_TRACE_TEX = 1024,
++       RT_TRACE_NVN = 2048 };   // nvn: each guest thread's time per host function and SVC, every 600 presents (hostfn.c, #132)   // tex: texture upload classes every 600 frames (#132)   // counters: a present/clock line per 60 presents and every voice start (#128 lab)
+ extern unsigned rt_trace;                       // from NX2NAVI_TRACE=svc,host,ipc,fs,gfx,perf,sched,audio,present (or all)
+ // prof_win.c: NX2NAVI_PROFILE=<path> sampling profiler; NX2NAVI_TRACE=perf frame timing (waits of the render thread)
+ // PERF_TEX: texture uploads on the render thread (deswizzle, decode, staging), PERF_ASTC included
+@@ -118,6 +119,8 @@ const char *hostfn_name(uint64_t addr);                    // name registered at
+ void hostfn_seal(void);                                    // build the dispatch table (rt_dispatch_init over every
+                                                            // linked module); idempotent; registration ends here
+ uint64_t hostfn_calls(void);                               // host-function calls so far, all threads
++uint64_t hostfn_acct_begin(int i, uint64_t *save);         // NX2NAVI_TRACE=nvn: a timed call starts; hostfn_acct_end(slot or
++void hostfn_acct_end(int i, uint64_t t0, uint64_t save);   // -1 - svc, begin's result, save) books it for the thread
+ void hostfn_report(void);                                  // call count per host function to stderr, busiest first
+ int hostfn_table_size(int observers);                      // linked HOST_OVERRIDE (0) / HOST_OBSERVER (1) entries
+ const char *hostfn_table_name(int observers, int i);       // symbol of linked entry i, NULL past the end
+@@ -237,6 +240,7 @@ void kern_signal_system_event(uint64_t ev);                // any thread
+ void kern_clear_system_event(uint64_t ev);                 // any thread; a bound, live event only
+ int kern_svc(Cpu *c, uint32_t imm);                        // thread/sync SVCs; 1 if handled
+ uint64_t kern_now_ns(void);
++uint32_t kern_cur_handle(void);                            // the calling guest thread's handle, 0 on a host thread
+ extern uint64_t rt_guest_start_ns;   // kern_now_ns when the guest started (boot.c), 0 before
+ typedef struct { uint64_t svcs, threads, host_calls; } RtStats;
+ RtStats rt_stats(void);                                    // host_calls: hostfn_calls()
+diff --git a/runtime/hostfn.c b/runtime/hostfn.c
+index d5ba2b2..c649e3b 100644
+--- a/runtime/hostfn.c
++++ b/runtime/hostfn.c
+@@ -10,6 +10,7 @@
+ #include <string.h>
+ 
+ #include "host.h"
++#include "platform/platform.h"
+ 
+ #define MAX_HOSTFN 4096   // dispatch.c holds HOST_CAP / 2 host functions
+ #define MAX_ADDED 64
+@@ -37,6 +38,7 @@ typedef struct {
+     uint64_t original;   // observers: the guest definition rt_original calls
+     uint64_t calls;
+     int blocking;        // runs with the virtual core given up (hostfn_blocking)
++    int fiber;           // switches fibers: not timed (NX2NAVI_TRACE=nvn)
+ } Slot;
+ static Slot slots[MAX_HOSTFN];
+ static int nslots;
+@@ -94,7 +96,8 @@ uint64_t hostfn_register(const char *name, GuestFn fn) {
+     if (nslots == MAX_HOSTFN) rt_fatal("hostfn_register: more than %d host functions", MAX_HOSTFN);
+     uint64_t a = slot_addr(nslots);
+     if (a >= RT_RET_HOST) rt_fatal("hostfn_register: host-function window full");
+-    slots[nslots] = (Slot){.name = name, .fn = fn, .blocking = !strncmp(name, "_ZN2nn2fs", 9)};
++    slots[nslots] = (Slot){.name = name, .fn = fn, .blocking = !strncmp(name, "_ZN2nn2fs", 9),
++                           .fiber = strstr(name, "Fiber") != NULL};
+     rt_register_host(a, hostfn_entry);
+     nslots++;
+     return a;
+@@ -148,10 +151,176 @@ __attribute__((noinline)) static void hostfn_blocking(Cpu *c, GuestFn fn) {
+     kern_core_back(&away);
+ }
+ 
++// ---- NX2NAVI_TRACE=nvn (#132): where the guest threads' frame goes, without a sampler
++// Every host function call and SVC is timed (rdtsc) into a table of its thread, exclusive of the host calls and SVCs
++// made inside it. Every 600 presents the presenting thread logs, for itself and the busiest other threads, per frame:
++// the time in host functions, in SVCs (the waits: 0x34 WaitForAddress, 0x18 WaitSynchronization, 0x1a/0x1c locks and
++// condition variables, 0xb sleep) and the rest, which is lifted guest code (plus waits for a virtual core outside a
++// call: NX2NAVI_TRACE=sched has those), and the entries that took the most time: 15 for the thread with the most guest
++// code, 6 for the others. The blocking calls (present and its pacing, queue and sync waits, pool map and
++// flush, nn::fs) are entries like any other. The thread handles are those of the sched trace. Fiber switches are not
++// timed: the call returns when the fiber is resumed, possibly on another thread. Off, the cost is one branch per call.
++#define ACCT_SVC 256
++#define ACCT_N (MAX_HOSTFN + ACCT_SVC)
++#define ACCT_THREADS 256
++#define ACCT_DEPTH 16
++typedef struct { uint64_t calls, ticks; } Acct;
++typedef struct {
++    Acct a[ACCT_N], prev[ACCT_N];   // since the start; as of the last report (the reporting thread's)
++    uint64_t child;                 // ticks of the timed calls inside the one running
++    // the running calls, innermost last: start, entry, and the ticks of it a report already booked (a wait that runs
++    // through a report: the thread's root is often a host function that never returns, so the innermost one counts)
++    struct { uint64_t t0, credit; int i; } open[ACCT_DEPTH];
++    int32_t depth;
++    uint64_t presents;
++    uint32_t handle;
++} AcctThread;
++static _Thread_local AcctThread *acct_t;
++static AcctThread *acct_all[ACCT_THREADS];
++static int32_t acct_n;
++static uint64_t acct_tsc, acct_ns;   // the last report
++
++__attribute__((noinline)) static AcctThread *acct_thread(void) {   // noinline: read again after a call
++    AcctThread *t = acct_t;
++    if (!t) {
++        if (!(t = acct_t = calloc(1, sizeof *t))) rt_fatal("hostfn: out of memory (NX2NAVI_TRACE=nvn)");
++        t->handle = kern_cur_handle();
++        int i = __atomic_fetch_add(&acct_n, 1, __ATOMIC_RELAXED);
++        if (i < ACCT_THREADS) __atomic_store_n(&acct_all[i], t, __ATOMIC_RELEASE);
++    }
++    return t;
++}
++
++// i: a host function slot, or -1 - n for SVC n.
++uint64_t hostfn_acct_begin(int i, uint64_t *save) {
++    AcctThread *t = acct_thread();
++    *save = t->child, t->child = 0;
++    uint64_t now = __builtin_ia32_rdtsc();
++    int d = t->depth;
++    if (d < ACCT_DEPTH) t->open[d].t0 = now, t->open[d].credit = 0, t->open[d].i = i < 0 ? MAX_HOSTFN + (-1 - i) : i;
++    __atomic_store_n(&t->depth, d + 1, __ATOMIC_RELEASE);
++    return now;
++}
++
++void hostfn_acct_end(int i, uint64_t t0, uint64_t save) {
++    AcctThread *t = acct_thread();
++    uint64_t dt = __builtin_ia32_rdtsc() - t0, own = dt > t->child ? dt - t->child : 0;
++    int d = t->depth - 1;
++    __atomic_store_n(&t->depth, d, __ATOMIC_RELEASE);
++    if (d < ACCT_DEPTH) {   // what a report booked while it ran
++        uint64_t c = __atomic_load_n(&t->open[d].credit, __ATOMIC_RELAXED);
++        own = own > c ? own - c : 0;
++    }
++    Acct *a = &t->a[i < 0 ? MAX_HOSTFN + (-1 - i) : i];
++    a->calls++, a->ticks += own;
++    t->child = save + dt;
++}
++
++static int acct_by_ticks(const void *x, const void *y) {
++    uint64_t a = *(const uint64_t *)x, b = *(const uint64_t *)y;   // {ticks, index}
++    return a < b ? 1 : -(a > b);
++}
++
++static void acct_report(AcctThread *self) {
++    static PlatMutex lock = PLAT_MUTEX_INIT;
++    static uint64_t order[ACCT_N][2], busy[ACCT_THREADS][2];
++    static Acct d[ACCT_N];
++    plat_mutex_lock(&lock);
++    uint64_t now = __builtin_ia32_rdtsc(), ns = plat_now_ns();
++    if (!acct_tsc) {   // the first window has no start: only the snapshots
++        int n = __atomic_load_n(&acct_n, __ATOMIC_RELAXED);
++        for (int i = 0; i < n && i < ACCT_THREADS; i++)
++            if (acct_all[i]) memcpy(acct_all[i]->prev, acct_all[i]->a, sizeof acct_all[i]->a);
++        acct_tsc = now, acct_ns = ns;
++        plat_mutex_unlock(&lock);
++        return;
++    }
++    uint64_t span = now - acct_tsc;
++    double k = (double)(ns - acct_ns) / (double)span / 600e6;   // ticks -> ms per frame
++    int n = __atomic_load_n(&acct_n, __ATOMIC_RELAXED), nb = 0;
++    if (n > ACCT_THREADS) n = ACCT_THREADS;
++    for (int i = 0; i < n; i++) {   // threads by their guest code time
++        AcctThread *t = __atomic_load_n(&acct_all[i], __ATOMIC_ACQUIRE);
++        if (!t) continue;
++        // a call still running (a wait, mostly): its time in this window is booked now and taken off when it ends
++        int dp = __atomic_load_n(&t->depth, __ATOMIC_ACQUIRE);
++        if (dp > 0 && dp <= ACCT_DEPTH && t != self) {
++            uint64_t o = t->open[dp - 1].t0, part = now - (o > acct_tsc ? o : acct_tsc);
++            if (o && o < now) {
++                t->prev[t->open[dp - 1].i].ticks -= part;
++                __atomic_fetch_add(&t->open[dp - 1].credit, part, __ATOMIC_RELAXED);
++            }
++        }
++        uint64_t in = 0;
++        for (int j = 0; j < ACCT_N; j++) in += t->a[j].ticks - t->prev[j].ticks;
++        busy[nb][0] = in < span ? span - in : 0, busy[nb][1] = (uint64_t)i, nb++;
++    }
++    qsort(busy, (size_t)nb, sizeof *busy, acct_by_ticks);
++    rt_log("nvn: presents %llu-%llu, %.2f ms per frame; presenting thread %#x; per thread and frame: guest code, host "
++           "functions, SVCs (waits), and the entries with the most time",
++           (unsigned long long)self->presents - 599, (unsigned long long)self->presents, span * k, self->handle);
++    for (int b = 0, shown = 0; b < nb; b++) {
++        AcctThread *t = acct_all[busy[b][1]];
++        if (shown >= 6 && t != self) {
++            memcpy(t->prev, t->a, sizeof t->a);
++            continue;
++        }
++        uint64_t in[2] = {0}, calls = 0;
++        int m = 0;
++        for (int i = 0; i < ACCT_N; i++) {
++            d[i] = (Acct){t->a[i].calls - t->prev[i].calls, t->a[i].ticks - t->prev[i].ticks};
++            t->prev[i].calls += d[i].calls, t->prev[i].ticks += d[i].ticks;
++            in[i >= MAX_HOSTFN] += d[i].ticks, calls += d[i].calls;
++            if (d[i].ticks) order[m][0] = d[i].ticks, order[m][1] = (uint64_t)i, m++;
++        }
++        qsort(order, (size_t)m, sizeof *order, acct_by_ticks);
++        uint64_t all = in[0] + in[1];
++        rt_log("nvn: thread %#x%s: guest code %.2f ms, host functions %.2f ms, SVCs %.2f ms, %.0f calls", t->handle,
++               t == self ? " (presents)" : "", (all < span ? span - all : 0) * k, in[0] * k, in[1] * k, calls / 600.0);
++        for (int j = 0; j < m && j < (shown ? 6 : 15); j++) {
++            int i = (int)order[j][1];
++            char svc[16];
++            snprintf(svc, sizeof svc, "svc %#x", i - MAX_HOSTFN);
++            rt_log("nvn:   %-56s %8.3f ms %9.1f calls %9.0f ns each", i < MAX_HOSTFN ? slots[i].name : svc,
++                   order[j][0] * k, d[i].calls / 600.0, d[i].calls ? order[j][0] * k * 600e6 / (double)d[i].calls : 0.0);
++        }
++        shown++;
++    }
++    acct_tsc = __builtin_ia32_rdtsc(), acct_ns = plat_now_ns();
++    plat_mutex_unlock(&lock);
++}
++
++__attribute__((noinline)) static void hostfn_timed(Cpu *c, Slot *s, int i) {
++    static int i_present = -1;
++    if (i_present < 0) {
++        int f = MAX_HOSTFN;
++        for (int k = 0; k < nslots; k++)
++            if (!strcmp(slots[k].name, "nvn:nvnQueuePresentTexture")) f = k;
++        i_present = f;
++    }
++    int fiber = s->fiber;
++    uint64_t save = 0, t0 = 0;
++    if (!fiber) t0 = hostfn_acct_begin(i, &save);
++    if (s->blocking) hostfn_blocking(c, s->fn);
++    else if (kern_host_track && c->thread) hostfn_tracked(c, s->fn);
++    else s->fn(c);
++    if (fiber) return;
++    hostfn_acct_end(i, t0, save);
++    if (i == i_present) {
++        AcctThread *t = acct_thread();
++        if (++t->presents % 600 == 0) acct_report(t);
++    }
++}
++
+ static void hostfn_entry(Cpu *c) {
+     uint64_t i = (c->pc - RT_HOSTFN_BASE) >> 4;
+     if (__builtin_expect((c->pc & 15) || i >= (uint64_t)nslots, 0)) bad_entry(c);
+     Slot *s = &slots[i];
++    if (__builtin_expect(rt_trace & RT_TRACE_NVN, 0)) {
++        __atomic_fetch_add(&s->calls, 1, __ATOMIC_RELAXED);
++        hostfn_timed(c, s, (int)i);
++        return;
++    }
+     uint64_t n = __atomic_fetch_add(&s->calls, 1, __ATOMIC_RELAXED);
+     if (__builtin_expect(!n && (rt_trace & RT_TRACE_HOSTCALL), 0)) {
+         char lr[96];
+diff --git a/runtime/kernel.c b/runtime/kernel.c
+index 8c4d5a6..f834ea4 100644
+--- a/runtime/kernel.c
++++ b/runtime/kernel.c
+@@ -1053,6 +1053,8 @@ static uint32_t block(RtThread *t, int kind, int64_t ns) {
+     return r;
+ }
+ 
++uint32_t kern_cur_handle(void) { return tcur ? tcur->handle : 0; }
++
+ int kern_core_away(void) {
+     RtThread *t = tcur;
+     if (!t || t->cur_core < 0) return 0;
+diff --git a/runtime/main.c b/runtime/main.c
+index fd52f9d..a1b3642 100644
+--- a/runtime/main.c
++++ b/runtime/main.c
+@@ -136,13 +136,13 @@ static void parse_trace(void) {
+     static const struct { const char *name; unsigned bit; } names[] = {
+         {"svc", RT_TRACE_SVC}, {"host", RT_TRACE_HOSTCALL}, {"ipc", RT_TRACE_IPC}, {"fs", RT_TRACE_FS},
+         {"gfx", RT_TRACE_GFX}, {"perf", RT_TRACE_PERF}, {"tex", RT_TRACE_TEX}, {"sched", RT_TRACE_SCHED}, {"audio", RT_TRACE_AUDIO},
+-        {"present", RT_TRACE_PRESENT}, {"counters", RT_TRACE_COUNTERS}, {"all", ~0u}};
++        {"present", RT_TRACE_PRESENT}, {"counters", RT_TRACE_COUNTERS}, {"nvn", RT_TRACE_NVN}, {"all", ~0u}};
+     for (const char *p = e; *p;) {
+         size_t n = strcspn(p, ",");
+         int known = 0;
+         for (unsigned i = 0; i < sizeof names / sizeof *names; i++)
+             if (strlen(names[i].name) == n && !strncmp(p, names[i].name, n)) rt_trace |= names[i].bit, known = 1;
+-        if (!known && n) rt_log("NX2NAVI_TRACE: unknown item '%.*s' (svc, host, ipc, fs, gfx, perf, sched, audio, present, counters, all)", (int)n, p);
++        if (!known && n) rt_log("NX2NAVI_TRACE: unknown item '%.*s' (svc, host, ipc, fs, gfx, perf, sched, audio, present, counters, tex, nvn, all)", (int)n, p);
+         p += n + (p[n] == ',');
+     }
+ }
+diff --git a/runtime/svc.c b/runtime/svc.c
+index 386b995..ca5e422 100644
+--- a/runtime/svc.c
++++ b/runtime/svc.c
+@@ -135,8 +135,19 @@ static void get_info(Cpu *c, uint64_t pc) {
+ }
+ 
+ static void svc_body(Cpu *c, uint32_t imm, uint64_t pc);
++static void rt_svc_(Cpu *c, uint32_t imm, uint64_t pc);
+ 
+ void rt_svc(Cpu *c, uint32_t imm, uint64_t pc) {
++    if (__builtin_expect(rt_trace & RT_TRACE_NVN, 0)) {   // the SVC's time in the thread's table (hostfn.c)
++        uint64_t save, t0 = hostfn_acct_begin(-1 - (int)(imm & 0xff), &save);
++        rt_svc_(c, imm, pc);
++        hostfn_acct_end(-1 - (int)(imm & 0xff), t0, save);
++        return;
++    }
++    rt_svc_(c, imm, pc);
++}
++
++static void rt_svc_(Cpu *c, uint32_t imm, uint64_t pc) {
+     kern_checkpoint();
+     if (__builtin_expect(!kern_host_track || !c->thread, 1)) {
+         svc_body(c, imm, pc);
+-- 
+2.56.0
+

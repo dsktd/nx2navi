@@ -1,0 +1,84 @@
+From b52e103533061b05c7cee6c8f9da5baaa1bf7be4 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Mon, 9 Nov 2026 23:46:52 -0500
+Subject: [PATCH 32/32] vk_sync: NX2NAVI_FINISH_DEFER=1 ends the submit finish
+ wait when the submission is on the GPU and moves the GPU part in front of the
+ next submission's shadow sync (off: no gain, the wait is for the replay
+ thread) (#132)
+
+---
+ runtime/vk_sync.c | 41 ++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 40 insertions(+), 1 deletion(-)
+
+diff --git a/runtime/vk_sync.c b/runtime/vk_sync.c
+index 4f23389..01a97f1 100644
+--- a/runtime/vk_sync.c
++++ b/runtime/vk_sync.c
+@@ -357,7 +357,10 @@ static CmdSlot *take_slot(VkCtx *c, uint64_t fence) {
+ // submitted right before the part that needs them and timed like a part; VK_NULL_HANDLE when there are none. After the
+ // part was recorded, sub_lock held; may move slots[].
+ // First brings the shadow storage up to date with the CPU's writes, which needs no command buffer.
++static void defer_wait(uint64_t fence);
++
+ static VkCommandBuffer prologue(VkCtx *c, uint64_t fence) {
++    defer_wait(fence);
+     vk_mem_shadow_sync();   // shadow storage: the CPU's writes go in before the part is submitted
+     if (!vk_mem_mirror_pending()) return VK_NULL_HANDLE;
+     int i = claim_slot(c, fence);   // before reading slots: the claim may move it
+@@ -460,6 +463,7 @@ uint64_t vk_sync_submit(const uint64_t *handles, int n) {
+     plat_mutex_lock(&st_lock);
+     __atomic_store_n(&issued, fence, __ATOMIC_RELEASE);
+     plat_cond_broadcast(&cv_work);
++    plat_cond_broadcast(&cv_done);   // NX2NAVI_FINISH_DEFER: a submitter waits for issued
+     plat_mutex_unlock(&st_lock);
+     static unsigned subs;
+     if (++subs % 4096 == 0) rec_stats_log();
+@@ -528,9 +532,44 @@ static int gpu_wait_on(void) {   // NX2NAVI_GPU_WAIT: 1 (default) reached_gpu, 0
+     return on;
+ }
+ 
++// NX2NAVI_FINISH_DEFER (default 0; =1, asynchronous replay only): the game's submit finish wait and the LOD guard
++// return once the submission is replayed and handed to the GPU, and the GPU part of the wait moves to the replay
++// thread, in front of the next submission's first shadow sync (prologue). The wait keeps the GPU's reads of guest
++// memory ahead of the game's rewrites. With shadow storage the GPU reads the shadow, which holds what the game's
++// memory held at the sync before each part's submit: once every part of the submission is submitted, a rewrite
++// reaches the GPU only through the sync of a later submission, so that sync is what has to wait for the GPU, not the
++// game. The game thread's wait was 9 ms of a 25.8 ms field frame, about 3 ms of it the GPU. Not covered: a guest
++// read of memory the submission's GPU work writes, without a sync wait (the write-back lands later than before).
++static uint64_t defer_value;   // st_lock: newest value a deferred wait asked for
++
++static int defer_on(void) {
++    static int on = -1;
++    if (on < 0) {
++        on = rt_knob("FINISH_DEFER", "0") && vk_replay_async();
++        if (on) rt_log("vk: the submit finish wait ends when the submission is on the GPU; the next submission's shadow sync waits for the GPU (NX2NAVI_FINISH_DEFER)");
++    }
++    return on;
++}
++
++static void defer_wait(uint64_t fence) {   // replay thread, before a part's shadow sync
++    if (!defer_on()) return;
++    plat_mutex_lock(&st_lock);
++    uint64_t v = defer_value;
++    plat_mutex_unlock(&st_lock);
++    if (v && v < fence) counter_wait(gpu_wait_on() ? &reached_gpu : &done, v, 2000000000ull);
++}
++
+ int vk_sync_gpu_wait(uint64_t value, uint64_t timeout_ns) {
+     uint64_t p0 = perf_begin();
+-    int ok = counter_wait(gpu_wait_on() ? &reached_gpu : &done, value, timeout_ns);
++    int ok;
++    if (defer_on()) {
++        plat_mutex_lock(&st_lock);
++        if (value > defer_value) defer_value = value;
++        plat_mutex_unlock(&st_lock);
++        ok = counter_wait(&issued, value, timeout_ns);
++    } else {
++        ok = counter_wait(gpu_wait_on() ? &reached_gpu : &done, value, timeout_ns);
++    }
+     perf_end(PERF_FENCE, p0);
+     perf_gpu_wait(p0);
+     return ok;
+-- 
+2.56.0
+

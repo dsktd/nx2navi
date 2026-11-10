@@ -320,6 +320,14 @@ distribution). After `just update`, `build` may need a rebase onto the new upstr
   unchanged) caps the wait of a draw into never-rendered targets for its pipeline. A fight frame waited 637.6 ms on
   one such graphics draw (54 vertices, fresh 960x540 targets) despite PIPE_SKIP=any. Low values skip it instead; a
   true one-shot would stay empty, so off by default and not yet lab-checked.
+- `0035-NX2NAVI_TRACE-nvn-each-guest-thread-s-time-per-host-.patch`: #132 tooling. `NX2NAVI_TRACE=nvn` times every host
+  function call and SVC (rdtsc, exclusive) per guest thread and logs every 600 presents, for the presenting thread and
+  the six threads with the most guest code: guest code (the rest), host functions, SVCs, and the top entries (15 for
+  the first thread). Thread handles match `NX2NAVI_TRACE=sched`. About 20 ns per call. Table: NOTES-perf "Round 3".
+- `0036-vk_sync-NX2NAVI_FINISH_DEFER-1-ends-the-submit-finis.patch`: #132. `NX2NAVI_FINISH_DEFER=1` (**default 0**, async
+  replay only): the submit finish wait returns once the submission is on the GPU; the replay thread waits for the GPU
+  before the next submission's shadow sync. Castle slot and crash spot pass, picture clean; no gain (42.3 / 41.0 fps
+  against 42.7 / 43.1 in the field window): the wait is for the replay thread, not the GPU.
 
 ## Mark this moment
 

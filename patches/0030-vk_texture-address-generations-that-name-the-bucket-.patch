@@ -1,0 +1,392 @@
+From 447d59e71a062e8dfafdb88ace4b348a85c0f044 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Mon, 9 Nov 2026 21:09:01 -0500
+Subject: [PATCH] vk_texture: address generations that name the bucket's state
+ (NX2NAVI_TEX_STATE_GEN) and a per-submit check that skips slots of textures
+ that never upload (NX2NAVI_TEX_CHECK_SKIP), both off: no measurable gain;
+ NX2NAVI_TRACE=perf splits the texture pool refresh per 600 switches (#132)
+
+Lab, field standing window of the 19:13 recording: the state generations take the refills of the pool refresh from 17,200 to
+13,700 slots per switch (93% of the address bumps return to a known state) and the refresh stays at 2.7 ms: the slots still
+refilled are seen released at the submission's first sync and live again later, and 10,000 of them write nothing. The check
+skip takes under 0.2 ms off the 1.1 ms of freshness checks. The split: whole-table walk 1.9-2.4 ms (checks 1.0-1.3, 26,000
+slots, 5,700 storage checks), dirty walks 0.8-1.0 ms, refills 0.8-0.9 ms in both, descriptor writes 0.2 ms.
+---
+ runtime/vk.h           |   2 +-
+ runtime/vk_exec_draw.c |  52 ++++++++++++++++---
+ runtime/vk_texture.c   | 110 ++++++++++++++++++++++++++++++++++-------
+ 3 files changed, 140 insertions(+), 24 deletions(-)
+
+diff --git a/runtime/vk.h b/runtime/vk.h
+index 75e0e37..bb9042f 100644
+--- a/runtime/vk.h
++++ b/runtime/vk.h
+@@ -409,7 +409,7 @@ const VkTexImage *vk_texture_by_id(int id, view_t *view, int *has_view);
+ void vk_texture_lock(void);
+ void vk_texture_unlock(void);
+ const VkTexImage *vk_texture_by_id_locked(int id, view_t *view, int *has_view);
+-void vk_texture_fresh_check_locked(int id);   // vk_texture_by_id_locked's freshness check alone, for the pool walk
++int vk_texture_fresh_check_locked(int id);   // 1: the slot was resolved again (nothing kept for it)   // vk_texture_by_id_locked's freshness check alone, for the pool walk
+ VkSampler vk_sampler_by_id_locked(int id);
+ // The slot's sampler with nearest filtering and no anisotropy: a depth texture read without a compare lands on one texel
+ // on the Switch although the game binds a linear sampler. VK_NULL_HANDLE
+diff --git a/runtime/vk_exec_draw.c b/runtime/vk_exec_draw.c
+index ffd7fb6..01431fb 100644
+--- a/runtime/vk_exec_draw.c
++++ b/runtime/vk_exec_draw.c
+@@ -1614,6 +1614,10 @@ static struct {
+     uint64_t *last;                    // per entry: the log position of its newest write (catch-up writes it once, there)
+     uint64_t switches, waits, catchup, written, rewrites, catch_ns, sync_ns, n_slots, n_refill, n_fresh;
+     uint64_t n_by_reg, n_by_addr;      // refills whose token changed by a registration, by an address generation only
++    uint64_t n_same;                   // refills that wrote no entry: the slot resolved as before
++    uint64_t tk_check, n_reres;        // ... in the walk's freshness checks; checks that resolved the slot again (it had no entry)
++    uint64_t tk_fill, tk_walk, tk_dirty, tk_flush, n_dirty;   // NX2NAVI_TRACE=perf: rdtsc ticks in pool_fill, the whole-table
++                                       // walk, the dirty walk and the descriptor writes; slots the dirty walk visited
+     uint64_t dirty_pos;                // vk_texture_dirty_slots_locked position (0: the next sync walks every slot)
+     int ready, uab;
+     uint32_t kinds, gen, epoch, sgen;
+@@ -1710,8 +1714,13 @@ static VkWriteDescriptorSet pool_w[POOL_WBATCH];
+ static VkDescriptorImageInfo pool_ii[POOL_WBATCH];
+ static uint32_t pool_nw;
+ 
++// The time stamp counter while NX2NAVI_TRACE=perf splits the pool refresh, else 0 (two reads per slot add up).
++static inline uint64_t pool_tsc(void) { return rt_trace & RT_TRACE_PERF ? __builtin_ia32_rdtsc() : 0; }
++
+ static void pool_flush(void) {
++    uint64_t t0 = pool_tsc();
+     if (pool_nw) vkUpdateDescriptorSets(vk_ctx()->device, pool_nw, pool_w, 0, NULL);
++    PL.tk_flush += pool_tsc() - t0;
+     PL.writes += pool_nw;
+     pool_nw = 0;
+ }
+@@ -1784,6 +1793,25 @@ static void pool_catch_up(uint64_t from, uint64_t to) {
+     }
+     pool_flush();
+     PL.switches++;
++    if ((rt_trace & RT_TRACE_PERF) && PL.switches % 600 == 0) {   // the last 600 switches on their own (#132 A/B)
++        static uint64_t p[8], q[9];
++        uint64_t c[8] = {PL.sync_ns, PL.catch_ns, PL.n_refill, PL.n_same, PL.n_fresh, PL.n_slots, PL.logn, PL.written};
++        uint64_t d[9] = {PL.tk_fill, PL.tk_walk, PL.tk_dirty, PL.tk_flush, PL.n_dirty, pool_tsc(), kern_now_ns(),
++                         PL.tk_check, PL.n_reres};
++        double k = q[5] ? (double)(d[6] - q[6]) / (double)(d[5] - q[5]) / 6e8 : 0;   // ticks -> ms per switch
++        rt_log("perf: texture pool, switches %llu-%llu: of the refresh and catch-up, per switch: %.3f ms whole-table walks, "
++               "%.3f ms dirty walks over %.0f slots, in them %.3f ms slot refills, %.3f ms descriptor writes (all flushes) and "
++               "%.3f ms freshness checks (%.0f resolved their slot again)",
++               (unsigned long long)PL.switches - 600, (unsigned long long)PL.switches, (d[1] - q[1]) * k, (d[2] - q[2]) * k,
++               (d[4] - q[4]) / 600.0, (d[0] - q[0]) * k, (d[3] - q[3]) * k, (d[7] - q[7]) * k, (d[8] - q[8]) / 600.0);
++        memcpy(q, d, sizeof q);
++        rt_log("perf: texture pool, switches %llu-%llu: %.3f ms entry refresh and %.3f ms catch-up per switch; %.0f slots "
++               "refilled (%.0f wrote nothing), %.0f checked, %.0f walked, %.0f entry writes, %.0f catch-up writes",
++               (unsigned long long)PL.switches - 600, (unsigned long long)PL.switches, (c[0] - p[0]) / 6e8, (c[1] - p[1]) / 6e8,
++               (c[2] - p[2]) / 600.0, (c[3] - p[3]) / 600.0, (c[4] - p[4]) / 600.0, (c[5] - p[5]) / 600.0,
++               (c[6] - p[6]) / 600.0, (c[7] - p[7]) / 600.0);
++        memcpy(p, c, sizeof p);
++    }
+     if (PL.switches % 3600 == 0) {   // diagnosis: what invalidates the slots (vk_texture.c vk_texture_bucket_stats)
+         char bs[320];
+         vk_texture_bucket_stats(bs, sizeof bs);
+@@ -1907,14 +1935,18 @@ typedef struct { VkExec *ex; uint32_t used; int n, retry; } PoolDirty;
+ 
+ static void pool_dirty_slot(int id, void *arg) {   // vk_texture_dirty_slots_locked: a slot whose token may have changed
+     PoolDirty *d = arg;
++    PL.n_dirty++;
+     if (id >= d->n) return;
+     uint64_t t = vk_texture_slot_token(id);
+     if (t == PL.tok[id]) return;
+     PL.n_refill++;
+     if (t >> 32 != PL.tok[id] >> 32) PL.n_by_reg++;
+     else PL.n_by_addr++;
++    uint64_t w0 = PL.logn, k0 = pool_tsc();
+     if (pool_fill(d->ex, (uint32_t)id, d->used, t)) PL.tok[id] = t;
+     else d->retry = 1;
++    PL.tk_fill += pool_tsc() - k0;
++    PL.n_same += PL.logn == w0;
+ }
+ 
+ static void pool_sync_entries(VkExec *ex) {
+@@ -1939,8 +1971,11 @@ static void pool_sync_entries(VkExec *ex) {
+         // Only a slot change since the last sync (no new kinds, no new submission, nothing left over): the slots that
+         // changed (vk_texture_dirty_slots_locked), not the whole table
+         PoolDirty pd = {ex, used, n, 0};
++        uint64_t k0 = pool_tsc();
+         int walked = !fresh && ep == PL.epoch && !PL.retry && PL.dirty_pos &&
+                      vk_texture_dirty_slots_locked(&PL.dirty_pos, pool_dirty_slot, &pd);
++        uint64_t k1 = pool_tsc();
++        if (walked) PL.tk_dirty += k1 - k0;
+         retry = pd.retry;
+         if (!walked) PL.dirty_pos = vk_texture_dirty_pos_locked();
+         for (int id = 0; id < n && !walked; id++) {   // slots past n were never registered: stand-ins since the first sync
+@@ -1949,16 +1984,21 @@ static void pool_sync_entries(VkExec *ex) {
+                 PL.n_refill++;
+                 if (t >> 32 != PL.tok[id] >> 32) PL.n_by_reg++;
+                 else PL.n_by_addr++;
++                uint64_t w0 = PL.logn, f0 = pool_tsc();
+                 if (pool_fill(ex, (uint32_t)id, used, t)) PL.tok[id] = t;
+                 else retry = 1;
++                PL.tk_fill += pool_tsc() - f0;
++                PL.n_same += PL.logn == w0;
+             } else if (t && fresh) {
+                 pool_fill(ex, (uint32_t)id, fresh, t);
+             } else if (t && ep != PL.epoch) {
+                 PL.n_fresh++;
+-                vk_texture_fresh_check_locked(id);   // the submit's freshness check
++                uint64_t c0 = pool_tsc();
++                PL.n_reres += (uint64_t)vk_texture_fresh_check_locked(id);   // the submit's freshness check
++                PL.tk_check += pool_tsc() - c0;
+             }
+         }
+-        if (!walked) PL.n_slots += (uint64_t)n;
++        if (!walked) PL.n_slots += (uint64_t)n, PL.tk_walk += pool_tsc() - k1;
+         vk_texture_create_budget_locked(-1);
+     }
+     PL.retry = retry;
+@@ -3408,15 +3448,15 @@ static int mo_prev_block(int index, const p_bind_buf *u, VkDescriptorBufferInfo
+         skip = e && *e ? strtol(e, NULL, 16) : 1L << 9 | 1L << 11;
+     }
+     if (skip >> (index + 3) & 1) return 0;
+-    uint64_t c0 = __builtin_ia32_rdtsc();
++    uint64_t c0 = pool_tsc();
+     int found = vk_mvprev_find(index, u->addr, u->size, &pa, &how);
+-    uint64_t c1 = __builtin_ia32_rdtsc();
++    uint64_t c1 = pool_tsc();
+     MO.cyc[0] += c1 - c0, MO.ncyc++, MO.big += n;
+     if (index >= 0 && index < 14) MO.lk[index][found ? how : MVPREV_NONE]++;
+     if (!found || !vk_usnap_find(pa, n, LIM.ubo_align, out)) return 0;
+     if (how == MVPREV_SELF) return 1;   // bound at the same address last frame: not written again
+     const uint8_t *map = vk_usnap_map(), *cur = vk_usnap_bytes(u->addr, n);
+-    uint64_t c2 = __builtin_ia32_rdtsc();
++    uint64_t c2 = pool_tsc();
+     MO.cyc[1] += c2 - c1;
+     if (!cur) return 0;
+     const uint8_t *old = map + out->offset;
+@@ -3430,7 +3470,7 @@ static int mo_prev_block(int index, const p_bind_buf *u, VkDescriptorBufferInfo
+         return 1;
+     }
+     int r = mo_similar(cur, old, n, changed);
+-    MO.cyc[2] += __builtin_ia32_rdtsc() - c2;
++    MO.cyc[2] += pool_tsc() - c2;
+     if (!r && index >= 0 && index < 14) MO.lk[index][4]++;
+     return r;
+ }
+diff --git a/runtime/vk_texture.c b/runtime/vk_texture.c
+index 6ccd80c..c449702 100644
+--- a/runtime/vk_texture.c
++++ b/runtime/vk_texture.c
+@@ -65,6 +65,7 @@ typedef struct Tex {
+     uint64_t rel_acct;            // what rel_append added to rel_bytes for this entry
+     uint64_t chash[2];            // hash of the storage bytes the image holds (content_note); 0: not in the content index
+     struct TexShare *share;       // the image is shared with other entries of the same content (NX2NAVI_TEX_DEDUPE); NULL: own
++    uint64_t st_id, st_c;         // address state (tex_gen_bump): the entry's identity, and what it adds to its bucket's sum
+ } Tex;
+ 
+ // A slot keeps what vk_texture_by_id resolved for it, so a draw binding skips the key lookup and the address chain: the
+@@ -144,6 +145,12 @@ static uint64_t *sinfo;
+ // took ~2 ms of the render thread per submission, and these arrays are walked in order.
+ static Tex **sce;
+ static uint32_t *scg, *scep;
++// NX2NAVI_TEX_CHECK_SKIP (default 0; =1): per slot id, the entry it resolved to never uploads (not mirrored, or GPU-owned:
++// neither is ever undone), so the per-submit check has nothing to do while that resolution holds and
++// vk_texture_fresh_check_locked leaves the entry alone. About 20,000 of the 26,000 slots the pool walk checks per
++// submission name render targets; reading each one's entry was half of the walk.
++static uint8_t *sinert;
++static int inert_on = -1;
+ static uint32_t reg_serial;
+ static uint64_t n_same_regs;   // vk_texture_register calls that changed nothing (vk_texture_same_regs)
+ 
+@@ -312,14 +319,77 @@ static void tex_trace_log(uint64_t frame) {   // tex lock held
+ static uint64_t n_bumps, n_site[4];   // tex_gen_bump calls, by site: destroy, create, take-back, release   // tex_gen_bump calls, take-backs that undid a release's bump (vk_texture_bucket_stats)
+ static uint32_t bump_count[AGEN_N];
+ 
+-static void tex_gen_bump(uint64_t addr) {
++// NX2NAVI_TEX_STATE_GEN (default 0: every change a new generation; =1): an address generation names the state of
++// its bucket, not the number of changes. The state is the set of entries at the bucket's addresses, each with what a
++// slot resolution reads of it (slot_resolve: released or not, GPU-owned for a CPU slot's follow); it is kept as a
++// 64-bit sum of one hashed term per entry, and the last ST_WAYS sums of a bucket keep the generation they were given.
++// The release serial of slot_resolve's stale rule is not part of it: a slot registered after a release has a new
++// token of its own, and one that was resolved between two releases either followed another entry, as it does again,
++// or took the released one back, which retires the state's generation (below). Ocarina finalizes its transient render targets
++// after a frame's submissions and initializes them again in the next frame: 40 releases and 40 take-backs per frame,
++// each over ~400 registered slots, and with a counter every one of those slots had a new token at the next pool sync
++// (vk_exec_draw.c pool_sync_entries), which resolved and compared 16,800 of the pool's 32,800 slots per frame
++// (3.1-4.5 ms of the replay thread) to find most of them unchanged. A bucket back in a state it was in gets that
++// state's generation back, so the slots resolved under it are current without a lookup.
++// A generation never names two states: a sum not among the kept ones gets a generation never used before, and an
++// entry whose image is replaced gets a new identity (ST_NEW). Callers keep a result under the generation they read
++// before the lookup, which no longer holds once the lookup itself changed the state (slot_resolve created an entry or
++// took one back): the state it left then loses its generation (st_resolving), so it gets a new one if it comes back.
++enum { ST_ADD, ST_DEL, ST_FLIP, ST_NEW };
++#define ST_WAYS 8
++static int st_on = -1, st_resolving;
++static uint64_t *st_sum, st_ids, n_st_back;
++static uint32_t *st_last;                                           // per bucket: the newest generation handed out
++static struct StSeen { uint64_t sum; uint32_t gen, used; } *st_seen;   // per bucket ST_WAYS
++static uint8_t *st_rr;
++
++static uint64_t st_mix(uint64_t x) {   // splitmix64
++    x += 0x9E3779B97F4A7C15ull;
++    x = (x ^ x >> 30) * 0xBF58476D1CE4E5B9ull;
++    x = (x ^ x >> 27) * 0x94D049BB133111EBull;
++    return x ^ x >> 31;
++}
++
++static uint64_t st_term(const Tex *e) {
++    return st_mix(e->st_id ^ (uint64_t)(e->released != 0) << 62 ^ (uint64_t)(e->pub.gpu_owned != 0) << 63);
++}
++
++static void st_init(void) {
++    st_on = rt_knob("TEX_STATE_GEN", "0");
++    st_sum = calloc(AGEN_N, sizeof *st_sum), st_last = calloc(AGEN_N, sizeof *st_last);
++    st_seen = calloc((size_t)AGEN_N * ST_WAYS, sizeof *st_seen), st_rr = calloc(AGEN_N, 1);
++    if (!st_sum || !st_last || !st_seen || !st_rr) rt_fatal("vk: out of memory for texture address states");
++    rt_log("vk: texture address generations %s (NX2NAVI_TEX_STATE_GEN)",
++           st_on ? "name the address's state: a state seen before keeps its generation" : "count changes");
++}
++
++static void tex_gen_bump(Tex *e, int how) {
++    uint64_t addr = e->key.addr;
+     n_bumps++;
+     bump_count[agen_idx(addr)]++;
+     if (!++tex_gen) tex_gen = 1;
+     slots_gen++;
+     uint32_t b = agen_idx(addr);
+-    uint32_t *g = &agen[b];
+-    __atomic_store_n(g, *g + 1, __ATOMIC_RELEASE);
++    uint32_t *g = &agen[b], ng = *g + 1;
++    if (st_on < 0) st_init();
++    if (st_on) {
++        if (how == ST_NEW || !e->st_id) e->st_id = ++st_ids;
++        uint64_t c = how == ST_DEL ? 0 : st_term(e), old = st_sum[b];
++        uint64_t sum = st_sum[b] += c - e->st_c;
++        e->st_c = c;
++        struct StSeen *w = &st_seen[(size_t)b * ST_WAYS];
++        int i = 0;
++        for (int k = 0; k < ST_WAYS && st_resolving; k++)
++            if (w[k].used && w[k].sum == old) w[k].used = 0;
++        while (i < ST_WAYS && !(w[i].used && w[i].sum == sum)) i++;
++        if (i < ST_WAYS) {
++            ng = w[i].gen, n_st_back++;
++        } else {
++            ng = ++st_last[b];
++            w[st_rr[b]++ % ST_WAYS] = (struct StSeen){sum, ng, 1};
++        }
++    }
++    __atomic_store_n(g, ng, __ATOMIC_RELEASE);
+     dirty_push(DIRTY_BUCKET | b);
+ }
+ 
+@@ -813,7 +883,7 @@ static void destroy_tex(Tex *e) {
+     n_site[0]++;
+     td_n[dcause]++, td_bytes[dcause] += e->t.L.size;
+     if (tex_trace()) nvn_hm_put(&ghosts, &e->key, (void *)(uintptr_t)(dcause + 1));
+-    tex_gen_bump(e->key.addr);
++    tex_gen_bump(e, ST_DEL);
+     nvn_hm_del(&by_key, &e->key);
+     Tex *head = nvn_hm_get(&by_addr, &e->key.addr);
+     if (head == e) {
+@@ -1230,7 +1300,7 @@ static void share_adopt(Tex *e, Tex *c) {
+     e->share = c->share;
+     e->pub.image = c->pub.image, e->alloc = c->alloc, e->bound_to = NULL;
+     e->uploaded = 1, e->n_up++, e->took_back = 0, e->wt_n = 0;
+-    tex_gen_bump(e->key.addr);
++    tex_gen_bump(e, ST_NEW);
+ }
+ 
+ // Before a first upload: the storage hashed and the index asked whether the GPU already has these bytes (the tex trace
+@@ -1300,7 +1370,7 @@ static void unshare(Tex *e, int keep, int why) {
+         free(rg);
+     }
+     vk_upload_end();
+-    tex_gen_bump(e->key.addr);
++    tex_gen_bump(e, ST_NEW);
+ }
+ 
+ // A mirrored texture is uploaded on first use and again when its storage pages carry a newer write generation.
+@@ -1479,9 +1549,9 @@ static Tex *entry_of(const tex_t *t) {
+         nvn_hm_put(&by_addr, &k.addr, e);
+         nvn_hm_put(&by_key, &k, e);
+         n_site[1]++;
+-        tex_gen_bump(k.addr);
++        tex_gen_bump(e, ST_ADD);
+     }
+-    if (e->released) e->released = 0, e->took_back = 1, nreleased--, rel_unlink(e), n_site[2]++, tb_n++, tex_gen_bump(k.addr);
++    if (e->released) e->released = 0, e->took_back = 1, nreleased--, rel_unlink(e), n_site[2]++, tb_n++, tex_gen_bump(e, ST_FLIP);
+     e->t = *t;
+     e->last_use = submit_epoch;
+     return e;
+@@ -1578,7 +1648,7 @@ void vk_texture_release(const tex_t *t) {
+         nreleased++;
+         rel_append(e);
+         n_site[3]++;
+-        tex_gen_bump(k.addr);
++        tex_gen_bump(e, ST_FLIP);
+         sweep_released();
+     }
+     unlock();
+@@ -1614,7 +1684,8 @@ void vk_texture_register(int id, const tex_t *t, const view_t *v) {
+     if (!sinfo) {
+         uint64_t *p = calloc(1 << 20, sizeof *p);
+         sce = calloc(1 << 20, sizeof *sce), scg = calloc(1 << 20, sizeof *scg), scep = calloc(1 << 20, sizeof *scep);
+-        if (!sce || !scg || !scep) rt_fatal("vk: out of memory for texture slot tokens");
++        sinert = calloc(1 << 20, 1);
++        if (!sce || !scg || !scep || !sinert) rt_fatal("vk: out of memory for texture slot tokens");
+         slot_next = malloc(sizeof *slot_next << 20), slot_prev = malloc(sizeof *slot_prev << 20);
+         slot_bucket = calloc(1 << 20, sizeof *slot_bucket);
+         if (!p || !slot_next || !slot_prev || !slot_bucket) rt_fatal("vk: out of memory for texture slot tokens");
+@@ -1761,11 +1832,11 @@ void vk_texture_bucket_stats(char *out, size_t n) {
+             }
+     uint64_t hot = 0;   // bumps weighted by the slots they invalidate
+     for (int b = 0; b < AGEN_N; b++) hot += (uint64_t)bump_count[b] * occ[b];
+-    snprintf(out, n, "%llu bumps (destroy %llu, create %llu, take-back %llu, release %llu), %llu slot invalidations; fullest buckets %u/%u/%u/%u slots, bumped %u/%u/%u/%u",
++    snprintf(out, n, "%llu bumps (destroy %llu, create %llu, take-back %llu, release %llu), %llu slot invalidations, %llu bumps back in a known state; fullest buckets %u/%u/%u/%u slots, bumped %u/%u/%u/%u",
+              (unsigned long long)n_bumps, (unsigned long long)n_site[0], (unsigned long long)n_site[1],
+-             (unsigned long long)n_site[2], (unsigned long long)n_site[3], (unsigned long long)hot, occ[top[0]], occ[top[1]], occ[top[2]], occ[top[3]],
++             (unsigned long long)n_site[2], (unsigned long long)n_site[3], (unsigned long long)hot, (unsigned long long)n_st_back, occ[top[0]], occ[top[1]], occ[top[2]], occ[top[3]],
+              bump_count[top[0]], bump_count[top[1]], bump_count[top[2]], bump_count[top[3]]);
+-    n_bumps = 0;
++    n_bumps = n_st_back = 0;
+     memset(n_site, 0, sizeof n_site);
+     memset(bump_count, 0, sizeof bump_count);
+     unlock();
+@@ -1795,10 +1866,14 @@ const VkTexImage *vk_texture_by_id_locked(int id, view_t *view, int *has_view) {
+     if (!s->ce || s->cgen != g) {   // resolved again: an entry at its address was created, dropped or released, or the
+         view_t v;                   // slot registered (s->ce cleared); an empty result is not kept: image creation may
+         int hv;                     // succeed later
++        st_resolving = 1;
+         s->ce = slot_resolve(s, &v, &hv);   // entry_of may create an entry and bump g: g read before it
++        st_resolving = 0;
+         s->cview = v, s->chas_view = (uint8_t)hv;
+         s->cgen = g;
+         sce[id] = s->ce, scg[id] = g, scep[id] = 0;
++        if (inert_on < 0) inert_on = rt_knob("TEX_CHECK_SKIP", "0");
++        sinert[id] = inert_on && s->ce && (!s->ce->pub.mirrored || s->ce->pub.gpu_owned);
+     }
+     Tex *e = s->ce;
+     // Bindings of one submit share one check, answered from the submit's write-watch snapshot (guest writes during a
+@@ -1817,19 +1892,20 @@ const VkTexImage *vk_texture_by_id_locked(int id, view_t *view, int *has_view) {
+ }
+ 
+ // The freshness check vk_texture_by_id_locked gives slot id, from the per-slot arrays while its resolution holds.
+-void vk_texture_fresh_check_locked(int id) {
+-    if (id < 0 || id >= ntslots) return;
++int vk_texture_fresh_check_locked(int id) {
++    if (id < 0 || id >= ntslots) return 0;
+     Tex *e = sce[id];
+     if (!e || scg[id] != agen[sinfo[id] & 0xffff]) {
+         vk_texture_by_id_locked(id, NULL, NULL);
+-        return;
++        return 1;
+     }
+-    if (scep[id] == submit_epoch) return;
++    if (sinert[id] || scep[id] == submit_epoch) return 0;
+     if (!e->uploaded || e->checked != submit_epoch) {
+         make_fresh_snap(e);
+         e->checked = submit_epoch;
+     }
+     scep[id] = submit_epoch;
++    return 0;
+ }
+ 
+ // vk_dump: the swizzle selectors of the descriptor registered in slot id; 0 when the slot is empty.
+-- 
+2.56.0
+
