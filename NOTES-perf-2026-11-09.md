@@ -637,3 +637,22 @@ thread's 9 ms is its backlog.
 THP: `/proc/<pid>/smaps` of a lab game shows every guest reservation with `nh` (MADV_NOHUGEPAGE) and `uw` (uffd
 write-protect) and 0 AnonHugePages on all large mappings: guest memory is not THP-backed, host THP `always` vs
 `madvise` does not matter for it.
+
+### 4. One CCD or both (Ryzen 9 5950X, L3 per CCD: cpus 0-7,16-23 and 8-15,24-31)
+
+Same binary and settings, `NX2NAVI_TRACE=perf,present,nvn`, the pinned runs through a temporary wrapper
+(`taskset -c 0-7,16-23 ./nx2navi.new`, removed after), field window, 2026-11-10 01:21-02:10:
+
+| run | fps | mean ms | p90 | p99 | main thread `svc 0x34` (worker wait) | finish wait | load during the run |
+|---|---|---|---|---|---|---|---|
+| default a | 42.6 | 23.50 | 26.70 | 29.01 | 7.61 ms | 8.38 ms | 8.8 (max 26) |
+| pinned a | 42.2 | 23.67 | 26.09 | 27.83 | 7.69 ms | 8.17 ms | 9.1 (max 26) |
+| default b | 43.0 | 23.27 | 26.50 | 28.66 | 7.58 ms | 8.17 ms | 5.3 |
+| pinned b | 42.7 | 23.44 | 25.80 | 27.33 | 7.45 ms | 8.30 ms | 5.8 |
+
+No change in the mean (-0.3 fps, inside the run-to-run spread) or in the worker wait (7.6 against 7.6 ms): the hand-offs
+across the two L3 domains are not where the 7 ms go. The tail is tighter pinned: p99 -1.2 and -1.3 ms, p90 -0.6 and
+-0.7 ms in both pairs, which fits Cal's impression of "steadier" (the lab cannot say "faster": the replay thread is the
+bound either way). Keeping `NX2NAVI_CPUS=auto` in `just play` costs nothing measurable and trims the tail; with
+other jobs on the machine (as in pair a) the pin also keeps the game off the cores they use only if those jobs are
+kept on the other CCD.
