@@ -442,6 +442,14 @@ bundles are kept). `tools/lab-run` given such a recording and no `NX2NAVI_PROFIL
 replay exactly. Without a bundle it warns and falls back to the live profile, saves snapshotted and restored.
 `lab-run --dry <rec> 0 <label>` only assembles and lists the profile.
 
+## Scenarios (regression checks)
+
+`scenarios/` keeps Cal's saves and recordings for the standard checks (castle 1500, crash spot 1700, graveyard gate,
+field standing window) and the starting points of open bugs (#138, #141, #146, #149, #150, Kakariko, combat hitch),
+8 MB in all. `just regress` replays the regression-grade ones through `tools/lab-run` on scratch profiles and a
+pipeline cache copy, waits while Cal plays, and writes `.lab/regress/<time>.json`; `NX2NAVI_EXE=next just regress`
+judges a variant before he plays it. `scenarios/README.md` has the schema and `just scenario-add`.
+
 ## lab-run debug options
 
 Both are opt-in environment variables for `tools/lab-run` (see its header):

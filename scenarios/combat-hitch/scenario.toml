@@ -1,0 +1,15 @@
+name = "combat-hitch"
+tests = "One-shot pass wait in a fight (a draw waited 637.6 ms for its pipeline at present 44891); try NX2NAVI_ONESHOT_WAIT_MS"
+grade = "start"
+source = "play-20261109-215822 present 44891; needs a pipeline cache without that pipeline, so it runs on an empty one"
+frame = 44900
+timeout = 2400
+pipeline_cache = "empty"
+env = { NX2NAVI_REPLAY_ASYNC = "1", NX2NAVI_VK_RECORDER = "1", NX2NAVI_TEX_RELEASED_MIB = "3072", NX2NAVI_GPU_WAIT = "0" }
+[[check]]
+kind = "exit"
+[[check]]
+kind = "count"
+regex = "a draw waited [0-9]{3,}\\.[0-9] ms for its pipeline \\(one-shot\\)"
+max = 0
+advisory = true

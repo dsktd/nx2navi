@@ -1,0 +1,14 @@
+name = "missing-ground-field"
+tests = "Field ground missing then popping in: MapPhysicalMemory refusals at the alias ceiling (71 to frame 16000 at default, 0 with 512 MiB extra)"
+grade = "start"
+tracker = "#149"
+source = "play-20261109-234907 mark 6 at present 17621 (shot in ref/); the counter needs NX2NAVI_EXE=crash or later (patch 0039)"
+frame = 16000
+timeout = 1200
+env = { NX2NAVI_REPLAY_ASYNC = "1", NX2NAVI_VK_RECORDER = "1", NX2NAVI_TEX_RELEASED_MIB = "3072", NX2NAVI_GPU_WAIT = "0", NX2NAVI_ALIAS_EXTRA_MIB = "512" }
+[[check]]
+kind = "exit"
+[[check]]
+kind = "count"
+regex = "MapPhysicalMemory .* failed 0x10801"
+max = 0

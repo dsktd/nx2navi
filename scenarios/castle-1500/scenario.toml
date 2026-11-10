@@ -1,0 +1,15 @@
+name = "castle-1500"
+tests = "Picture at the castle slot (Hyrule Castle, standing, only title-menu presses): dark ground, black or NaN frames"
+grade = "regression"
+tracker = "#132"
+source = "lab-profile-flicker (Cal's 2026-11-08 save) + load-slot01.txt (A presses from input-20261108-184636)"
+frame = 1500
+timeout = 300
+env = { NX2NAVI_REPLAY_ASYNC = "1", NX2NAVI_VK_RECORDER = "1", NX2NAVI_TEX_RELEASED_MIB = "3072", NX2NAVI_GPU_WAIT = "0" }
+# 22 runs 2026-11-09/10: RMSE 0.023-0.064 vs this ref at 320x180; broken pictures 0.24-0.53
+[[check]]
+kind = "exit"
+[[check]]
+kind = "picture"
+ref = "ref/f1500.png"
+max_rmse = 0.10

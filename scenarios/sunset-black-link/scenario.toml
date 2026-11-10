@@ -1,0 +1,15 @@
+name = "sunset-black-link"
+tests = "Link and ground plants solid black at sunset by the pond"
+grade = "start"
+tracker = "#150"
+source = "play-20261109-234907 mark 7 at present 25701 (shot in ref/); far past the first drift"
+frame = 25701
+timeout = 1200
+env = { NX2NAVI_REPLAY_ASYNC = "1", NX2NAVI_VK_RECORDER = "1", NX2NAVI_TEX_RELEASED_MIB = "3072", NX2NAVI_GPU_WAIT = "0" }
+[[check]]
+kind = "exit"
+[[check]]
+kind = "picture"
+ref = "ref/mark-25701.png"
+max_rmse = 0.15
+advisory = true

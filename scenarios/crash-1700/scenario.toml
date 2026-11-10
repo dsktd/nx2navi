@@ -1,0 +1,19 @@
+name = "crash-1700"
+tests = "The old crash spot: first mesh-shader scene (c0 overflow, patch 0006) and pipeline builds Mesa rejects (0031/0033 guard)"
+grade = "regression"
+tracker = "#141"
+source = "input-20261108-032149 (6 title presses); save = profile-20261110-141203, the live save the 2026-11-10 08:33 reference ran on"
+frame = 1700
+timeout = 300
+env = { NX2NAVI_REPLAY_ASYNC = "1", NX2NAVI_VK_RECORDER = "1", NX2NAVI_TEX_RELEASED_MIB = "3072", NX2NAVI_GPU_WAIT = "0" }
+# runs 04:48-08:34 on that save: RMSE 0.0005-0.010 at 320x180 (earlier saves 0.10-0.18: the save matters)
+[[check]]
+kind = "exit"
+[[check]]
+kind = "count"
+regex = "the driver faulted building"
+max = 0
+[[check]]
+kind = "picture"
+ref = "ref/f1700.png"
+max_rmse = 0.05

@@ -1,0 +1,15 @@
+name = "graveyard-gate"
+tests = "Picture at the Kakariko graveyard gate, standing (AO, lighting, the 22:31 graveyard crash area)"
+grade = "regression"
+tracker = "#146"
+source = "profile-20261109-234907 (save bundle) + load-slot01.txt; reference ao-f0 (2026-11-10 02:59, play defaults)"
+frame = 2400
+timeout = 300
+env = { NX2NAVI_REPLAY_ASYNC = "1", NX2NAVI_VK_RECORDER = "1", NX2NAVI_TEX_RELEASED_MIB = "3072", NX2NAVI_GPU_WAIT = "0" }
+# 7 runs (AO on/off/order): RMSE 0.011-0.036 at 320x180
+[[check]]
+kind = "exit"
+[[check]]
+kind = "picture"
+ref = "ref/f2400.png"
+max_rmse = 0.08

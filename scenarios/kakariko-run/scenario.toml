@@ -1,0 +1,15 @@
+name = "kakariko-run"
+tests = "Kakariko entry and running around: texture uploads, movement frames"
+grade = "start"
+tracker = "#132"
+source = "input-20261109-191317 + bundle; Kakariko from ~200 s (tick 12000); OUT OF SYNC within seconds (Cal watched it), numbers indicative only"
+frame = 999999
+timeout = 420
+taskset = "0-7,16-23"
+env = { NX2NAVI_REPLAY_ASYNC = "1", NX2NAVI_VK_RECORDER = "1", NX2NAVI_TEX_RELEASED_MIB = "3072", NX2NAVI_GPU_WAIT = "0", NX2NAVI_TRACE = "perf,present", NX2NAVI_FPS_LIMIT = "240" }
+[[check]]
+kind = "exit"
+[[check]]
+kind = "window"
+ticks = [12000, 14400]
+advisory = true

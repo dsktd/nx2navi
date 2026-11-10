@@ -1,0 +1,14 @@
+name = "device-loss-0024"
+tests = "The 00:24 device loss (GPUVM read fault, vkQueueSubmit2 -4) after 35 min with VRAM full"
+grade = "start"
+tracker = "#141"
+source = "play-20261109-234907 (FATAL at submission 528445, after present 75000); never reproduced by a replay yet"
+frame = 76000
+timeout = 3000
+env = { NX2NAVI_REPLAY_ASYNC = "1", NX2NAVI_VK_RECORDER = "1", NX2NAVI_TEX_RELEASED_MIB = "3072", NX2NAVI_GPU_WAIT = "0" }
+[[check]]
+kind = "exit"
+[[check]]
+kind = "count"
+regex = "failed \\(-4\\)|DEVICE_LOST|device lost"
+max = 0

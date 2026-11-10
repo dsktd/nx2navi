@@ -232,3 +232,16 @@ flatpak-install:
 deck:
     test -n "{{host}}" || { echo "set NX2NAVI_DECK (or host=...) to the Deck's hostname or IP"; exit 1; }
     "{{flake}}/flatpak/deck-setup" "{{host}}" {{ if nup != "" { "nup " + quote(nup) } else { "" } }}
+
+# Replay one scenario of scenarios/ through tools/lab-run and print pass/fail per check (scenarios/README.md);
+# NX2NAVI_EXE=<variant> judges build/v111/nx2navi.<variant>; --dry prints the plan only
+scenario *args:
+    python3 -I "{{flake}}/tools/scenario" run {{args}}
+
+# Every regression-grade scenario (or the named ones): one table, JSON in .lab/regress/, non-zero exit on a failure
+regress *args:
+    python3 -I "{{flake}}/tools/scenario" regress {{args}}
+
+# A new starting-point scenario from a `just play` session: just scenario-add <name> from 20261109-234907 [frame]
+scenario-add name from session frame="999999":
+    python3 -I "{{flake}}/tools/scenario" add {{name}} {{from}} {{session}} {{frame}}

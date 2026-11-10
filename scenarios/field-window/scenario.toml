@@ -1,0 +1,16 @@
+name = "field-window"
+tests = "Hyrule Field standing window: fps, p99 and replay-thread ms (the #132/#148 perf yardstick)"
+grade = "regression"
+tracker = "#132"
+source = "input-20261109-191317 + its bundle; ticks 6300-10200 are standing still (NOTES-perf 'Runtime optimisation')"
+frame = 999999
+timeout = 285
+taskset = "0-7,16-23"
+env = { NX2NAVI_REPLAY_ASYNC = "1", NX2NAVI_VK_RECORDER = "1", NX2NAVI_TEX_RELEASED_MIB = "3072", NX2NAVI_GPU_WAIT = "0", NX2NAVI_TRACE = "perf,present,nvn", NX2NAVI_FPS_LIMIT = "240" }
+# stock spread 39.9-43.3 fps, p99 26.4-29.1 ms, replay 19.7-21.4 ms (2026-11-10); indicative, one run is noisy
+[[check]]
+kind = "window"
+ticks = [6300, 10200]
+fps_min = 37.0
+p99_max = 32.0
+replay_max = 23.5

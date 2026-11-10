@@ -1,0 +1,243 @@
+#!/usr/bin/env python3
+"""scenario: the regression and starting-point collection in scenarios/ (scenarios/README.md).
+
+  scenario run [--dry] <name>...        replay each through tools/lab-run, print pass/fail per check
+  scenario regress [--dry] [<name>...]  every grade=regression scenario (or the named ones), one table,
+                                        JSON in .lab/regress/<time>.json, exit 1 on a failure, 2 if any is pending
+  scenario add <name> from <session> [frame]   new starting point from logs/input-<session>.txt + profile-<session>/
+  scenario list
+
+Every replay runs on a scratch profile (lab-run builds it from the scenario's save bundle) and a copy of the pipeline
+cache, never Cal's live ones; it waits while the newest play log is under 3 minutes old (SCENARIO_WAIT_MIN, default
+30, then the scenario is 'pending'), then takes ~/claude/.services/locks/gpu.lock and lab-run its lab lock.
+NX2NAVI_EXE=<variant> replays build/v111/nx2navi.<variant>."""
+import fcntl
+import json
+import lzma
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tarfile
+import time
+import tomllib
+from pathlib import Path
+
+ROOT = Path.home() / "claude/nx2navi"
+SCEN = ROOT / "scenarios"
+BIN = ROOT / "NX2navi/build/v111"
+STAGE = ROOT / ".lab/scenario-stage"
+GPU_LOCK = Path.home() / "claude/.services/locks/gpu.lock"
+FEED = Path.home() / "claude/.services/screensavers/feeds/nx2navi-lab.log"
+IDLE_S = 180
+
+
+def load(name):
+    m = tomllib.loads((SCEN / name / "scenario.toml").read_text())
+    m["dir"] = SCEN / name
+    return m
+
+
+def names():
+    return sorted(p.parent.name for p in SCEN.glob("*/scenario.toml"))
+
+
+def play_age():
+    logs = list((BIN / "logs").glob("play-*.log"))
+    return time.time() - max(p.stat().st_mtime for p in logs) if logs else 1e9
+
+
+def wait_idle():
+    deadline = time.time() + 60 * float(os.environ.get("SCENARIO_WAIT_MIN", "30"))
+    while (age := play_age()) < IDLE_S:
+        if time.time() > deadline:
+            return False
+        print(f"scenario: Cal's play log written {age:.0f} s ago; waiting", file=sys.stderr)
+        time.sleep(30)
+    return True
+
+
+def stage(m, dry=False):
+    """input-<name>.txt beside profile-<name>/ so lab-run treats it as a recording bundle; a pipeline cache copy."""
+    d = STAGE / m["name"]
+    shutil.rmtree(d, ignore_errors=True)
+    (d / f"profile-{m['name']}").mkdir(parents=True)
+    rec = d / f"input-{m['name']}.txt"
+    rec.write_bytes(lzma.decompress((m["dir"] / "input.txt.xz").read_bytes()))
+    with tarfile.open(m["dir"] / "save.tar.xz") as t:
+        t.extractall(d / f"profile-{m['name']}", filter="data")
+    cache = d / "pipeline-cache.bin"
+    if not dry and m.get("pipeline_cache", "copy") == "copy" and (BIN / "pipeline-cache.bin").exists():
+        shutil.copyfile(BIN / "pipeline-cache.bin", cache)
+    return rec, cache
+
+
+def command(m, rec, cache, dry):
+    label = f"scn-{m['name']}"
+    env = dict(m.get("env", {}), NX2NAVI_PIPELINE_CACHE=str(cache))
+    cmd = [str(ROOT / "tools/lab-run")] + (["--dry"] if dry else []) + [str(rec), str(m["frame"]), label]
+    cmd += [f"{k}={v}" for k, v in env.items()]
+    if m.get("taskset"):
+        cmd = ["taskset", "-c", m["taskset"]] + cmd
+    lab_env = {"LAB_TIMEOUT": str(m.get("timeout", 300)), "LAB_LOCK_WAIT": "3600"}
+    if os.environ.get("NX2NAVI_EXE"):
+        lab_env["LAB_EXE"] = "nx2navi." + os.environ["NX2NAVI_EXE"]
+    return label, cmd, lab_env
+
+
+def rmse(ref, img):
+    w, h = 320, 180
+    r = subprocess.run(["nix", "shell", "nixpkgs#imagemagick", "-c", "magick", "compare", "-metric", "RMSE",
+                        "(", str(ref), "-resize", f"{w}x{h}!", ")", "(", str(img), "-resize", f"{w}x{h}!", ")",
+                        "null:"], capture_output=True, text=True)
+    hit = re.search(r"\(([\d.e-]+)\)", r.stderr)
+    return float(hit[1]) if hit else None
+
+
+def check(m, c, out, log):
+    """One check -> (ok, detail)."""
+    kind = c["kind"]
+    if kind == "exit":
+        fatal = [ln for ln in log.splitlines() if "FATAL" in ln]
+        if fatal:
+            return False, fatal[0][:120]
+        if m["frame"] != 999999 and not re.search(rf"vk_dump: frame {m['frame']}: \d+ passes", log):
+            return False, f"frame {m['frame']} not reached"
+        return True, "no FATAL" + ("" if m["frame"] == 999999 else f", frame {m['frame']} reached")
+    if kind == "count":
+        n = len(re.findall(c["regex"], log))
+        return n <= c.get("max", 0), f"{n} x /{c['regex'][:40]}/ (max {c.get('max', 0)})"
+    if kind == "picture":
+        img = out / "final.png"
+        if not img.exists():
+            return False, "no final.png"
+        v = rmse(m["dir"] / c["ref"], img)
+        return v is not None and v <= c["max_rmse"], f"RMSE {v} vs {c['ref']} (max {c['max_rmse']})"
+    if kind == "window":
+        from importlib.machinery import SourceFileLoader
+
+        fw = SourceFileLoader("frame_window", str(ROOT / "tools/frame-window")).load_module()
+        w = fw.windows(log, [tuple(c["ticks"])])[0]
+        if not w["frames"]:
+            return False, f"ticks {c['ticks']}: no data"
+        ok = (w["fps"] >= c.get("fps_min", 0) and w["p99_ms"] <= c.get("p99_max", 1e9)
+              and w["replay_ms"] <= c.get("replay_max", 1e9))
+        return ok, f"{w['fps']} fps, p99 {w['p99_ms']} ms, replay {w['replay_ms']} ms ({w['frames']} frames)"
+    return False, f"unknown check kind {kind}"
+
+
+def run(name, dry=False):
+    m = load(name)
+    res = {"name": name, "grade": m.get("grade"), "exe": os.environ.get("NX2NAVI_EXE", ""), "checks": []}
+    if not dry and not wait_idle():
+        res["status"] = "pending"
+        print(f"{name}: pending (Cal is playing)")
+        return res
+    rec, cache = stage(m, dry)
+    label, cmd, lab_env = command(m, rec, cache, dry)
+    print(f"{name}: {' '.join(f'{k}={v}' for k, v in lab_env.items())} {' '.join(cmd)}")
+    if dry:
+        r = subprocess.run(cmd, env=os.environ | lab_env, capture_output=True, text=True)
+        print("  " + (r.stdout + r.stderr).strip().splitlines()[0])
+        for c in m.get("check", []):
+            print(f"  check {c['kind']}{' (advisory)' if c.get('advisory') else ''}: "
+                  + ", ".join(f"{k}={v}" for k, v in c.items() if k not in ("kind", "advisory")))
+        res["status"] = "dry"
+        return res
+    GPU_LOCK.parent.mkdir(parents=True, exist_ok=True)
+    with open(GPU_LOCK, "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if play_age() < IDLE_S:
+            res["status"] = "pending"
+            return res
+        r = subprocess.run(cmd, env=os.environ | lab_env, capture_output=True, text=True)
+    out = ROOT / ".lab" / label
+    res["lab_run_rc"] = r.returncode
+    if r.returncode == 3:
+        res["status"] = "pending"
+        print(f"{name}: pending ({r.stderr.strip()[:120]})")
+        return res
+    log = (out / "run.log").read_text(errors="replace") if (out / "run.log").exists() else ""
+    failed = False
+    for c in m.get("check", []):
+        ok, detail = check(m, c, out, log)
+        adv = c.get("advisory", False)
+        failed |= not ok and not adv
+        res["checks"].append({"kind": c["kind"], "ok": ok, "advisory": adv, "detail": detail})
+        print(f"  {'PASS' if ok else ('note' if adv else 'FAIL')} {c['kind']}: {detail}")
+    res["status"] = "fail" if failed else "pass"
+    with open(FEED, "a") as f:
+        f.write(f"{time.strftime('%H:%M')} result: scenario {name} {res['status']}"
+                f"{' on ' + res['exe'] if res['exe'] else ''}\n")
+    return res
+
+
+def regress(args, dry):
+    todo = args or [n for n in names() if load(n).get("grade") == "regression"]
+    results = [run(n, dry) for n in todo]
+    print(f"\n{'scenario':22} {'status':8} checks")
+    for r in results:
+        print(f"{r['name']:22} {r['status']:8} " + "; ".join(c["detail"] for c in r["checks"]))
+    if dry:
+        return 0
+    out = ROOT / ".lab/regress"
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / f"{time.strftime('%Y%m%d-%H%M%S')}.json"
+    path.write_text(json.dumps({"exe": os.environ.get("NX2NAVI_EXE", ""), "results": results}, indent=1))
+    print(f"json: {path}")
+    if any(r["status"] == "fail" for r in results):
+        return 1
+    return 2 if any(r["status"] == "pending" for r in results) else 0
+
+
+def add(name, session, frame):
+    d = SCEN / name
+    if d.exists():
+        sys.exit(f"scenario: {d} exists")
+    logs = BIN / "logs"
+    rec, prof = logs / f"input-{session}.txt", logs / f"profile-{session}"
+    if not rec.exists() or not prof.is_dir():
+        sys.exit(f"scenario: need {rec} and {prof}/")
+    (d / "ref").mkdir(parents=True)
+    (d / "input.txt.xz").write_bytes(lzma.compress(rec.read_bytes(), preset=9))
+    with tarfile.open(d / "save.tar.xz", "w:xz") as t:
+        for sub in ("save", "save-tx", "save-backup"):
+            if (prof / sub).exists():
+                t.add(prof / sub, arcname=sub)
+    marks = re.findall(r"mark \d+ at present \d+", (logs / f"play-{session}.log").read_text(errors="replace")) \
+        if (logs / f"play-{session}.log").exists() else []
+    (d / "scenario.toml").write_text(
+        f'name = "{name}"\ntests = "TODO"\ngrade = "start"\nsource = "play-{session}'
+        f'{"; " + ", ".join(marks) if marks else ""}"\nframe = {frame}\ntimeout = 600\n'
+        'env = { NX2NAVI_REPLAY_ASYNC = "1", NX2NAVI_VK_RECORDER = "1", NX2NAVI_TEX_RELEASED_MIB = "3072", '
+        'NX2NAVI_GPU_WAIT = "0" }\n[[check]]\nkind = "exit"\n')
+    print(f"{d}: {sum(p.stat().st_size for p in d.rglob('*') if p.is_file()) // 1024} KiB; edit scenario.toml")
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        print(__doc__)
+        return 0
+    cmd, args = argv[0], argv[1:]
+    dry = "--dry" in args
+    args = [a for a in args if a != "--dry"]
+    if cmd == "list":
+        for n in names():
+            m = load(n)
+            print(f"{n:22} {m.get('grade', ''):10} {m.get('tracker', ''):6} {m['tests'][:70]}")
+        return 0
+    if cmd == "run":
+        rs = [run(n, dry) for n in args]
+        return 1 if any(r["status"] == "fail" for r in rs) else 2 if any(r["status"] == "pending" for r in rs) else 0
+    if cmd == "regress":
+        return regress(args, dry)
+    if cmd == "add" and len(args) >= 3 and args[1] == "from":
+        add(args[0], args[2], int(args[3]) if len(args) > 3 else 999999)
+        return 0
+    print(__doc__)
+    return 64
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

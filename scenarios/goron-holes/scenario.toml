@@ -1,0 +1,15 @@
+name = "goron-holes"
+tests = "Angular pieces missing within Goron City meshes (no MapPhysicalMemory failures before it)"
+grade = "start"
+tracker = "#149"
+source = "play-20261110-002528 mark 1 at present 4203 (shot in ref/); Cal's second visit, OQ_FORCE question open (UNCERTAIN)"
+frame = 4203
+timeout = 600
+env = { NX2NAVI_REPLAY_ASYNC = "1", NX2NAVI_VK_RECORDER = "1", NX2NAVI_TEX_RELEASED_MIB = "3072", NX2NAVI_GPU_WAIT = "0" }
+[[check]]
+kind = "exit"
+[[check]]
+kind = "picture"
+ref = "ref/mark-04203.png"
+max_rmse = 0.15
+advisory = true

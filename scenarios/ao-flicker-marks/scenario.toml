@@ -1,0 +1,15 @@
+name = "ao-flicker-marks"
+tests = "AO flicker Cal marked (marks 4/5: shot 08752 has the AO shadow, 08786 lacks it; field near the castle wall)"
+grade = "start"
+tracker = "#146"
+source = "play-20261109-234907 marks 4-5 at presents 8752/8786; replay drifts before there, refs are Cal's shots"
+frame = 8786
+timeout = 600
+env = { NX2NAVI_REPLAY_ASYNC = "1", NX2NAVI_VK_RECORDER = "1", NX2NAVI_TEX_RELEASED_MIB = "3072", NX2NAVI_GPU_WAIT = "0", NX2NAVI_AO_TRACE = "1" }
+[[check]]
+kind = "exit"
+[[check]]
+kind = "picture"
+ref = "ref/mark-08786.png"
+max_rmse = 0.15
+advisory = true
