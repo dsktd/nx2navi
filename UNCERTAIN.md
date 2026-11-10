@@ -9,6 +9,7 @@ Things that are on or available without proof they help. One line each; remove a
 | `NX2NAVI_EVENT_WAITS` | off | fixes AO flicker, causes fullscreen flicker and a soft picture | `=1` |
 | `NX2NAVI_ONESHOT_WAIT_MS` | 30000 | a low cap would cut combat hitches; picture untested | `=<ms>` |
 | `NX2NAVI_TEX_RELEASED_MIB` | 3072 | graveyard may want more; higher risks video memory | `=<MiB>` |
+| `NX2NAVI_ALIAS_EXTRA_MIB` | 0 | lab: `=512` removes all refused memory maps (71 to 0 over 16000 frames; the game wants about 200 MiB more than its budget); not shown to remove the vanishing ground; in `nx2navi.crash` only; needs Cal's play test | `=512` |
 | `NX2NAVI_OQ_FORCE` | 0 | Cal plays with `=1` since 2026-11-10: Goron City holes gone, but it was his second visit (first-visit effect not ruled out) | `=1` |
 | CPU pinning lives in `just play` only | - | the Flatpak launcher does not pin; move into the runtime if pinning proves itself | - |
 | `NX2NAVI_MOTION_PAD` | auto | no effect while yakin holds the controller | `=off` |
