@@ -338,6 +338,20 @@ distribution). After `just update`, `build` may need a rebase onto the new upstr
   guest storage bytes per group. Logging only. Lab, Death Mountain start (input-20261110-004353, frame 3600): driver, VMA and
   kernel agree (VRAM 11.5 / 11.1 / 11.6 GiB, GTT 5.6 with 4.85 shadow): no hidden memory; render targets 5.5 GiB (3.3 released),
   ASTC as BC3 2.0 GiB from 0.9 GiB of ASTC, mirrors 1.0 GiB.
+- Guest memory and the missing-geometry holes (#141), all in `runtime/memory.c`, built into `nx2navi.crash` (not swapped):
+  `0034-memory-log-SetHeapSize...`, `0035-memory-log-the-first-MapPhysicalMemory...`, `0040-memory-at-the-first-refused...`
+  and `0041-memory-the-MapPhysicalMemory-high-water...` are log lines (`mem: SetHeapSize`, `mem: MapPhysicalMemory
+  high-water`, `... succeeds N ms after the first of K refusals`, `mem: alias census at a refusal`).
+  `0039-memory-NX2NAVI_ALIAS_EXTRA_MIB...`: `NX2NAVI_ALIAS_EXTRA_MIB=<n>` (**default 0**) lets MapPhysicalMemory map n MiB
+  beyond the pool the game is told about; the reported total and the heap stay, the reported used size stops at the total.
+  What the lab showed (replays of `input-20261109-234907.txt`): the game's HeapDef gives `VirtualAddressMemory` 2802 MiB
+  and the heap is pool - images - that (6910 of 9809 MiB), so `NX2NAVI_APP_POOL=12 GiB` only grows the heap to 9388 MiB
+  and refusals stay. A refusal (0x10801, LimitReached) is the game's evict-and-retry signal: every one is followed by a
+  successful map within 3-10 ms after it unmapped 0-9 MiB. At the ceiling about 5400 mappings are live (3500 of
+  64-256 KiB, 12 above 16 MiB holding 840 MiB). To frame 16000: 71 refusals at the default, 0 with 2048 or 512 MiB
+  extra, where the alias peak settles near 2990 MiB (185 MiB past the pool) from frame 5400 on. Not shown: that the
+  holes Cal marked go away (replays drift), and why the console would not hit the same limit. Try in play:
+  `NX2NAVI_EXE=crash NX2NAVI_ALIAS_EXTRA_MIB=512 just play`.
 
 ## Mark this moment
 

@@ -1,0 +1,48 @@
+From 161b818df678f1540677007b5354bbf4a5c55b82 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 01:49:01 -0500
+Subject: [PATCH] memory: the MapPhysicalMemory high-water line steps every 16
+ MiB once past the pool (NX2NAVI_ALIAS_EXTRA_MIB) and says how far past (#141)
+
+---
+ runtime/memory.c | 10 +++++++---
+ 1 file changed, 7 insertions(+), 3 deletions(-)
+
+diff --git a/runtime/memory.c b/runtime/memory.c
+index 5eac4b2..874ea45 100644
+--- a/runtime/memory.c
++++ b/runtime/memory.c
+@@ -458,6 +458,7 @@ static uint32_t alias_map(int unmap, uint64_t a, uint64_t n) {
+     uint32_t r = R_OK;
+     uint64_t high = 0, again_n = 0, again_freed = 0, again_ms = 0;
+     int census = 0;
++    uint64_t over = 0;
+     uint64_t cn[6] = {0}, cb[6] = {0};   // mapped runs under 64 KiB, 256 KiB, 1 MiB, 4 MiB, 16 MiB, and larger
+     if (unmap) {
+         for (unsigned i = 0; i < nstack_maps; i++)
+@@ -480,7 +481,9 @@ static uint32_t alias_map(int unmap, uint64_t a, uint64_t n) {
+         }
+         alias_runs(first, count, 0, 1);
+         alias_bytes += fresh * PAGE;
+-        if (alias_bytes >= alias_logged + (256ull << 20)) alias_logged = high = alias_bytes;
++        uint64_t used = alias_bytes + heap_size + image_bytes();   // past the pool (alias_extra): every 16 MiB
++        if (alias_bytes >= alias_logged + (used > L.pool ? 16ull << 20 : 256ull << 20)) alias_logged = high = alias_bytes;
++        over = used > L.pool ? used - L.pool : 0;
+         if (fresh && refused_n) again_n = refused_n, again_freed = refused_freed, again_ms = plat_now_ms() - refused_ms, refused_n = 0;
+     }
+ out:
+@@ -504,8 +507,9 @@ out:
+                (unsigned long long)cn[3], (unsigned long long)(cb[3] >> 20), (unsigned long long)cn[4], (unsigned long long)(cb[4] >> 20),
+                (unsigned long long)cn[5], (unsigned long long)(cb[5] >> 20));
+     if (high)   // the high-water mark of MapPhysicalMemory, every 256 MiB: how much the game takes when the pool allows it
+-        rt_log("mem: MapPhysicalMemory high-water %llu MiB (heap %llu MiB, pool %llu MiB)", (unsigned long long)(high >> 20),
+-               (unsigned long long)(heap_size >> 20), (unsigned long long)(L.pool >> 20));
++        rt_log("mem: MapPhysicalMemory high-water %llu MiB (heap %llu MiB, pool %llu MiB, %llu MiB beyond the pool)",
++               (unsigned long long)(high >> 20), (unsigned long long)(heap_size >> 20), (unsigned long long)(L.pool >> 20),
++               (unsigned long long)(over >> 20));
+     if (again_n)   // how long the game went without new memory: the time a streamed asset can be late by
+         rt_log("mem: MapPhysicalMemory %#llx+%#llx succeeds %llu ms after the first of %llu refusals (%llu MiB unmapped "
+                "meanwhile)", (unsigned long long)a, (unsigned long long)n, (unsigned long long)again_ms,
+-- 
+2.56.0
+

@@ -1,0 +1,61 @@
+From 8c7b76ed4bedbb3e7e778fc8203f2f2da499b580 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 01:27:39 -0500
+Subject: [PATCH] memory: at the first refused MapPhysicalMemory of a burst,
+ log the alias region's mapped runs by size (#141)
+
+---
+ runtime/memory.c | 22 +++++++++++++++++++++-
+ 1 file changed, 21 insertions(+), 1 deletion(-)
+
+diff --git a/runtime/memory.c b/runtime/memory.c
+index 9d2d17a..5eac4b2 100644
+--- a/runtime/memory.c
++++ b/runtime/memory.c
+@@ -457,6 +457,8 @@ static uint32_t alias_map(int unmap, uint64_t a, uint64_t n) {
+     plat_mutex_lock(&lock);
+     uint32_t r = R_OK;
+     uint64_t high = 0, again_n = 0, again_freed = 0, again_ms = 0;
++    int census = 0;
++    uint64_t cn[6] = {0}, cb[6] = {0};   // mapped runs under 64 KiB, 256 KiB, 1 MiB, 4 MiB, 16 MiB, and larger
+     if (unmap) {
+         for (unsigned i = 0; i < nstack_maps; i++)
+             if (overlaps(a, n, stack_maps[i].src, stack_maps[i].size)) {
+@@ -473,7 +475,7 @@ static uint32_t alias_map(int unmap, uint64_t a, uint64_t n) {
+         for (uint64_t i = 0; i < count; i++) fresh += !alias_pages[first + i];
+         if (fresh * PAGE + alias_bytes + heap_size + image_bytes() > L.pool + alias_extra) {
+             r = R_LIMIT_REACHED;   // the SDK maps LimitReached to its recoverable out-of-memory result
+-            if (!refused_n++) refused_ms = plat_now_ms(), refused_freed = 0;
++            if (!refused_n++) refused_ms = plat_now_ms(), refused_freed = 0, census = 1;
+             goto out;
+         }
+         alias_runs(first, count, 0, 1);
+@@ -482,7 +484,25 @@ static uint32_t alias_map(int unmap, uint64_t a, uint64_t n) {
+         if (fresh && refused_n) again_n = refused_n, again_freed = refused_freed, again_ms = plat_now_ms() - refused_ms, refused_n = 0;
+     }
+ out:
++    if (census) {   // what fills the alias region at the first refusal of a burst: its mapped runs by size
++        static const uint64_t top[5] = {64 << 10, 256 << 10, 1 << 20, 4 << 20, 16 << 20};
++        for (uint64_t i = 0; i < ALIAS_PAGES;) {
++            if (!alias_pages[i]) { i++; continue; }
++            uint64_t j = i;
++            while (j < ALIAS_PAGES && alias_pages[j]) j++;
++            int k = 0;
++            while (k < 5 && (j - i) * PAGE >= top[k]) k++;
++            cn[k]++, cb[k] += (j - i) * PAGE;
++            i = j;
++        }
++    }
+     plat_mutex_unlock(&lock);
++    if (census)
++        rt_log("mem: alias census at a refusal: runs <64K %llu (%llu MiB), <256K %llu (%llu MiB), <1M %llu (%llu MiB), <4M %llu "
++               "(%llu MiB), <16M %llu (%llu MiB), larger %llu (%llu MiB)", (unsigned long long)cn[0], (unsigned long long)(cb[0] >> 20),
++               (unsigned long long)cn[1], (unsigned long long)(cb[1] >> 20), (unsigned long long)cn[2], (unsigned long long)(cb[2] >> 20),
++               (unsigned long long)cn[3], (unsigned long long)(cb[3] >> 20), (unsigned long long)cn[4], (unsigned long long)(cb[4] >> 20),
++               (unsigned long long)cn[5], (unsigned long long)(cb[5] >> 20));
+     if (high)   // the high-water mark of MapPhysicalMemory, every 256 MiB: how much the game takes when the pool allows it
+         rt_log("mem: MapPhysicalMemory high-water %llu MiB (heap %llu MiB, pool %llu MiB)", (unsigned long long)(high >> 20),
+                (unsigned long long)(heap_size >> 20), (unsigned long long)(L.pool >> 20));
+-- 
+2.56.0
+
