@@ -1,0 +1,104 @@
+From 3ecad20eb4e06f44a9ee73ffbca90d9882c8b521 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 19:12:41 -0500
+Subject: [PATCH] xlate: I2F keeps a signed source signed: the lowered Maxwell
+ I2F carries the signed flag in bit 13, where ISrcFmt is read, not bit 12;
+ every I2F.S8/S16/S32 converted as unsigned, which lifted Jabu-Jabu's flesh
+ floor and walls (signed 16-bit deformation grid) (#164)
+
+---
+ tests/i2f_sign_check.py       | 59 +++++++++++++++++++++++++++++++++++
+ tools/xlate/AmpereLowering.cs |  4 +--
+ 2 files changed, 61 insertions(+), 2 deletions(-)
+ create mode 100644 tests/i2f_sign_check.py
+
+diff --git a/tests/i2f_sign_check.py b/tests/i2f_sign_check.py
+new file mode 100644
+index 0000000..c186461
+--- /dev/null
++++ b/tests/i2f_sign_check.py
+@@ -0,0 +1,59 @@
++"""Check that the SM86 lowering keeps the sign of I2F's source (#164).
++
++Lowers I2F.F32.{S16,U16,S32,U32} (register form, opcode 0x306) with `nx2navi_xlate --lower` and checks the Maxwell
++I2F it emits: source size in bits 10-11 and signed in bit 13, as the decoder reads ISrcFmt. The signed flag used to
++land in bit 12, so every signed source was converted as unsigned (Jabu-Jabu's flesh floor and walls, whose vertex
++shaders read signed 16-bit offsets from a deformation grid, were pushed up by about 2x the grid scale).
++
++  python tests/i2f_sign_check.py [path/to/nx2navi_xlate]
++"""
++
++import os
++import subprocess
++import sys
++import tempfile
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parent.parent
++EXE = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "build" / "xlate" / (
++    "nx2navi_xlate.exe" if os.name == "nt" else "nx2navi_xlate")
++
++
++def i2f(signed: bool, size: int, sel: int = 0) -> list[int]:
++    """SM86 I2F.F32 R2, R3 under PT: size 0/1/2 = 8/16/32 bits, sel = byte or half of the source."""
++    w0 = 0x306 | (7 << 12) | (2 << 16)
++    w1 = 3 | (sel << 28)
++    w2 = (int(signed) << 10) | (2 << 11) | (size << 20)
++    return [w0, w1, w2, 0x000FCA00]
++
++
++def lowered_i2f(words: list[int]) -> int:
++    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
++        f.write(" ".join(f"{w:08x}" for w in words) + "\n")
++        path = f.name
++    try:
++        out = subprocess.run([str(EXE), "--lower", path], capture_output=True, text=True, check=True).stdout
++    finally:
++        os.unlink(path)
++    for tok in out.split():
++        tok = tok.removeprefix("0x")
++        if len(tok) == 16 and tok.lower().startswith("5cb8"):
++            return int(tok, 16)
++    sys.exit(f"no Maxwell I2F in the lowered code:\n{out}")
++
++
++def main() -> int:
++    fails = 0
++    for signed in (False, True):
++        for size in (1, 2):
++            m = lowered_i2f(i2f(signed, size))
++            got_signed, got_size = (m >> 13) & 1, (m >> 10) & 3
++            ok = got_signed == int(signed) and got_size == size and not (m >> 12) & 1
++            name = f"I2F.F32.{'S' if signed else 'U'}{16 if size == 1 else 32}"
++            print(f"{'ok  ' if ok else 'FAIL'} {name}: {m:016x} (signed {got_signed}, size {got_size})")
++            fails += not ok
++    return 1 if fails else 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/tools/xlate/AmpereLowering.cs b/tools/xlate/AmpereLowering.cs
+index 491ba5b..f3e96d4 100644
+--- a/tools/xlate/AmpereLowering.cs
++++ b/tools/xlate/AmpereLowering.cs
+@@ -2198,7 +2198,7 @@ static class AmpereLowering
+         }
+ 
+         // I2F: source signed (bit 74) and size (84-85: 8/16/32 bits, its byte or half in 60-61), destination size
+-        // (75-76: F16, F32, F64), rounding 78-79. Maxwell I2F: ISrcFmt (size code, +4 signed), ByteSel, DstFmt.
++        // (75-76: F16, F32, F64), rounding 78-79. Maxwell I2F: ISrcFmt size in 10-11 and signed in 13 (not 12), ByteSel, DstFmt.
+         void I2f(uint op)
+         {
+             const uint known = 1u << 10 | 3u << 11 | 3u << 14 | 3u << 20;
+@@ -2207,7 +2207,7 @@ static class AmpereLowering
+             if ((w2 & ~known) != 0 || src == 3 || dst == 0 || (op != 0xb06 && (_i.W1 & 0xcfffff00u) != 0)) throw Fail("I2F format");
+             int b = op == 0xb06 ? Plain(1, SB) : op == 0xd06 ? Ur(_i.Bits(32, 8)) : Gpr(_i.Bits(32, 8));
+             uint bytesel = src == 0 ? sel : src == 1 ? sel * 2 : 0;
+-            EmitG(0x5cb8000000000000UL | ((ulong)dst << 8) | ((ulong)(src | (_i.Bit(74) ? 4u : 0u)) << 10) | ((ulong)b << 20)
++            EmitG(0x5cb8000000000000UL | ((ulong)dst << 8) | ((ulong)src << 10) | ((ulong)_i.Bits(74, 1) << 13) | ((ulong)b << 20)
+                   | ((ulong)bytesel << 41) | ((ulong)_i.Bits(78, 2) << 39) | (uint)Gpr((uint)Dst));
+         }
+ 
+-- 
+2.56.0
+
