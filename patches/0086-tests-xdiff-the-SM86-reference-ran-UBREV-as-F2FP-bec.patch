@@ -1,0 +1,319 @@
+From 81fcc93b85872eefa3cf29bbc7dcf69f450e0173 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 18:19:36 -0500
+Subject: [PATCH] tests/xdiff: the SM86 reference ran UBREV as F2FP, because a
+ uniform opcode's twin was taken as base - 0x80 and UFLO, UBREV and UPOPC have
+ FLO, BREV and POPC (0x100, 0x101, 0x109) as twins; the lowering was right
+ (UR7 fffffffe reverses to 7fffffff). The references now also model S2R and
+ S2UR (special registers drawn per seed, SR 132 not compared), the indexed
+ ULDC and the indexed Maxwell LDC; lower_py transcribes UFLO, UBREV, UPOPC,
+ S2R, S2UR and indexed ULDC; selftest keeps the UBREV repro as a fixed case;
+ repro inputs of uniform instructions print their uniform registers
+
+---
+ tests/xdiff/lower_py.py | 58 +++++++++++++++++++++++++++++++++++++++++
+ tests/xdiff/maxwell.py  | 16 +++++++++---
+ tests/xdiff/selftest.py | 45 +++++++++++++++++++++++++++++++-
+ tests/xdiff/sm86.py     | 51 +++++++++++++++++++++++++++++++++++-
+ tests/xdiff/state.py    |  4 +++
+ tests/xdiff/xdiff.py    |  4 +++
+ 6 files changed, 172 insertions(+), 6 deletions(-)
+
+diff --git a/tests/xdiff/lower_py.py b/tests/xdiff/lower_py.py
+index 33001c2..82021fa 100644
+--- a/tests/xdiff/lower_py.py
++++ b/tests/xdiff/lower_py.py
+@@ -642,6 +642,58 @@ class Lowerer:
+             return
+         raise Fail("ULDC width")
+ 
++    def uldc_indexed(self):
++        width = self.bits(73, 3)
++        d, idx, bank = self.ur(self.bits(16, 8)), self.ur(self.bits(24, 8)), self.bits(54, 5)
++        bank = 17 if bank == 24 else bank
++        if width > 5 or (self.W2 & ~0xe00) != 0x08000000 or bank >= 18 or self.bits(62, 2):
++            raise Fail("indexed ULDC mode")
++        if d == RZ:
++            return
++        self.emitg(0xef90000000000000 | d | (idx << 8) | (self.bits(38, 16) << 20) | (bank << 36) | (width << 48))
++
++    def s2r(self, uniform):
++        special = self.bits(72, 8)
++        if self.W1 or self.W2 != special << 8:
++            raise Fail("special register mode")
++        d = self.ur(self.bits(16, 8)) if uniform else self.bits(16, 8)
++        if d == RZ:
++            return
++        if special == 132:
++            self.mov32i(d, 0x00010100, True)
++            return
++        self.emitg(0xf0c8000000000000 | (special << 20) | d)
++
++    def uflo(self):
++        if (self.W2 & ~(0x400 | 0x08000000)) != 0x000e0000:
++            raise Fail("UFLO mode")
++        d = self.ur(self.bits(16, 8))
++        if d == RZ:
++            return
++        self.emitg(0x5c30000000000000 | (self.ur(self.bits(32, 8)) << 20) | (self.bit(63) << 40)
++                   | (self.bits(74, 1) << 41) | d)
++
++    def ubrev(self):
++        if (self.W2 & ~0x08000000) or self.W1 > 255:
++            raise Fail("UBREV mode")
++        d = self.ur(self.bits(16, 8))
++        if d == RZ:
++            return
++        self.emitg(0x3828000000000000 | (self.ur(self.bits(32, 8)) << 8) | (1 << 39) | (1 << 40) | d)
++
++    def upopc(self):
++        if (self.W2 & ~0x08000000) or self.W1 > 255:
++            raise Fail("UPOPC mode")
++        saved = self.w
++        self.w = (self.w & ~0xfff) | 0x309
++        self.w &= ~(1 << 91)
++        self.uniform = True
++        try:
++            return self.popc()
++        finally:
++            self.uniform = False
++            self.w = saved
++
+     def uniform_predicates(self):
+         op = self.bits(0, 12)
+         if not ((0x080 <= (op & 0x1ff) <= 0x0bf and op != 0x886) or op == 0x9c3):
+@@ -700,6 +752,12 @@ class Lowerer:
+             (0x81c,): self.plop3,
+             (0x803,): lambda: self.predicate_register(True),
+             (0x804,): lambda: self.predicate_register(False),
++            (0x919,): lambda: self.s2r(False),
++            (0x9c3,): lambda: self.s2r(True),
++            (0xabb,): self.uldc_indexed,
++            (0x2bd,): self.uflo,
++            (0x2be,): self.ubrev,
++            (0x2bf,): self.upopc,
+         }
+         for ops, fn in table.items():
+             if op in ops:
+diff --git a/tests/xdiff/maxwell.py b/tests/xdiff/maxwell.py
+index 011c83e..e9eb2c8 100644
+--- a/tests/xdiff/maxwell.py
++++ b/tests/xdiff/maxwell.py
+@@ -428,13 +428,17 @@ def bfei(st, f):
+ 
+ 
+ def ldc(st, f):
+-    if f["AddressMode"] or f["SrcA"] != RZ:
+-        raise Unsupported("LDC with an index")
++    """LDC Rd, c[slot][Ra + offset] (offset unsigned 16 bits). A read past the 64 KiB bank is not compared."""
++    if f["AddressMode"]:
++        raise Unsupported("LDC address mode")
+     size = f["LsSize"]
+     nbytes = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 8}.get(size)
+     if nbytes is None:
+         raise Undefined("LDC size")
+-    v = st.cbuf(f["CbufSlot"], f["CbufOffset"], nbytes)
++    addr = (st.R(f["SrcA"]) + f["CbufOffset"]) & M32
++    if addr + nbytes > 0x10000:
++        raise Unsupported("LDC beyond the bank")
++    v = st.cbuf(f["CbufSlot"], addr, nbytes)
+     if size in (1, 3) and v >> (8 * nbytes - 1):
+         v -= 1 << (8 * nbytes)
+     if nbytes == 8:
+@@ -445,6 +449,10 @@ def ldc(st, f):
+         _dst(st, f, v)
+ 
+ 
++def s2r(st, f):
++    _dst(st, f, st.sr(f["SReg"]))
++
++
+ def nop(st, f):
+     pass
+ 
+@@ -458,5 +466,5 @@ OPS = {
+     "ShlR": lambda st, f: _shl(st, f, st.R(f["SrcB"])), "ShlI": lambda st, f: _shl(st, f, f["Imm20"] & M32),
+     "ShrR": lambda st, f: _shr(st, f, st.R(f["SrcB"])), "ShrI": lambda st, f: _shr(st, f, f["Imm20"] & M32),
+     "PrmtR": prmtr, "FloR": flor, "PopcR": popcr, "P2rI": p2ri, "R2pI": r2pi, "BfeI": bfei, "Ldc": ldc,
+-    "Nop": nop,
++    "S2r": s2r, "Nop": nop,
+ }
+diff --git a/tests/xdiff/selftest.py b/tests/xdiff/selftest.py
+index 3aeca81..3a04cdf 100644
+--- a/tests/xdiff/selftest.py
++++ b/tests/xdiff/selftest.py
+@@ -172,6 +172,47 @@ def families(rng):
+     if width == 5:
+         w &= ~(1 << 16)
+     yield "ULDC", w | width << 73
++    # indexed ULDC (0xabb): URd, c[bank][URa + offset], width 0-5 (64 bits into an even pair)
++    width = rng.choice([0, 1, 2, 3, 4, 5])
++    w = 0xabb | 7 << 12 | rng.randint(0, 20) << 16 | rng.choice([0, 1, 5, 63]) << 24 | rng.choice([0, 3, 24]) << 54
++    w |= rng.randint(0, 0x3ff) * 4 << 38 | width << 73 | 1 << 91
++    if width == 5:
++        w &= ~(1 << 16)
++    yield "ULDC", w
++    # UFLO, UBREV, UPOPC: vector twins FLO, BREV, POPC (0x100, 0x101, 0x109), uniform registers, bit 91
++    g = rng.choice([7, 7, 0, 1]) << 12
++    yield "UFLO", 0x2bd | g | rng.randint(0, 20) << 16 | rng.choice([0, 7, 63]) << 32 | rng.choice([0, 1]) << 63 \
++        | (0x000e0000 | rng.choice([0, 0x400])) << 64 | 1 << 91
++    yield "UBREV", 0x2be | g | rng.randint(0, 20) << 16 | rng.choice([0, 7, 63]) << 32 | 1 << 91
++    yield "UPOPC", 0x2bf | g | rng.randint(0, 20) << 16 | rng.choice([0, 7, 63]) << 32 | rng.choice([0, 1]) << 63 \
++        | 1 << 91
++    # S2R / S2UR: lane id, thread and workgroup ids, lane masks
++    sr = rng.choice([0, 33, 34, 35, 37, 38, 39, 56, 57, 58, 59, 60])
++    yield "S2R", 0x919 | rng.choice([7, 7, 0, 9]) << 12 | rng.randint(0, 20) << 16 | sr << 72
++    yield "S2UR", 0x9c3 | g | rng.randint(0, 20) << 16 | sr << 72
++
++
++# Fixed cases: (name, words, seed, register, value the SM86 reference must give). UBREV UR4, UR7 with UR7 = fffffffe
++# reverses to 7fffffff; the reference once ran UBREV as F2FP (00007fff) by the + 0x80 twin rule.
++KNOWN = [
++    ("UBREV", "000472be 00000007 08000000 000fe200", 248857926, "UR4", 0x7fffffff),
++]
++
++
++def check_known():
++    from state import random_state
++    ok = True
++    for name, words, seed, reg, want in KNOWN:
++        w = sum(int(x, 16) << (32 * k) for k, x in enumerate(words.split()))
++        st = random_state(random.Random(seed))
++        sm86.execute(w, st)
++        got = st.ur[int(reg[2:])] if reg.startswith("UR") else st.r[int(reg[1:])]
++        low = xdiff.Lowering(*lower_py.lower(w))
++        o = xdiff.run_case(w, low, seed)
++        good = got == want and o.kind == "ok"
++        ok &= good
++        print(f"  {name} {words} seed {seed}: {reg} {got:08x} (want {want:08x}), lowered {o.kind}")
++    return ok
+ 
+ 
+ def check(n, cases, family, seed, bugs=(), verbose=False):
+@@ -264,7 +305,9 @@ def main(argv=None):
+         return 0
+     print("references against the transcribed lowering:")
+     stats, ex = check(a.n, a.cases, a.family.upper(), a.seed, verbose=a.v)
+-    clean = not ex
++    print("known cases:")
++    known = check_known()
++    clean = not ex and known
+     print("I2F with the patch 0064 bug injected (signed flag in bit 12):")
+     s2, ex2 = check(max(a.n // 3, 20), a.cases, "I2F", a.seed + 1, bugs=("i2f-bit12",))
+     caught = "I2F" in ex2
+diff --git a/tests/xdiff/sm86.py b/tests/xdiff/sm86.py
+index a785f2f..b7d1610 100644
+--- a/tests/xdiff/sm86.py
++++ b/tests/xdiff/sm86.py
+@@ -127,6 +127,12 @@ def fmod_(v, a, n):
+     return fp.neg(fp.fabs(v, a), n)
+ 
+ 
++# A uniform-datapath instruction is its vector twin's encoding with base opcode + 0x80, except these three, whose
++# twins sit at 0x100 and above: UFLO (FLO 0x100), UBREV (BREV 0x101), UPOPC (POPC 0x109). By the + 0x80 rule UBREV
++# 0x0BE would run as F2FP 0x03E.
++UNIFORM_TWIN = {0x0BD: 0x100, 0x0BE: 0x101, 0x0BF: 0x109}
++
++
+ def execute(w: int, st):
+     op = w & 0xFFF
+     uniform = False
+@@ -135,7 +141,11 @@ def execute(w: int, st):
+             return _umov(Insn(w, st, True))
+         if op == 0xAB9:
+             return _uldc(Insn(w, st, True))
+-        twin = (op & 0x1FF) - 0x80
++        if op == 0xABB:
++            return _uldc_indexed(Insn(w, st, True))
++        if op == 0x9C3:
++            return _s2r(Insn(w, st, True))
++        twin = UNIFORM_TWIN.get(op & 0x1FF, (op & 0x1FF) - 0x80)
+         w = (w & ~0x1FF) | twin
+         w &= ~(1 << 91)
+         uniform = True
+@@ -182,6 +192,44 @@ def _uldc(I):
+         raise Unsupported("ULDC width")
+ 
+ 
++BANK_SIZE = 0x10000
++
++
++def _uldc_indexed(I):
++    """ULDC URd, c[bank][URa + offset]: width 73-75 as ULDC's (U8 S8 U16 S16 32 64), offset 38-53 unsigned. A read
++    past the 64 KiB bank is not compared (the SPIR-V stage's bounds are not modelled here)."""
++    if not I.pr(I.bits(12, 4)):
++        return
++    width, bank, d = I.bits(73, 3), I.bits(54, 5), I.bits(16, 8)
++    size = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 8}.get(width)
++    if size is None:
++        raise Unsupported("ULDC width")
++    addr = (I.rd(I.bits(24, 8)) + I.bits(38, 16)) & M32
++    if addr + size > BANK_SIZE:
++        raise Unsupported("ULDC beyond the bank")
++    v = I.st.cbuf(bank, addr, size)
++    if width in (1, 3) and v >> (8 * size - 1):
++        v -= 1 << (8 * size)
++    if size == 8:
++        if d not in (RZ, URZ):
++            I.wr(d, v)
++            I.wr(d + 1, v >> 32)
++    else:
++        I.wr(d, v)
++
++
++def _s2r(I):
++    """S2R / S2UR Rd, SR: the special register numbered in bits 72-79 (the same numbers as Maxwell's), whose values
++    the state draws at random (State.sr). SR 132 (variable-rate shading size) the lowering replaces by 1x1 on
++    purpose: not compared."""
++    if not I.pr(I.bits(12, 4)):
++        return
++    sr = I.bits(72, 8)
++    if sr == 132:
++        raise Unsupported("S2R SR 132 (shading rate, 1x1 by design)")
++    I.wr(I.bits(16, 8), I.st.sr(sr))
++
++
+ # ---- float -----------------------------------------------------------------------------------------------------------
+ def _fadd(I):
+     if I.bits(81, 10):
+@@ -637,6 +685,7 @@ for ops, fn in [
+     ((0x309, 0xD09), _popc),
+     ((0x300, 0xD00), _flo),
+     ((0x301,), _brev),
++    ((0x919,), _s2r),
+     ((0x81A,), _sgxt),
+     ((0x81C,), _plop3),
+     ((0x803,), lambda I: _p2r(I, True)),
+diff --git a/tests/xdiff/state.py b/tests/xdiff/state.py
+index 5bca928..0c613b5 100644
+--- a/tests/xdiff/state.py
++++ b/tests/xdiff/state.py
+@@ -62,6 +62,10 @@ class State:
+         bank = self.bank_alias.get(bank, bank)
+         return random_word(random.Random(f"{self.seed}:{bank}:{index}"))
+ 
++    def sr(self, n):
++        """Special register n (S2R / S2UR), a function of (seed, n) like the constant banks: copies agree."""
++        return random_word(random.Random(f"{self.seed}:sr:{n}"))
++
+     def cbuf(self, bank, offset, size=4):
+         """size bytes at a byte offset (little endian, any alignment, zero-extended)."""
+         data = b"".join(self.word(bank, i).to_bytes(4, "little") for i in range(offset >> 2, (offset + size + 3) >> 2))
+diff --git a/tests/xdiff/xdiff.py b/tests/xdiff/xdiff.py
+index 3711ee0..593f3f0 100644
+--- a/tests/xdiff/xdiff.py
++++ b/tests/xdiff/xdiff.py
+@@ -143,6 +143,10 @@ def run_case(w: int, low: Lowering, seed: int) -> Outcome:
+ def inputs_of(w: int, st):
+     """The values an instruction's register fields name (for repros)."""
+     regs = [(w >> 24) & 0xFF, (w >> 32) & 0xFF, (w >> 64) & 0xFF]
++    if sm86.is_uniform(w & 0xFFF):   # uniform registers in the fields (URZ is 63)
++        out = [f"UR{r}={st.ur[r]:08x}" for r in dict.fromkeys(regs) if r < 63]
++        out.append("UP=" + "".join("1" if st.up[k] else "0" for k in range(7)))
++        return " ".join(out)
+     out = [f"R{r}={st.r[r]:08x}" for r in dict.fromkeys(regs) if r != RZ]
+     out.append("P=" + "".join("1" if st.p[k] else "0" for k in range(7)))
+     return " ".join(out)
+-- 
+2.56.0
+
