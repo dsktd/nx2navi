@@ -1,0 +1,152 @@
+From e8df9eb05c3cd1587b0b9d16c55b63bc3b7f54ce Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 20:24:26 -0500
+Subject: [PATCH] vk_texture: a slot of a texture the game finalized, or whose
+ storage went, no longer makes a new live entry once the released entry is
+ destroyed (NX2NAVI_TEX_STALE_GONE=1; default 0): gone keys keep the serial
+ they went at for slot_resolve's stale rule; the mem log counts live entries
+ made from such stale slots and every destroy by cause (#160)
+
+---
+ runtime/vk_texture.c | 56 ++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 56 insertions(+)
+
+diff --git a/runtime/vk_texture.c b/runtime/vk_texture.c
+index 5035ddb..0317b08 100644
+--- a/runtime/vk_texture.c
++++ b/runtime/vk_texture.c
+@@ -67,6 +67,7 @@ typedef struct Tex {
+     uint64_t chash[2];            // hash of the storage bytes the image holds (content_note); 0: not in the content index
+     struct TexShare *share;       // the image is shared with other entries of the same content (NX2NAVI_TEX_DEDUPE); NULL: own
+     uint64_t st_id, st_c;         // address state (tex_gen_bump): the entry's identity, and what it adds to its bucket's sum
++    uint8_t from_gone;            // made by a slot lookup for a key the game finalized or whose storage went (gone_serial)
+ } Tex;
+ 
+ // A slot keeps what vk_texture_by_id resolved for it, so a draw binding skips the key lookup and the address chain: the
+@@ -154,6 +155,21 @@ static uint8_t *sinert;
+ static int inert_on = -1;
+ static uint32_t reg_serial;
+ static uint64_t n_same_regs;   // vk_texture_register calls that changed nothing (vk_texture_same_regs)
++// Keys whose entry went after the game finalized it, or whose storage went, and keys finalized with no entry: the
++// reg_serial then (+1 << 32, so never NULL). slot_resolve's stale rule needs the released entry's rel_serial; once the
++// released sweeps, the render-target trim or a range gone destroyed it, a slot still registered with that descriptor
++// (the bindless pool keeps tens of thousands of stale ones and the pool refresh looks every one up) found no entry and
++// made a new, live one from the old storage, which no Finalize ever releases again (#160: 3.7 -> 10.4 GiB of live
++// textures in 15 minutes after Jabu-Jabu, ASTC and 1390x0 game textures). NX2NAVI_TEX_STALE_GONE (default 0 until a
++// session clears it; =1): such a slot resolves to nothing, as with the released entry. Counted either way.
++static nvn_hmap gone = {.klen = sizeof(TexKey)};
++static int stale_gone = -1;
++static uint64_t n_gone_made, n_gone_blocked, n_gone_unkeyed, n_gone_resets;
++#define GONE_MAX (1u << 18)
++static void gone_note(const TexKey *k, uint32_t serial) {
++    if (gone.n >= GONE_MAX) nvn_hm_clear(&gone, NULL), n_gone_resets++;
++    nvn_hm_put(&gone, k, (void *)(uintptr_t)((uint64_t)serial | 1ull << 32));
++}
+ 
+ static uint32_t agen_idx(uint64_t addr) { return (uint32_t)(addr * 0x9E3779B97F4A7C15ull >> 48); }
+ 
+@@ -915,6 +931,7 @@ static void destroy_tex(Tex *e) {
+         for (Tex *p = head; p; p = p->next_at)
+             if (p->next_at == e) { p->next_at = e->next_at; break; }
+     }
++    if (e->released || dcause == DC_RANGE_GONE) gone_note(&e->key, e->released ? e->rel_serial : reg_serial);
+     if (e->released) nreleased--, rel_unlink(e);
+     content_forget(e);
+     if (e->share && --e->share->refs > 0) {   // the image stays with the entries still sharing it, views included
+@@ -1658,6 +1675,8 @@ static void create_failed(const TexKey *k) {
+     failed_hold[i].k = *k, failed_hold[i].until_ns = plat_now_ns() + 2000000000ull;
+ }
+ 
++static int gone_slot;   // set around slot_resolve's entry_of for a slot older than its key's gone_serial
++
+ static Tex *entry_of(const tex_t *t) {
+     TexKey k;
+     make_key(t, &k);
+@@ -1705,6 +1724,8 @@ static Tex *entry_of(const tex_t *t) {
+         nvn_hm_put(&by_key, &k, e);
+         n_site[1]++;
+         tex_gen_bump(e, ST_ADD);
++        if (gone_slot) e->from_gone = 1, n_gone_made++;
++        else nvn_hm_del(&gone, &k);   // made by a live use: the key is current again
+     }
+     if (e->released) e->released = 0, e->took_back = 1, nreleased--, rel_unlink(e), n_site[2]++, tb_n++, tex_gen_bump(e, ST_FLIP);
+     e->t = *t;
+@@ -1805,6 +1826,8 @@ void vk_texture_release(const tex_t *t) {
+         n_site[3]++;
+         tex_gen_bump(e, ST_FLIP);
+         sweep_released();
++    } else if (!e) {
++        gone_note(&k, reg_serial), n_gone_unkeyed++;
+     }
+     unlock();
+ }
+@@ -1939,12 +1962,25 @@ static Tex *slot_resolve(TexSlot *s, view_t *view, int *has_view) {
+         if (!e && any) e = any;
+         else if (!e && !cpu_slot) e = own;
+         else if (!e && own && (uint32_t)(sinfo[s - tslots] >> 16) <= own->rel_serial) stale = 1;
++        if (!e && !own) {   // the entry went: the same rule against the serial its key went at
++            void *g = nvn_hm_get(&gone, &k);
++            if (g && (uint32_t)(sinfo[s - tslots] >> 16) <= (uint32_t)(uintptr_t)g) {
++                if (stale_gone < 0) {
++                    stale_gone = cfg_bool("NX2NAVI_TEX_STALE_GONE");
++                    rt_log("vk: slots of finalized or freed textures whose entry went: %s",
++                           stale_gone ? "resolve to nothing" : "make a new live entry (NX2NAVI_TEX_STALE_GONE=1: nothing)");
++                }
++                if (stale_gone) stale = 1, n_gone_blocked++;
++                else gone_slot = 1;
++            }
++        }
+     }
+     if (!e && s->t.mem && !stale) {
+         if (create_budget < 0) e = entry_of(&s->t);
+         else if (!create_budget) create_deferred = 1;
+         else if (mem_readable((uint64_t)(uintptr_t)s->t.mem, s->t.L.size)) e = entry_of(&s->t), create_budget--;
+     }
++    gone_slot = 0;
+     // A followed texture is another descriptor at the same storage: its image holds the content, but sampling takes the
+     // slot descriptor's swizzle. The UI renders text into RGBA8 and samples it through a (A,A,A,A) descriptor; with the
+     // render target's RGBA swizzle the text blur saw R = 1 everywhere and drew solid boxes behind tips and labels.
+@@ -2844,12 +2880,17 @@ void vk_texture_format_log(uint64_t frame) {
+     typedef struct { int vk, bw, bh, rt, rel; uint64_t n, bytes, src; } Grp;
+     Grp g[96];
+     int ng = 0;
++    uint64_t live_n = 0, live_b = 0, fg_n = 0, fg_b = 0;   // live entries; of them made from a gone key's stale slot
+     lock();
+     for (uint32_t i = 0; i < by_key.cap; i++) {
+         const Tex *e = by_key.vals[i];
+         if (!e || !e->alloc) continue;
+         VmaAllocationInfo ai;
+         vmaGetAllocationInfo(c->vma, e->alloc, &ai);
++        if (!e->released) {
++            live_n++, live_b += ai.size;
++            if (e->from_gone) fg_n++, fg_b += ai.size;
++        }
+         int rt = e->pub.gpu_owned || e->wr_fence != 0, k = 0;
+         for (; k < ng; k++)
+             if (g[k].vk == (int)e->f.vk && g[k].bw == e->f.astc_bw && g[k].bh == e->f.astc_bh && g[k].rt == rt &&
+@@ -2861,7 +2902,22 @@ void vk_texture_format_log(uint64_t frame) {
+         }
+         g[k].n++, g[k].bytes += ai.size, g[k].src += e->t.L.size;
+     }
++    uint64_t gm = n_gone_made, gb = n_gone_blocked, gu = n_gone_unkeyed, gr = n_gone_resets;
++    uint32_t gk = gone.n;
++    uint64_t dn[DC_N], db[DC_N];
++    memcpy(dn, td_n, sizeof dn), memcpy(db, td_bytes, sizeof db);
+     unlock();
++    // Why live textures stay (#160): live entries made again from a stale slot after their key went, the keys known
++    // gone, and every destroy so far by cause (range gone, replaced, released-count, released-bytes, pressure, yield).
++    rt_log("mem: textures frame %llu: live %llu %.0f MiB, of them made from stale slots of gone keys %llu %.0f MiB; such "
++           "entries made %llu, slots held stale %llu, finalized with no entry %llu; gone keys %u (resets %llu); destroys: "
++           "range gone %llu %.0f MiB, replaced %llu %.0f MiB, released-count %llu %.0f MiB, released-bytes %llu %.0f MiB, "
++           "pressure %llu %.0f MiB, yield/trim %llu %.0f MiB",
++           (unsigned long long)frame, (unsigned long long)live_n, live_b / 1048576.0, (unsigned long long)fg_n,
++           fg_b / 1048576.0, (unsigned long long)gm, (unsigned long long)gb, (unsigned long long)gu, gk,
++           (unsigned long long)gr, (unsigned long long)dn[1], db[1] / 1048576.0, (unsigned long long)dn[2],
++           db[2] / 1048576.0, (unsigned long long)dn[3], db[3] / 1048576.0, (unsigned long long)dn[4], db[4] / 1048576.0,
++           (unsigned long long)dn[5], db[5] / 1048576.0, (unsigned long long)dn[6], db[6] / 1048576.0);
+     for (int a = 1; a < ng; a++)
+         for (int b = a; b > 0 && g[b].bytes > g[b - 1].bytes; b--) { Grp t = g[b]; g[b] = g[b - 1]; g[b - 1] = t; }
+     char line[1024];
+-- 
+2.56.0
+
