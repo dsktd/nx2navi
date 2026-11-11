@@ -520,6 +520,22 @@ Both are opt-in environment variables for `tools/lab-run` (see its header):
 - `LAB_HANG=1`: `RADV_DEBUG=nogpl,hang`; the `radv_dumps_*` hang reports land in `.lab/<label>/hang`. Known: replays to frame 1100 hit `radv: GPU hang detected`, then radv crashes
   (libvulkan_radeon.so+0xfae0c) before writing a report.
 
+## Modding: text mods and the RE database
+
+Design: `design/modding/DESIGN.md`. The runtime already loads RomFS mods (`runtime/mods.c`, `NX2NAVI_MODS_DIR`, default
+`build/v111/mods`); `tools/msgmod.py` (run with `NX2navi/.venv-py314/bin/python`) makes text mods for it:
+
+- `msgmod.py export [--lang USen]`: every MSBT of `Mals/<lang>.Product.110.sarc.zs` to `build/v111/msg/<lang>/*.json`
+  (label -> text; control tags as `{group.type:hex}`). 1.1.1's messages are UTF-8, and "Link" is literal text.
+- copy the labels you change into `build/v111/msg-edit/<lang>/<same path>.json`, then
+  `msgmod.py build --mod <name>`: writes `build/v111/mods-dev/<name>/romfs/Mals/...sarc.zs`, recompressed with its
+  own zstd dictionary. Round trip of all 540 USen files is byte-identical. Start the game with
+  `NX2NAVI_MODS_DIR=<abs path of build/v111/mods-dev>` (or copy the mod folder into `build/v111/mods`).
+
+RE: `tools/strxref.py` (`.venv/bin/python`) maps strings to the lifted functions that load them
+(`build/v111/re/strxref.tsv`); `tools/redb.py add|show|strings|header` keeps `build/v111/re/symbols.json`
+(`build/v111/re/seed.sh` recreates the seed). Both outputs are game-derived and stay under build/.
+
 ## Profiling with Tracy
 
 Opt-in, patch 0023. `just game tracy=1` builds `build/v111/nx2navi.tracy` (`build-linux.py --tracy --exe nx2navi.tracy`:
