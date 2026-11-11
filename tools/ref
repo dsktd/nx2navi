@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Switch 2 reference library (see tools/ref.py). python+opencv+numpy+ffmpeg+yt-dlp come from one nix shell.
+here=$(dirname "$(readlink -f "$0")")
+exec nix shell --impure --expr 'let p = (builtins.getFlake "nixpkgs").legacyPackages.x86_64-linux; in p.symlinkJoin { name = "refenv"; paths = [ (p.python3.withPackages (q: [ q.opencv4 q.numpy ])) p.ffmpeg p.yt-dlp ]; }' -c python3 "$here/ref.py" "$@"

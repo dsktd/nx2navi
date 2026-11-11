@@ -187,7 +187,7 @@ Field, HDR10 native through niri-spicy, 240 Hz panel. Since the 2026-11-08 morni
   Cal's recordings and slot save to fixed frames, with dumps, shots, core validation (two VUIDs, NOTES "Validation
   sweep") and A/B of patches 0004, 0008-0010, 0016. 2026-11-09 morning, after the reboot: the swapped-in build passes
   the castle spot (frame 1500) and the crash spot (frame 1700); `mark.req` during a replay logs `mark 1 at present
-  832`, writes `logs/shot-00832.png` and, with `NX2NAVI_MARK_RING=1`, 30 frames in `logs/mark-1/`; 0019 A/B above.
+832`, writes `logs/shot-00832.png` and, with `NX2NAVI_MARK_RING=1`, 30 frames in `logs/mark-1/`; 0019 A/B above.
 - Not verified: the Flatpak kit on a Deck, fmz-pow's removal; 0018 is cleared as the #138 fix (no visible change).
 
 ## Private local patches
@@ -230,7 +230,7 @@ distribution). After `just update`, `build` may need a rebase onto the new upstr
   CPU-side ordering (uniform snapshots, mirrors, game polling event values). Next: a dump with it on vs off.
 
 - `0016-nvn-event-waits-v3-wait-on-the-cut-s-own-event-cut-t.patch`: event waits v3 (still **off**). v2's held parts were
-  released in the same submit call (ew_drain looked for a wait *after* the cut), so v2 only split submissions and AO
+  released in the same submit call (ew_drain looked for a wait _after_ the cut), so v2 only split submissions and AO
   still read last frame's depth. v3 holds until the cut's own event is signalled, cuts the signalling submission right after
   its signal so the released queues run before the rest of it, keeps the uniform snapshot across a cut, and returns a
   split submission's last fence. Lab (input-20261108-131323, frames 1100-1290): AO now reads this frame's half-res depth
@@ -251,15 +251,15 @@ distribution). After `just update`, `build` may need a rebase onto the new upstr
   scene), dropping the oldest past the cap. `just play` sets 3072 since 2026-11-09 (Status has the lab numbers) (#132).
 - `0022-NX2NAVI_TRACE-counters-a-present-clock-line-per-60-p.patch`: #128 lab instrumentation. `NX2NAVI_TRACE=counters`
   logs `counters: present N t=<CLOCK_MONOTONIC s>` every 60 presents (perf.c) and `counters: voice <slot> start: ...
-  present N t=... audio-frame A` when a voice slot is rendered after a gap (audio_mixer.c). `tools/counter-sample run
-  <interval> <out> tools/lab-run ...` reads the CPU counters of that game through `/proc/<pid>/mem` on the same clock
+present N t=... audio-frame A` when a voice slot is rendered after a gap (audio_mixer.c). `tools/counter-sample run
+<interval> <out> tools/lab-run ...` reads the CPU counters of that game through `/proc/<pid>/mem` on the same clock
   (the update object's +0xd50/+0xd58 found through the callback record, the time manager through its pointer chain).
   Built into `nx2navi.new` (not swapped).
 - `0023-Tracy-profiler-zones-rt_tracy.h-opt-in-with-build-li.patch`: #137 tooling for #132. `runtime/rt_tracy.h` wraps the
   Tracy C API (`RT_ZONE`, `RT_FRAME_MARK`, ...; every macro empty without `TRACY_ENABLE`) and zones sit where perf.c
   already times: the present (frame mark), `nvn submit` and `submit finish wait` (nvnQueueSubmitCommands), `shadow sync`,
   `write-back compare` and `write-back` (0008 area), `bind pipeline`, `texture upload` (text `re-upload`), `released
-  sweep` (0019), `audio mix`. Built only by `just game tracy=1` (see "Profiling with Tracy"); the plain binary is untouched.
+sweep` (0019), `audio mix`. Built only by `just game tracy=1` (see "Profiling with Tracy"); the plain binary is untouched.
 - `0024-vk_sync-the-submit-finish-wait-and-the-LOD-guard-wai.patch`: #132 fix 1 (NOTES-perf-2026-11-09 item 1). The
   completion thread publishes `reached_gpu` as soon as the timeline says the GPU is through with a value, before it
   runs that value's callbacks (write-back compares, pool resets, frees); `done` stays after them. The game thread's
@@ -339,7 +339,7 @@ distribution). After `just update`, `build` may need a rebase onto the new upstr
   the `mem: vram frame` census plus `mem: heaps frame N:` per heap: the driver's VK_EXT_memory_budget usage/budget (what the
   pressure valves read), VMA blocks and allocations, the kernel's `/proc/self/fdinfo` drm-memory-vram/gtt and visible VRAM
   (what nvtop shows) and the shadow total. Logging only. Reason: the play log's only budget figures (`stays imported ...
-  6961 of 7925 MiB`) are the first four refusals, in minute 1, so a 16 GB card fill was invisible in the log.
+6961 of 7925 MiB`) are the first four refusals, in minute 1, so a 16 GB card fill was invisible in the log.
 - `0038-vk_texture-texture-memory-by-format-in-the-heaps-log.patch`: #132. After the heaps line, `mem: textures frame N`: own
   texture memory grouped by Vulkan format, ASTC footprint, render target (`rt`) and released (`rel`), largest 16, with the
   guest storage bytes per group. Logging only. Lab, Death Mountain start (input-20261110-004353, frame 3600): driver, VMA and
@@ -365,7 +365,7 @@ distribution). After `just update`, `build` may need a rebase onto the new upstr
 - Guest memory and the missing-geometry holes (#141), all in `runtime/memory.c`, built into `nx2navi.crash` (not swapped):
   `0034-memory-log-SetHeapSize...`, `0035-memory-log-the-first-MapPhysicalMemory...`, `0040-memory-at-the-first-refused...`
   and `0041-memory-the-MapPhysicalMemory-high-water...` are log lines (`mem: SetHeapSize`, `mem: MapPhysicalMemory
-  high-water`, `... succeeds N ms after the first of K refusals`, `mem: alias census at a refusal`).
+high-water`, `... succeeds N ms after the first of K refusals`, `mem: alias census at a refusal`).
   `0039-memory-NX2NAVI_ALIAS_EXTRA_MIB...`: `NX2NAVI_ALIAS_EXTRA_MIB=<n>` (**default 0**) lets MapPhysicalMemory map n MiB
   beyond the pool the game is told about; the reported total and the heap stay, the reported used size stops at the total.
   What the lab showed (replays of `input-20261109-234907.txt`): the game's HeapDef gives `VirtualAddressMemory` 2802 MiB
@@ -393,7 +393,7 @@ distribution). After `just update`, `build` may need a rebase onto the new upstr
   (frame 1700) passes. Event waits v3 at the same castle spot: the region 23% darker and 5 dark frames in 300, which
   is the side effect Cal saw. NOTES "AO flicker (#146)".
 - `0047-vk_exec_draw-NX2NAVI_AO_TRACE-1-logs-the-ambient-occ.patch`: `NX2NAVI_AO_TRACE=1` logs `ao: f<frame> fence <n>
-  depth|occlusion|blur|mask` lines with the bound images in replay order. The logging slows the replay (28 -> 22 fps)
+depth|occlusion|blur|mask` lines with the bound images in replay order. The logging slows the replay (28 -> 22 fps)
   and runs with it showed single-frame bright, hazy flashes that runs without it did not: debug only.
 - `0048-vk_exec_draw-NX2NAVI_POOL_KH-1-keeps-each-texture-sl.patch`: #132, `NX2NAVI_POOL_KH=1` (**default 0**) keeps each
   texture slot's descriptor hash in a dense array beside the registration it came from, so a bindless pool refill whose
@@ -481,7 +481,6 @@ with sensors whose name contains it. `NX2NAVI_MOTION=0` still turns motion off. 
 unchanged, so `input_motion_axes` holds if hid-steam reports in SDL's convention like hid-playstation; not checked on
 the hardware. Probe: `--probe-cfg` (motion pad checks). Castle-recording replay (frame 1500) unchanged.
 
-
 ## Motion from yakin's socket (patch 0051)
 
 `NX2NAVI_MOTION_SOCK` (default `auto`, live): when neither the gamepad in use nor a `MOTION_PAD` lender has sensors,
@@ -491,6 +490,7 @@ SDL samples. Non-blocking, retries every second, no motion once samples are 250 
 Log: `input: motion socket ... connected` / `closed by the server` / `sent a bad magic`. Probe: `--probe-motion-sock`
 (in-process server: split magic and records, units into the fusion, stale, disconnect, retry, bad magic). Fake
 server: `tools/yakmot-fake [path] [yaw rad/s]`. Build: `build/v111/nx2navi.motion`; try: `NX2NAVI_EXE=motion just try`.
+
 ## Recording bundles
 
 `just play` copies the profile's `save`, `save-tx` and `save-backup` into `build/v111/logs/profile-<ts>/` before the
@@ -544,6 +544,29 @@ adds a studio scene and a Cycles CPU render. Output stays under `NX2navi/build/v
 Needs Python 3.14 with numpy, pillow, texture2ddecoder (a uv venv; numpy needs libstdc++ and zlib on `LD_LIBRARY_PATH`).
 Switch 2 BNTX: the BRTI field at +0x34 is log2 of GOB rows per block (0 means 1), and inside a GOB the 16-byte
 units are ordered x/32, y/4, x/16, y/2, y (msb to lsb), unlike Switch 1.
+
+## Switch 2 reference library (tools/ref)
+
+Short public-footage segments per area, to ask "does our picture look like the real one here". Frames, ORB features and
+comparisons live in `~/claude/nx2navi-ref/` (`REF_DIR`; PRIVATE, never committed: footage is Nintendo's). Git holds only
+`tools/ref` (wrapper: one `nix shell` with python+opencv+numpy+ffmpeg+yt-dlp), `tools/ref.py`, `tools/ref-areas.json`
+(area names, aliases, scene ids, search queries), `tools/ref-index.json` (URL + start second per segment) and
+`tools/ref-seed.txt`. Commands (`tools/ref` with no arguments prints them):
+
+- `ref areas`: area key, scene id, name, segment count.
+- `ref add <url> [t=1:23] [len=40] [step=2] [area=<name>] [keep]`: video-only <=720p section via yt-dlp, a frame every
+  `step` s (640 wide) into `frames/<area>/<id>_<t>/f001.jpg...`, ORB+HSV features in `feat.npz`, entry in the index.
+  Segments are capped at 120 s. The cut video is deleted unless `keep`.
+- `ref find <area|scene id> [search]`: scene id, stored segments with `&t=` URLs; `search` (or no segments) lists YouTube hits.
+- `ref candidates [area...]`: gameplay-looking hits (1-40 min, no OST) to choose seeds from; `ref sheet <area>`: contact sheet.
+- `ref compare <shot.png> [area]`: scores every stored frame (0.5 x HSV histogram correlation + 0.5 x ORB RANSAC inliers
+  capped at 60), writes the top 3 as side-by-sides to `$REF_GALLERY` (default `~/claude/nx2navi/.lab/gallery/`, as
+  `ref-<shot>-<rank>-<area>.png`) and prints score lines with the `&t=` URL of the reference frame.
+- `ref seed <file>` / `ref sync`: add many from a seed file / re-fetch what the index lists but the machine lacks.
+
+Area names are the shared vocabulary with teleport. Scene ids are OoT decomp table numbers from memory; neither
+`romfs_index.py` nor the docs carry a scene table, so they are unverified for the Switch 2 data.
+Example: `tools/ref compare build/v111/logs/shot-3.png kokiri_forest`.
 
 ## Profiling with Tracy
 
@@ -744,6 +767,7 @@ Manual route, if SSH is not an option: copy `nx2navi-kit.flatpak` and your `.nup
 `~/Downloads` or an SD card, `flatpak install --user nx2navi-kit.flatpak` in Konsole, Steam > Add a Non-Steam Game >
 `/usr/bin/flatpak` with launch options `run io.github.dsktd.NX2navi`, and start it in Game Mode. Allow about 60 GB
 for a build, 30 GB for an import.
+
 - `0072-vk_texture-live-textures-unbound-for-NX2NAVI_TEX_LIV.patch`: #160 low-VRAM flicker. Logs of 2026-11-10 show the growth is in live (not released) sampled textures: play-231959 went from 3886 entries 3550 MiB (frame 1800) to 15009 entries 11294 MiB (frame 46800), ASTC 5x5 alone 0.7 to 3.2 GiB, 4.1 GiB of it made from stale slots of gone keys, while released render targets were already trimmed away; the 95% trim then hit released RTs the game took back. In play-210247 fps fell to 43-50 at frame 23400-25200, before the first trim at ~frame 33000, so the drop is not caused by the trim alone. New knobs (cfg rows added): `NX2NAVI_TEX_LIVE_EVICT` (default 85, % of the driver budget; 0 = old behaviour), `_IDLE` (3600 submits unbound), `_GUARD` (240; detection count). Above the threshold, every 8 submits, the 32 longest-unbound live entries that are mirrored, not GPU-written, not in owned[], not shared are destroyed and come back from storage on the next binding. Logs `mem: textures frame N: live entries dropped unbound ...` per 1800 frames. Built as `nx2navi.play8` (0001-0072); unverified in game.
 - `0073-Port-upstream-42ae87b-power-opt-out-completion-wakes.patch`: upstream 42ae87b on `build`: the completion thread wakes waiters before `vk_mem_collect`, a by-region barrier for an attachment written after being sampled in the same pass, small-texture re-upload skip when the bytes are unchanged (`NX2NAVI_TEX_SAME`, default 1; its hash renamed `upload_hash` beside the dedupe index), Windows power opt-out (`NX2NAVI_POWER_FULL`). Built as `nx2navi.play20`; lab A/B against `nx2navi.play8` in `.lab/p20/`.
 - `0074-vk_texture-a-stale-slot-registered-before-its-own-en.patch`: #149/#169 terrain tiles on the dummy. The only nothing-path counted in play-234851 is the stale rule (1.53M slot resolutions by frame 171000; gone/held/failed all 0), and its 16-line log cap is used up by UI glyph atlases, so the earlier "no nil-path lines" did not rule it out. Suspected cause (unproven): Ocarina finalizes a tile's height texture and initializes a new one of the same descriptor at the same storage without registering the pool slot again (on the console the descriptor in the pool stays valid); `slot_resolve` then calls the slot stale and gives the dummy. `NX2NAVI_TEX_STALE_LIVE=1` (default 0, cfg row added): a stale CPU-written slot whose storage holds an initialized NVN texture (`nvn_tex_live_at`) of the slot's own key takes the entry back. Either way the first 16 such slots are logged (`vk: stale slot N over a live texture of its descriptor`) and counted in the `mem: textures` line. Built as `nx2navi.play10` (includes upstream port 2a2aed1).
