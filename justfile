@@ -185,7 +185,8 @@ try-name NAME="" *args:
     {{just_executable()}} -f "{{justfile()}}" text "{{NAME}}"
     NX2NAVI_MODS_DIR="${NX2NAVI_MODS_DIR:-{{src}}/build/{{ver}}/mods-text}" {{just_executable()}} -f "{{justfile()}}" try-vram {{args}}
 
-# try-i2f on play11 with the VRAM hold settings (#160): reuse released render targets, trim at 85%, released cap
+# try-i2f on play11 with the VRAM hold settings (#160): render-target reuse off (suspected lighting flicker,
+# 2026-11-11; lab numbers below had it on), trim at 85%, released cap
 # 1536 MiB with LRU, live textures idle 15 s may drop. Lab 46k frames: card 84-94% vs 91-99%, 0 vs 51 trims at 95%,
 # worst frame 27 vs 98 ms, no fps cost (66.6 vs 66.2, n=5). STALE_LIVE=1 is the #149/#169 terrain fix (lab: 3974
 # tiles recovered, 0 unresolved). Any variable can be overridden from the environment.
