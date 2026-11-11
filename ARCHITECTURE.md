@@ -29,7 +29,7 @@ shaders in romfs/exefs --prepare_shaders.py + nx2navi_xlate--> shader-cache/, pi
 - **Where our build differs from upstream's Windows build.**
   - Upstream's kit (`make_game.py`) compiles Ocarina only with MSYS2 Clang on Windows. Upstream's Linux path (`build_game.py`) writes the glue for its other title.
   - `build-linux.py` runs the kit's lift and glue writer, then compiles with Linux flags through Ninja and ccache (`~/claude/nx2navi/README.md`, "How the build works").
-  - It also compiles `runtime-linux/frames.c`. This fixes two Linux platform gaps: setjmp/longjmp through lifted frames, and fiber stack alignment.
+  - It also compiles `runtime-linux/frames.c`. This fixes two Linux platform gaps: setjmp/longjmp through lifted frames, and fiber stack alignment. Upstream since 2026-11 has both natively; `build-linux.py` drops frames.c for such a checkout (section 10, upstream rebase).
   - The window is SDL/Wayland, not Win32.
   - The glue is the same `modules.c` (`tools/make_game.py:386-388`): game version 111, a 9809 MiB application pool, NVN API 231.40.
 
@@ -150,6 +150,8 @@ Costs per frame in the Hyrule Field standing window, lab replay of Cal's 19:13 r
 - **SKIP_SHADERS and live swaps on mesh draws (#174).** `NX2NAVI_SKIP_SHADERS` acts only at draw time (`runtime/vk_exec_draw.c` shader_skipped, checked after the shaders resolve and before any pipeline lookup, the same path for vertex and mesh draws); it never reaches pipeline creation. The start crash `libvulkan_radeon.so+0x19be92 writing 0x40` right after "4 background graphics pipeline workers" happened with that knob (play-20261111-170227) and also without it on 2026-11-10 (play-20261110-225615), both with plain `just play` on `pipeline-cache.bin`; the i2f recipes have not shown it. Hot-reload files of mesh-pipeline fragment shaders are named like any other: `<sha256 cache key>.spv` in the watched dir (`shader-cache-i2f` for the try recipes). Find one by `cmp` against the dump's `sh_<fnv>.spv` (fs 560e3938 = i2f `eeb937a7...`, byte-identical to plain `591303b6...`); a `.res.json` beside it has the same body minus `key`.
 - **The critical path.** The replay thread. "frame bound 1800 calls, 0 waited" only says the present never waits for it; the game waits for it in the finish wait instead. Letting the game go before the GPU is through (`NX2NAVI_FINISH_DEFER`, patch 0036) gains nothing, and neither does faster guest code (16% of the main thread; the -O2 A/B agrees): what shortens the frame is a cheaper replay thread per draw.
 
+- **Frame capture (`runtime/vk_capture.c`, patch 0083).** The narrowest seam for a standalone replay is `GfxBackend` (gfx.h): pools, slot registrations, submit(handles), present. Op records point at guest objects (`prog_t`, `dpool_t`, control sections, event words: below 2^39, restored at their address after `mem_init` reserved the same block, checked) and at host texture pins (relocated). The shadow sync (`vk_memory.c shadow_copy`) runs *after* recording a submission, so it shows what the GPU got, not what CPU-side reads (usnap, texture uploads) saw at record time. `VkExec` (vk_exec.c `X`) carries state across frames (bound state objects, channel masks, pools, bindings): a replay must load it (`vk_exec_state_load`). The default `NX2NAVI_PIPE_SKIP=any` skips draws whose pipeline is still building, so replays set `strict`. Open (2026-11-11): in `--replay` the frame's draws record commands (draws.txt "recorded") but the targets read back unchanged; suspect a mirrored target re-uploaded from guest storage (`vk_texture_get`/make_fresh treats untracked replay pages as CPU-written) or the r11 composite target not the one sampled.
+
 ## 6. Memory model
 
 All guest addresses are below 2^39 (`docs/architecture.md`, section 2). `runtime/memory.c:215-248` reserves:
@@ -256,6 +258,47 @@ Bindless slots (`TexSlot`, 16 kinds x 32768) hold the game's NVN descriptors. An
 ## 10. Our private patches
 
 All are in `~/claude/nx2navi/patches/`, as local commits on `build`. Status comes from `~/claude/nx2navi/README.md`.
+
+**Upstream rebase 2026-11-11** (branch `rebase-upstream` in `.lab/wt-rebase`, 591 upstream commits on; table and
+proof per patch in `REBASE-2026-11-11.md`; becomes `build` once moved). 48 of our 85 commits stay (most adapted), 37
+are dropped because upstream now does the same natively:
+- Shadow storage is rewritten (`f740e95`): copy-ins and write-backs merge byte-wise against per-page base copies
+  (`vk_memory.c merge_page`, `sbase_*`), copy-ins read the guest submission's write-watch snapshots (`snap_regions`,
+  each 2 MiB region once). Our 0001/0004/0008/0010/0025/0044/0054 (page compare, spend list, diff threads,
+  `SHADOW_NT`/`_GAP_KIB`/`_REWRITE`) are gone with the code they tuned.
+- Event order across queues is native (`3aa8ff5`, vk_exec.c "event order across the game's queues"): a submission
+  stops at a wait reached before its signal. `EVENT_WAITS` (0013/0016) and `AO_ORDER` (0046) are obsolete.
+- The finish wait is upstream's `exec_wait` (`9728424`): it ends at the GPU's passes, not the write-backs
+  (`NX2NAVI_WB_SPLIT=0` gives the fence wait). `GPU_WAIT` (0024) and `FINISH_DEFER` (0036) are obsolete.
+- Texture memory: `NX2NAVI_TEX_RELEASED_MB` (`29d8451`) is our `TEX_RELEASED_MIB` renamed; `NX2NAVI_VMA_BLOCK_MB`
+  (`8e656b8`, default 64) is our `VMA_BLOCK_MIB`; images of 32 MiB and more get dedicated memory (`fbb6783`
+  DEDICATED_MIN); `NX2NAVI_TEX_REUSE` (`0101a87`, default on) reuses released GPU-only images, which replaces
+  `TEX_RT_RECYCLE`; `NX2NAVI_TEX_EVICT` (`63bcb44`) evicts idle live textures that come back intact;
+  `TEX_VRAM_PRESSURE` (default 80 now) drops released ones; released render targets are kept up to a hard limit
+  (`c51ac7c`). Obsolete knobs: `TEX_RT_DEDICATED_MIB`, `TEX_RT_TRIM*`, `TEX_RT_RECYCLE`, `TEX_RELEASED_YIELD`,
+  `TEX_RELEASED_LRU`, `TEX_DEDUPE`, `TEX_LIVE_EVICT`/`_IDLE`/`_GUARD`, `TEX_LIVE_RT_IDLE`, `TEX_STATE_GEN`,
+  `TEX_CHECK_SKIP`, `POOL_KH` (upstream's `PoolSlot` keeps kh/kreg), the `TRACE=tex` line (upstream's texture
+  origins and `texup` lines under `TRACE=perf`).
+- Slots: a finalize marks only its own texture object's slots and the flag survives eviction (`ae0c814`, `25e3181`):
+  the #149/#169 terrain holes are fixed upstream, so `TEX_STALE_LIVE` (0074) and `TEX_STALE_GONE` (0066/0068/0069)
+  are gone. `TEX_DESC_STRICT` (0079) stays, placed before upstream's superseded/finalized branches of `slot_resolve`.
+- Translator: I2F's signed flag in bit 13 is upstream's `837a82a` (0064 dropped; our `tests/i2f_sign_check.py`
+  passes on the new translator). Upstream has its own translator patches 0036-0040, so our texel fetch clamp is
+  `tools/xlate/patches/0041-texel-fetch-clamp.patch` there and `build_xlate.py` expects 40. The translator identity
+  changes (53afad07... on the rebased tree), so every shader cache key changes. Upstream's *carry* (gfx_shader.c,
+  `identities.txt` in the cache folder) uses the translations of previous identities until a shader is translated
+  again; an old cache needs the old base identity (`nx2navi_xlate.id`) listed there to be carried.
+- Linux platform: upstream's `platform/linux.c` now has its own `plat_frame_capture` (libgcc unwinder), its own
+  `PlatJmp` with `plat_jmp_save/go` in assembly, and an aligned `plat_fiber_entry` (`e9edd6a`). `build-linux.py`
+  therefore leaves out `runtime-linux/frames.c` and its per-file defines when the checkout's linux.c has no
+  "not on Linux yet" stub: frames.c's 80-byte NxFrame would overrun upstream's 72-byte PlatJmp.
+- Also native now: mesh draws in dumps (vk_dump_draw's `mesh` argument, `mesh_prims.txt`), `NX2NAVI_DUMP_FILE`
+  (a dump.req-like file, a frame count in it), the Insert dump key, `NX2NAVI_ONESHOT_WAIT_MS` (same name, `fe3cca7`),
+  the mesh c0 clamp (`00f06e6`), the census of texture memory by kind and format (`3c0a4d7`), the pipeline cache
+  written only when it grew (`719ee94`), the per-heap `mem: heaps` line (TRACE=perf; ours adds the 1800-frame cadence
+  and a `mem: kernel` fdinfo line), pool freshness by entry list (`4a954a1` POOL_FAST), the debug menu on F9 with
+  `debug_menu = 1` (F9 marks only while it is off).
+- Trace bits moved: upstream took 512 for `coop`, so `counters` is 1024 and `nvn` 2048.
 
 **Memory / shadow**
 

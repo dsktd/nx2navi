@@ -1,0 +1,1311 @@
+From d4d2f03d2a1c648a5038b127dc77228436eda71f Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 18:58:17 -0500
+Subject: [PATCH] capture: NX2NAVI_CAPTURE=<present> or NX2NAVI_CAPTURE_REQ=1
+ (capture.req, default off) writes one frame at the back end's interface
+ (pools, slots, GPU-written images, the queue state, each submission's
+ flattened op stream with the objects it points at, the shadow sync's guest
+ bytes) to capture/f<N>/cap.bin; nx2navi --replay <dir> runs it without the
+ game, with draw filters (NX2NAVI_REPLAY_SKIP/_ONLY/_PER_DRAW), buffer
+ snapshots (NX2NAVI_REPLAY_BUF), draws.txt and a comparison with the captured
+ picture
+
+---
+ runtime/host.h       |   1 +
+ runtime/main.c       |   7 +-
+ runtime/vk.h         |  17 +
+ runtime/vk_backend.c |  22 +-
+ runtime/vk_capture.c | 999 +++++++++++++++++++++++++++++++++++++++++++
+ runtime/vk_exec.c    |  32 ++
+ runtime/vk_exec.h    |   3 +
+ runtime/vk_memory.c  |  36 ++
+ runtime/vk_texture.c |  19 +
+ 9 files changed, 1132 insertions(+), 4 deletions(-)
+ create mode 100644 runtime/vk_capture.c
+
+diff --git a/runtime/host.h b/runtime/host.h
+index 7747f59..f968a72 100644
+--- a/runtime/host.h
++++ b/runtime/host.h
+@@ -335,6 +335,7 @@ void rt_boot(void);                                        // boot.c
+ // Modes of nx2navi.exe. main.c has run mem_init and parsed the paths; each mode calls ldr_load itself if it needs the
+ // modules, registers its host functions, then seals (hostfn_seal, or implicitly at the first rt_call). Return the
+ // process exit code.
++int vk_capture_replay(const char *dir);                     // vk_capture.c: nx2navi --replay <capture dir>
+ int probe_cfg(void);                                       // cfg_probe.c
+ int probe_motion_sock(void);                               // motion_sock_probe.c
+ int probe_dpi(void);                                       // dpi_probe_win.c (Windows only)
+diff --git a/runtime/main.c b/runtime/main.c
+index 57de055..77835f2 100644
+--- a/runtime/main.c
++++ b/runtime/main.c
+@@ -476,7 +476,7 @@ static int usage(const char *argv0) {
+     fprintf(stderr, "usage: %s [--exefs DIR] [--romfs DIR] [--profile DIR] [--selftest | --probe-loader | "
+                     "--probe-cfg | --probe-motion-sock | --probe-dpi | --probe-mods | --probe-kernel | --probe-ipc | --probe-services | --probe-fs | --probe-gfx-abi | "
+                     "--probe-nvn | --probe-nvn-tex | --probe-window | --probe-shader | --probe-vkmem | "
+-                    "--probe-vkexec | --probe-astc | --probe-movie | --probe-crash-call | --probe-crash-null | --probe-discord | "
++                    "--probe-vkexec | --replay <capture dir> | --probe-astc | --probe-movie | --probe-crash-call | --probe-crash-null | --probe-discord | "
+                     "--prepare-shaders | --warm-shaders | --boot |--seconds S [--shot PNG]]\n", argv0);
+     return 2;
+ }
+@@ -546,12 +546,16 @@ int main(int argc, char **argv) {
+         return 2;
+     }
+     const char *mode = NULL;
++    const char *replay_dir = NULL;
+     for (int i = 1; i < argc; i++) {
+         const char **path = !strcmp(argv[i], "--exefs") ? &cfg.exefs : !strcmp(argv[i], "--romfs") ? &cfg.romfs
+                           : !strcmp(argv[i], "--profile") ? &cfg.profile : NULL;
+         if (path) {
+             if (++i == argc) return usage(argv[0]);
+             *path = argv[i];
++        } else if (!strcmp(argv[i], "--replay")) {   // vk_capture.c: one captured frame, without the game
++            if (++i == argc || mode) return usage(argv[0]);
++            mode = "--replay", replay_dir = argv[i];
+         } else if (!strcmp(argv[i], "--seconds")) {
+             char *end;
+             if (++i == argc) return usage(argv[0]);
+@@ -598,6 +602,7 @@ int main(int argc, char **argv) {
+     if (!strcmp(mode, "--probe-shader")) return probe_shader();
+     if (!strcmp(mode, "--probe-vkmem")) return probe_vkmem();
+     if (!strcmp(mode, "--probe-vkexec")) return probe_vkexec();
++    if (!strcmp(mode, "--replay")) return vk_capture_replay(replay_dir);
+     if (!strcmp(mode, "--probe-astc")) return probe_astc();
+     if (!strcmp(mode, "--probe-vkdevice")) return probe_vkdevice();
+     if (!strcmp(mode, "--probe-movie")) return probe_movie();
+diff --git a/runtime/vk.h b/runtime/vk.h
+index ff01164..1b08815 100644
+--- a/runtime/vk.h
++++ b/runtime/vk.h
+@@ -648,4 +648,21 @@ void vk_pipeline_shutdown(void);           // waits for background builds, saves
+                                            // cache; before vk_shutdown
+ int vk_pipeline_selftest(void);            // one graphics and one compute pipeline from census shaders; 0 on success
+ 
++// ---- frame capture and standalone replay (vk_capture.c). NX2NAVI_CAPTURE=<present> or NX2NAVI_CAPTURE_REQ=1
++// (capture.req beside the shader cache) writes one frame; nx2navi --replay <capture dir> runs it without the game.
++extern int vk_capture_on;              // a capture is being written: the hooks below record
++void vk_capture_present(const tex_t *t, const int crop[4], uint64_t frame);   // present_image, replay order: starts or ends one
++void vk_capture_submit(const uint64_t *handles, int n);                  // submit_sync, before the replay records it
++void vk_capture_guest(uint64_t addr, uint64_t size);                     // shadow_copy: guest bytes the GPU now gets
++void vk_capture_register(int id, const tex_t *t, const view_t *v, const samp_par *s);   // a slot registered meanwhile
++void vk_capture_release(const tex_t *t);
++void vk_capture_pool(const pool_t *p);                                   // a pool initialized meanwhile
++int vk_capture_replay(const char *dir);                                  // main.c --replay
++void vk_texture_capture(void (*slot)(void *ctx, int id, const tex_t *t, const view_t *v),
++                        void (*samp)(void *ctx, int id, const samp_par *p),
++                        void (*image)(void *ctx, const tex_t *t, const VkTexImage *img), void *ctx);
++void vk_mem_capture_pools(void (*fn)(void *ctx, const pool_t *key, int kind, uint32_t flags, uint64_t lo, uint64_t size,
++                                     VkBuffer buf, const void *map, int nmap),
++                          void *ctx);   // map: nvn_mapping_t[nmap] of a virtual pool
++
+ #include "vk_rec.h"   // last: its macros route the vkCmd* calls of every file that includes vk.h
+diff --git a/runtime/vk_backend.c b/runtime/vk_backend.c
+index 985123c..9d37168 100644
+--- a/runtime/vk_backend.c
++++ b/runtime/vk_backend.c
+@@ -105,6 +105,7 @@ static void present_image(const tex_t *t, const int crop[4], uint64_t at_ns, uin
+     vk_mvsurvey_frame();
+     vk_mvprev_frame();
+     vk_mem_census(frame);
++    vk_capture_present(t, crop, frame);   // before the dump's: a lab run stops at the dump frame's log line
+     if (vk_dump_armed) vk_dump_present(frame);
+     if (__atomic_load_n(&vk_pick_armed, __ATOMIC_ACQUIRE)) vk_pick_present(frame);
+     vk_pipeline_reload_poll();
+@@ -197,6 +198,7 @@ static uint64_t submit_sync(const uint64_t *handles, int n) {
+     vk_sync_start();
+     vk_present_drain();
+     vk_texture_new_submit();
++    if (vk_capture_on) vk_capture_submit(handles, n);
+     return vk_sync_submit(handles, n);
+ }
+ 
+@@ -359,7 +361,12 @@ static void vk_be_present(const tex_t *t, const int crop[4], uint64_t at_ns) {
+ // vk_pipeline.c drops a released program's pipelines here.
+ WEAK void vk_program_release(const prog_t *p) { (void)p; }
+ 
+-static int vk_be_pool_init(pool_t *p) { vk_sync_start(); return vk_pool_init(p); }
++static int vk_be_pool_init(pool_t *p) {
++    vk_sync_start();
++    int ok = vk_pool_init(p);
++    if (ok && vk_capture_on) vk_capture_pool(p);
++    return ok;
++}
+ static void vk_be_pool_fini(pool_t *p) { vk_sync_start(); replay_drain(DR_POOL_FINI); vk_present_drain(); vk_pool_fini(p); }
+ static int vk_be_pool_map_virtual(pool_t *v, int n, const void *requests) {
+     vk_sync_start();
+@@ -367,13 +374,22 @@ static int vk_be_pool_map_virtual(pool_t *v, int n, const void *requests) {
+     vk_present_drain();
+     return vk_pool_map_virtual(v, n, requests);
+ }
+-static void vk_be_texture_register(int id, const tex_t *t, const view_t *v) { vk_sync_start(); vk_texture_register(id, t, v); }
+-static void vk_be_sampler_register(int id, const samp_par *s) { vk_sync_start(); vk_sampler_register(id, s); }
++static void vk_be_texture_register(int id, const tex_t *t, const view_t *v) {
++    vk_sync_start();
++    vk_texture_register(id, t, v);
++    if (vk_capture_on) vk_capture_register(id, t, v, NULL);
++}
++static void vk_be_sampler_register(int id, const samp_par *s) {
++    vk_sync_start();
++    vk_sampler_register(id, s);
++    if (vk_capture_on) vk_capture_register(id, NULL, NULL, s);
++}
+ // Asynchronous: the release is queued behind the submissions before it, so their replay still resolves the texture's
+ // slots to its image (a released slot follows another live texture at the storage), and the ones after it see it
+ // released, the order of the synchronous replay. vk_texture_release reads only the object's key fields: a copy.
+ static void vk_be_texture_release(const tex_t *t) {
+     vk_sync_start();
++    if (vk_capture_on && t && t->mem) vk_capture_release(t);
+     if (!gfx_replay_async()) {
+         vk_present_drain();
+         vk_texture_release(t);
+diff --git a/runtime/vk_capture.c b/runtime/vk_capture.c
+new file mode 100644
+index 0000000..2574643
+--- /dev/null
++++ b/runtime/vk_capture.c
+@@ -0,0 +1,999 @@
++// Frame capture and standalone replay of the Vulkan back end. RenderDoc captures the host's Vulkan calls and needs its
++// layer in the process (rdoc.c); this works one level up, at the back end's interface (gfx.h GfxBackend): what the
++// NVN front end handed the replay for one frame, and the state that frame starts from. `nx2navi --replay <dir>` runs
++// it again with no game, no input and no guest code, on any device, as often as wanted.
++//
++// Capture: NX2NAVI_CAPTURE=<present> (counts presents like NX2NAVI_DUMP) or NX2NAVI_CAPTURE_REQ=1 and a file
++// `capture.req` beside the shader cache (the next frame). Both default off; the hooks cost one load of vk_capture_on.
++// The frame between present N and N+1 goes to <NX2NAVI_CAPTURE_DIR, default "capture">/f<N+1>/:
++//   cap.bin    the records below, in replay order
++//   final.png  the presented picture of that frame (8-bit), as the game showed it
++//   meta.txt   one line per record kind with counts and bytes
++// At present N, with the GPU idle: every pool (guest bytes of imported pools, the GPU's bytes of physical ones, the
++// mapping of virtual ones), every used texture and sampler slot, the content of every live image the GPU wrote (raw
++// texel blocks per level, layer and aspect), and the texture and sampler pools bound. Then until present N+1: each
++// submission's command handles flattened (jumps followed, calls inlined) with every object their records point at
++// (texture pins, programs and their control sections, descriptor pools, event words), the guest bytes the shadow sync
++// copies for it (what the GPU got of the CPU's writes), and slots registered, pools initialized and textures released
++// meanwhile. Releases and registrations come from the game thread, so their order against the submissions is the one
++// the replay thread saw only within a frame of slack (the game runs at most one frame ahead).
++//
++// Replay (`--replay <dir>`, main.c): commits the guest address ranges at the same addresses (mem_init reserved them;
++// the replay checks the reservation landed where the game's did), initializes the pools, registers the slots, makes and
++// fills the captured images, then submits each submission through the back end with the guest bytes of its shadow sync
++// written first, and at the end reads the presented texture back: replay.png, diff.png (|a-b| x 8) and a `replay:`
++// line comparing it with final.png. Host-memory objects (texture pins) are relocated into copies.
++// Knobs of the replay, all ranges of draw numbers ("12,40-55"; a draw is any draw, mesh draw or dispatch, counted
++// from 0 in record order, listed in draws.txt):
++//   NX2NAVI_REPLAY_SKIP=<ranges>      those draws are not recorded
++//   NX2NAVI_REPLAY_ONLY=<ranges>      only those draws are recorded (isolate)
++//   NX2NAVI_REPLAY_PER_DRAW=<ranges>|1  the render pass ends after each of those draws (1: all), so a dump
++//                                      (NX2NAVI_DUMP=1, NX2NAVI_DUMP_UBO, NX2NAVI_DUMP_DRAWS) writes one pass per draw:
++//                                      per-draw images and constants
++//   NX2NAVI_REPLAY_BUF=<addr>:<size>[,...]  the GPU's bytes of those ranges before and after the frame,
++//                                      buf_<addr>_before.bin / _after.bin
++// NX2NAVI_SKIP_SHADERS (vk_exec_draw.c) works as in the game. Not captured: guest bytes the CPU wrote into pools no
++// submission of the frame bound as a buffer (the shadow sync never copies those); a texture whose storage the CPU
++// rewrote during the frame keeps its start content.
++#include <errno.h>
++#include <math.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/mman.h>
++#include <unistd.h>
++
++#include "cfg.h"
++#include "gfx.h"
++#include "host.h"
++#include "nvn_api.h"
++#include "nvn_hmap.h"
++#include "vk.h"
++#include "vk_exec.h"
++#include "platform/platform.h"
++
++#define CAP_MAGIC 0x3130504143584eull   // "NXCAP01"
++#define CHUNK (64ull << 20)             // pool bytes read or written per GPU copy
++#define ZERO_RUN 0x10000ull             // all-zero runs of guest bytes this long are left out
++
++enum { CR_HEAD = 1, CR_MEM, CR_POOL, CR_GPUMEM, CR_TSLOT, CR_SSLOT, CR_IMAGE, CR_STATE, CR_HOSTOBJ, CR_SUBMIT,
++       CR_RELEASE, CR_PRESENT, CR_FINAL, CR_END, CR_N };
++static const char *const cr_name[CR_N] = {"?", "head", "mem", "pool", "gpumem", "tslot", "sslot", "image", "state",
++                                          "hostobj", "submit", "release", "present", "final", "end"};
++enum { MEM_START, MEM_DELTA, MEM_OBJ };   // CR_MEM flags
++typedef struct { uint32_t type, flags; uint64_t a, b, len; } CapRec;   // then len bytes
++typedef struct { uint64_t lo, size; uint32_t kind, flags, nmap, pad; pool_t p; } CapPool;   // then nvn_mapping_t[nmap]
++typedef struct {
++    int32_t format;
++    uint32_t aspect, type, width, height, depth, levels, layers, samples, scale;
++    uint64_t bytes;                   // raw blocks that follow
++    tex_t t;                          // CR_IMAGE: the texture object; CR_FINAL: the presented one
++} CapImg;
++typedef struct { tex_t t; int32_t crop[4], has_crop, pad; } CapPresent;
++
++int vk_capture_on;
++
++// ---------------------------------------------------------------- formats
++// Bytes of one texel block of an aspect, and the block size. 0: not copied (logged).
++static int fmt_block(VkFormat f, VkImageAspectFlags a, uint32_t *bw, uint32_t *bh) {
++    static const uint8_t astc[][2] = {{4, 4}, {5, 4}, {5, 5}, {6, 5}, {6, 6}, {8, 5}, {8, 6}, {8, 8},
++                                      {10, 5}, {10, 6}, {10, 8}, {10, 10}, {12, 10}, {12, 12}};
++    *bw = *bh = 1;
++    if (a == VK_IMAGE_ASPECT_STENCIL_BIT) return 1;
++    if (a == VK_IMAGE_ASPECT_DEPTH_BIT) return f == VK_FORMAT_D16_UNORM || f == VK_FORMAT_D16_UNORM_S8_UINT ? 2 : 4;
++    if (f >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK && f <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK) {
++        int i = (f - VK_FORMAT_ASTC_4x4_UNORM_BLOCK) / 2;
++        *bw = astc[i][0], *bh = astc[i][1];
++        return 16;
++    }
++    if (f >= VK_FORMAT_BC1_RGB_UNORM_BLOCK && f <= VK_FORMAT_BC7_SRGB_BLOCK) {
++        *bw = *bh = 4;
++        return f <= VK_FORMAT_BC1_RGBA_SRGB_BLOCK || f == VK_FORMAT_BC4_UNORM_BLOCK || f == VK_FORMAT_BC4_SNORM_BLOCK ? 8 : 16;
++    }
++    if (f >= VK_FORMAT_R4G4_UNORM_PACK8 && f <= VK_FORMAT_R4G4_UNORM_PACK8) return 1;
++    if (f >= VK_FORMAT_R4G4B4A4_UNORM_PACK16 && f <= VK_FORMAT_A1R5G5B5_UNORM_PACK16) return 2;
++    if (f >= VK_FORMAT_R8_UNORM && f <= VK_FORMAT_R8_SRGB) return 1;
++    if (f >= VK_FORMAT_R8G8_UNORM && f <= VK_FORMAT_R8G8_SRGB) return 2;
++    if (f >= VK_FORMAT_R8G8B8_UNORM && f <= VK_FORMAT_B8G8R8_SRGB) return 3;
++    if (f >= VK_FORMAT_R8G8B8A8_UNORM && f <= VK_FORMAT_A2B10G10R10_SINT_PACK32) return 4;
++    if (f >= VK_FORMAT_R16_UNORM && f <= VK_FORMAT_R16_SFLOAT) return 2;
++    if (f >= VK_FORMAT_R16G16_UNORM && f <= VK_FORMAT_R16G16_SFLOAT) return 4;
++    if (f >= VK_FORMAT_R16G16B16_UNORM && f <= VK_FORMAT_R16G16B16_SFLOAT) return 6;
++    if (f >= VK_FORMAT_R16G16B16A16_UNORM && f <= VK_FORMAT_R16G16B16A16_SFLOAT) return 8;
++    if (f >= VK_FORMAT_R32_UINT && f <= VK_FORMAT_R32_SFLOAT) return 4;
++    if (f >= VK_FORMAT_R32G32_UINT && f <= VK_FORMAT_R32G32_SFLOAT) return 8;
++    if (f >= VK_FORMAT_R32G32B32_UINT && f <= VK_FORMAT_R32G32B32_SFLOAT) return 12;
++    if (f >= VK_FORMAT_R32G32B32A32_UINT && f <= VK_FORMAT_R32G32B32A32_SFLOAT) return 16;
++    if (f == VK_FORMAT_B10G11R11_UFLOAT_PACK32 || f == VK_FORMAT_E5B9G9R9_UFLOAT_PACK32) return 4;
++    return 0;
++}
++
++// The aspects copied one by one, and the whole image's raw size; 0: not copyable.
++static uint64_t img_bytes(const VkTexImage *img, VkImageAspectFlags *asp) {
++    *asp = img->aspect & (VK_IMAGE_ASPECT_COLOR_BIT | VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
++    if (img->samples > 1 || !*asp) return 0;
++    uint64_t n = 0;
++    for (uint32_t a = 1; a <= VK_IMAGE_ASPECT_STENCIL_BIT; a <<= 1) {
++        if (!(*asp & a)) continue;
++        uint32_t bw, bh;
++        int b = fmt_block(img->format, a, &bw, &bh);
++        if (!b) return 0;
++        for (uint32_t l = 0; l < img->levels; l++) {
++            uint32_t w = img->width >> l ? img->width >> l : 1, h = img->height >> l ? img->height >> l : 1;
++            uint32_t d = img->type == VK_IMAGE_TYPE_3D ? (img->depth >> l ? img->depth >> l : 1) : 1;
++            n += ((uint64_t)(w + bw - 1) / bw * ((h + bh - 1) / bh) * d * img->layers * (uint64_t)b + 15) & ~15ull;
++        }
++    }
++    return n;
++}
++
++// ---------------------------------------------------------------- GPU copies (upload batch, waited for)
++static void mem_barrier(VkCommandBuffer cb, VkPipelineStageFlags2 ss, VkAccessFlags2 sa, VkPipelineStageFlags2 ds,
++                        VkAccessFlags2 da) {
++    VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, .srcStageMask = ss, .srcAccessMask = sa,
++                           .dstStageMask = ds, .dstAccessMask = da};
++    VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
++    vkCmdPipelineBarrier2(cb, &di);
++}
++#define ALL VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT
++#define XFER VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT
++#define RW (VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT)
++
++// The image's regions in the raw layout of img_bytes, into or out of a buffer.
++static int img_regions(const VkTexImage *img, VkImageAspectFlags asp, VkBufferImageCopy *rg, int cap) {
++    int n = 0;
++    uint64_t off = 0;
++    for (uint32_t a = 1; a <= VK_IMAGE_ASPECT_STENCIL_BIT; a <<= 1) {
++        if (!(asp & a)) continue;
++        uint32_t bw, bh;
++        int b = fmt_block(img->format, a, &bw, &bh);
++        for (uint32_t l = 0; l < img->levels && n < cap; l++) {
++            uint32_t w = img->width >> l ? img->width >> l : 1, h = img->height >> l ? img->height >> l : 1;
++            uint32_t d = img->type == VK_IMAGE_TYPE_3D ? (img->depth >> l ? img->depth >> l : 1) : 1;
++            rg[n++] = (VkBufferImageCopy){.bufferOffset = off, .imageSubresource = {a, l, 0, img->layers},
++                                          .imageExtent = {w, h, d}};
++            off += ((uint64_t)(w + bw - 1) / bw * ((h + bh - 1) / bh) * d * img->layers * (uint64_t)b + 15) & ~15ull;
++        }
++    }
++    return n;
++}
++
++static uint8_t *img_read(const VkTexImage *img, uint64_t *bytes) {
++    VkImageAspectFlags asp;
++    uint64_t n = img_bytes(img, &asp);
++    *bytes = n;
++    if (!n) return NULL;
++    VkBufferImageCopy rg[64];
++    int nr = img_regions(img, asp, rg, 64);
++    VkBuffer buf;
++    VmaAllocation alloc;
++    VkCommandBuffer cb = vk_upload_begin();
++    uint8_t *map = vk_staging(n, &buf, &alloc);
++    mem_barrier(cb, ALL, RW, XFER, VK_ACCESS_2_TRANSFER_READ_BIT);
++    vkCmdCopyImageToBuffer(cb, img->image, VK_IMAGE_LAYOUT_GENERAL, buf, (uint32_t)nr, rg);
++    mem_barrier(cb, XFER, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_HOST_BIT, VK_ACCESS_2_HOST_READ_BIT);
++    vk_upload_end();
++    vk_upload_flush(1);
++    uint8_t *out = malloc(n);
++    if (!out) rt_fatal("capture: out of memory (%llu bytes)", (unsigned long long)n);
++    vmaInvalidateAllocation(vk_ctx()->vma, alloc, 0, VK_WHOLE_SIZE);
++    memcpy(out, map, n);
++    vmaDestroyBuffer(vk_ctx()->vma, buf, alloc);
++    return out;
++}
++
++static void img_write(const VkTexImage *img, const uint8_t *src, uint64_t n) {
++    VkImageAspectFlags asp;
++    if (img_bytes(img, &asp) != n) return;
++    VkBufferImageCopy rg[64];
++    int nr = img_regions(img, asp, rg, 64);
++    VkBuffer buf;
++    VkCommandBuffer cb = vk_upload_begin();
++    uint8_t *map = vk_staging(n, &buf, NULL);
++    memcpy(map, src, n);
++    mem_barrier(cb, ALL, RW, XFER, VK_ACCESS_2_TRANSFER_WRITE_BIT);
++    vkCmdCopyBufferToImage(cb, buf, img->image, VK_IMAGE_LAYOUT_GENERAL, (uint32_t)nr, rg);
++    mem_barrier(cb, XFER, VK_ACCESS_2_TRANSFER_WRITE_BIT, ALL, RW);
++    vk_upload_end();
++}
++
++static uint8_t *buf_read(VkBuffer src, uint64_t off, uint64_t n) {
++    VkBuffer buf;
++    VmaAllocation alloc;
++    VkCommandBuffer cb = vk_upload_begin();
++    uint8_t *map = vk_staging(n, &buf, &alloc);
++    mem_barrier(cb, ALL, RW, XFER, VK_ACCESS_2_TRANSFER_READ_BIT);
++    vkCmdCopyBuffer(cb, src, buf, 1, &(VkBufferCopy){off, 0, n});
++    mem_barrier(cb, XFER, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_HOST_BIT, VK_ACCESS_2_HOST_READ_BIT);
++    vk_upload_end();
++    vk_upload_flush(1);
++    uint8_t *out = malloc(n);
++    if (!out) rt_fatal("capture: out of memory (%llu bytes)", (unsigned long long)n);
++    vmaInvalidateAllocation(vk_ctx()->vma, alloc, 0, VK_WHOLE_SIZE);
++    memcpy(out, map, n);
++    vmaDestroyBuffer(vk_ctx()->vma, buf, alloc);
++    return out;
++}
++
++static void buf_write(VkBuffer dst, uint64_t off, const uint8_t *src, uint64_t n) {
++    VkBuffer buf;
++    VkCommandBuffer cb = vk_upload_begin();
++    uint8_t *map = vk_staging(n, &buf, NULL);
++    memcpy(map, src, n);
++    mem_barrier(cb, ALL, RW, XFER, VK_ACCESS_2_TRANSFER_WRITE_BIT);
++    vkCmdCopyBuffer(cb, buf, dst, 1, &(VkBufferCopy){0, off, n});
++    mem_barrier(cb, XFER, VK_ACCESS_2_TRANSFER_WRITE_BIT, ALL, RW);
++    vk_upload_end();
++    vk_upload_flush(1);
++}
++
++// The GPU's bytes of [addr, addr+n) (one backed span), NULL when unbacked.
++static uint8_t *gpu_bytes(uint64_t addr, uint64_t n) {
++    VkMemSpan sp;
++    if (!vk_mem_resolve(addr, n, &sp) || !sp.buffer) return NULL;
++    return buf_read(sp.buffer, sp.offset, n);
++}
++
++// ---------------------------------------------------------------- 8-bit pictures
++static float half_f(uint16_t h) {
++    int e = h >> 10 & 31, m = h & 1023;
++    float v = e ? ldexpf((float)(m | 1024), e - 25) : ldexpf((float)m, -24);
++    return e == 31 ? (m ? NAN : INFINITY) : h >> 15 ? -v : v;
++}
++static uint8_t unit8(float v) { return v != v ? 0 : v <= 0 ? 0 : v >= 1 ? 255 : (uint8_t)(v * 255.0f + 0.5f); }
++
++// First level and layer of a colour image as RGBA8; 0 for a format it cannot show.
++static int to_rgba8(const CapImg *h, const uint8_t *src, uint8_t *out) {
++    uint64_t n = (uint64_t)h->width * h->height;
++    for (uint64_t i = 0; i < n; i++) {
++        uint8_t *o = out + 4 * i;
++        uint32_t w;
++        switch (h->format) {
++        case VK_FORMAT_R8G8B8A8_UNORM: case VK_FORMAT_R8G8B8A8_SRGB: memcpy(o, src + 4 * i, 4); break;
++        case VK_FORMAT_B8G8R8A8_UNORM: case VK_FORMAT_B8G8R8A8_SRGB:
++            o[0] = src[4 * i + 2], o[1] = src[4 * i + 1], o[2] = src[4 * i], o[3] = src[4 * i + 3];
++            break;
++        case VK_FORMAT_A2B10G10R10_UNORM_PACK32:
++            memcpy(&w, src + 4 * i, 4);
++            o[0] = (uint8_t)((w & 1023) >> 2), o[1] = (uint8_t)((w >> 10 & 1023) >> 2), o[2] = (uint8_t)((w >> 20 & 1023) >> 2);
++            o[3] = 255;
++            break;
++        case VK_FORMAT_R16G16B16A16_SFLOAT:
++            for (int c = 0; c < 4; c++) {
++                uint16_t v;
++                memcpy(&v, src + 8 * i + 2 * c, 2);
++                o[c] = unit8(half_f(v));
++            }
++            break;
++        default: return 0;
++        }
++        o[3] = 255;
++    }
++    return 1;
++}
++
++// ---------------------------------------------------------------- the writer
++static PlatMutex wl = PLAT_MUTEX_INIT;   // the file and the object set
++static FILE *cf;
++static char cdir[1024];
++static nvn_hmap seen = {.klen = 8};       // objects written in this capture
++static uint64_t n_rec[CR_N], b_rec[CR_N];
++static uint64_t cap_frame, want_frame, aslr_lo;
++static int req_on;
++static char req_path[1024];
++
++static void put_parts(uint32_t type, uint32_t flags, uint64_t a, uint64_t b, const void *p1, uint64_t n1, const void *p2,
++                      uint64_t n2) {   // wl held
++    CapRec r = {type, flags, a, b, n1 + n2};
++    if (fwrite(&r, sizeof r, 1, cf) != 1 || (n1 && fwrite(p1, n1, 1, cf) != 1) || (n2 && fwrite(p2, n2, 1, cf) != 1))
++        rt_fatal("capture: write to %s failed", cdir);
++    n_rec[type]++, b_rec[type] += n1 + n2;
++}
++
++static int guest_ptr(uint64_t a) { return a >= aslr_lo && a < RT_ADDRESS_LIMIT; }
++
++// One object a record points at, once per capture: guest memory (written back at its address) or a host copy
++// (relocated). wl held.
++static void obj(const void *ptr, uint64_t n) {
++    uint64_t a = (uintptr_t)ptr;
++    if (!a || nvn_hm_get(&seen, &a)) return;
++    nvn_hm_put(&seen, &a, (void *)1);
++    if (guest_ptr(a)) {
++        uint8_t *tmp = malloc(n);
++        if (tmp && plat_mem_read(a, tmp, n)) put_parts(CR_MEM, MEM_OBJ, a, 0, tmp, n, NULL, 0);
++        free(tmp);
++    } else {
++        put_parts(CR_HOSTOBJ, 0, a, 0, ptr, n, NULL, 0);
++    }
++}
++
++static void obj_tex(const tex_t *t) {
++    if (!t) return;
++    obj(t, sizeof *t);
++    obj(t->pool, sizeof(pool_t));
++}
++
++static uint32_t ctl_size(const uint8_t *c) {
++    uint32_t magic = 0;
++    plat_mem_read((uintptr_t)c, &magic, 4);
++    return magic == 0x98761234u ? 0xe0 : 0x880;   // NVN2 / NVN1 control section (vk_exec_draw.c ctl_stage_len)
++}
++
++typedef struct { uint8_t *p; size_t n, cap; } Buf;
++static void buf_put(Buf *o, const void *p, size_t n) {
++    if (o->n + n > o->cap) {
++        o->cap = (o->n + n) * 2;
++        o->p = realloc(o->p, o->cap);
++        if (!o->p) rt_fatal("capture: out of memory (op stream)");
++    }
++    memcpy(o->p + o->n, p, n);
++    o->n += n;
++}
++
++// The records of one handle as the replay walks them (vk_exec.c walk): jumps followed, calls inlined; the objects
++// they point at written. wl held.
++static void flatten(Buf *o, const op_hdr *h, int depth) {
++    for (;;) {
++        const void *a = nvn_op_payload(h);
++        switch (h->op) {
++        case OP_END: if (!depth) buf_put(o, h, h->size); return;
++        case OP_BEGIN: if (!depth) buf_put(o, h, h->size); break;
++        case OP_JUMP: h = (const op_hdr *)(uintptr_t)((const p_jump *)a)->target; continue;
++        case OP_CALL: if (depth < 8) flatten(o, nvn_op_first(((const p_jump *)a)->target), depth + 1); break;
++        default:
++            switch (h->op) {
++            case OP_SET_RT: {
++                const p_set_rt *s = a;
++                for (int i = 0; i < 8; i++) obj_tex(s->color[i]);
++                obj_tex(s->depth);
++                break;
++            }
++            case OP_BIND_PROGRAM: {
++                const prog_t *p = ((const p_bind_program *)a)->prog;
++                if (!p) break;
++                obj(p, sizeof *p);
++                for (uint32_t i = 0; i < p->nstage && i < 6; i++)
++                    if (p->sd[i].control) obj(p->sd[i].control, ctl_size(p->sd[i].control));
++                break;
++            }
++            case OP_SET_TEX_POOL: case OP_SET_SAMP_POOL: {
++                const dpool_t *d = ((const p_set_pool *)a)->pool;
++                if (d) obj(d, sizeof *d), obj(d->pool, sizeof(pool_t));
++                break;
++            }
++            case OP_COPY_B2T: case OP_COPY_T2B: obj_tex(((const p_copy_b2t *)a)->tex); break;
++            case OP_COPY_T2T: obj_tex(((const p_copy_t2t *)a)->src), obj_tex(((const p_copy_t2t *)a)->dst); break;
++            case OP_CLEAR_TEX: obj_tex(((const p_clear_tex *)a)->tex); break;
++            case OP_SIGNAL_EVENT: obj((const void *)((const p_signal_event *)a)->val, 4); break;
++            case OP_WAIT_EVENT: obj((const void *)((const p_wait_event *)a)->val, 4); break;
++            default: break;
++            }
++            buf_put(o, h, h->size);
++        }
++        h = nvn_op_next(h);
++    }
++}
++
++// Guest bytes from a, leaving out runs of ZERO_RUN zero bytes. wl held.
++static void put_guest(uint64_t a, uint64_t n, uint32_t flags) {
++    static const uint8_t zero[ZERO_RUN];
++    uint8_t *tmp = malloc(ZERO_RUN);
++    uint64_t run = a, end = a + n;
++    for (uint64_t x = a; x < end;) {
++        uint64_t k = end - x < ZERO_RUN ? end - x : ZERO_RUN;
++        if (!plat_mem_read(x, tmp, k)) memset(tmp, 0, k);
++        int z = k == ZERO_RUN && !memcmp(tmp, zero, k);
++        if (z) {
++            if (x > run) {   // the bytes before this zero run, read again in pieces
++                for (uint64_t y = run; y < x; y += ZERO_RUN) {
++                    uint64_t m = x - y < ZERO_RUN ? x - y : ZERO_RUN;
++                    plat_mem_read(y, tmp, m);
++                    put_parts(CR_MEM, flags, y, 0, tmp, m, NULL, 0);
++                }
++            }
++            run = x + k;
++        }
++        x += k;
++    }
++    for (uint64_t y = run; y < end; y += ZERO_RUN) {
++        uint64_t m = end - y < ZERO_RUN ? end - y : ZERO_RUN;
++        if (!plat_mem_read(y, tmp, m)) memset(tmp, 0, m);
++        put_parts(CR_MEM, flags, y, 0, tmp, m, NULL, 0);
++    }
++    free(tmp);
++}
++
++typedef struct { const pool_t *key; int kind; uint32_t flags; uint64_t lo, size; VkBuffer buf; void *map; int nmap; } PoolEnt;
++typedef struct { PoolEnt *v; int n, cap; } PoolList;
++static void pool_cb(void *ctx, const pool_t *key, int kind, uint32_t flags, uint64_t lo, uint64_t size, VkBuffer buf,
++                    const void *map, int nmap) {
++    PoolList *l = ctx;
++    if (l->n == l->cap && !(l->v = realloc(l->v, sizeof *l->v * (size_t)(l->cap = l->cap ? l->cap * 2 : 256))))
++        rt_fatal("capture: out of memory (pools)");
++    PoolEnt *e = &l->v[l->n++];
++    *e = (PoolEnt){key, kind, flags, lo, size, buf, NULL, nmap};
++    if (nmap) {
++        e->map = malloc(sizeof(nvn_mapping_t) * (size_t)nmap);
++        if (!e->map) rt_fatal("capture: out of memory (pools)");
++        memcpy(e->map, map, sizeof(nvn_mapping_t) * (size_t)nmap);
++    }
++}
++
++static void put_pool(const PoolEnt *e) {   // wl held
++    CapPool cp = {.lo = e->lo, .size = e->size, .kind = (uint32_t)e->kind, .flags = e->flags, .nmap = (uint32_t)e->nmap};
++    plat_mem_read((uintptr_t)e->key, &cp.p, sizeof cp.p);
++    put_parts(CR_POOL, 0, (uintptr_t)e->key, 0, &cp, sizeof cp, e->map, sizeof(nvn_mapping_t) * (uint64_t)e->nmap);
++}
++
++static void slot_cb(void *ctx, int id, const tex_t *t, const view_t *v) {
++    (void)ctx;
++    obj(t->pool, sizeof(pool_t));
++    view_t z = {0};
++    put_parts(CR_TSLOT, 0, (uint64_t)id, v != NULL, t, sizeof *t, v ? v : &z, sizeof z);
++}
++static void samp_cb(void *ctx, int id, const samp_par *p) {
++    (void)ctx;
++    put_parts(CR_SSLOT, 0, (uint64_t)id, 0, p, sizeof *p, NULL, 0);
++}
++typedef struct { tex_t t; VkTexImage img; } ImgEnt;
++typedef struct { ImgEnt *v; int n, cap; } ImgList;
++static void image_cb(void *ctx, const tex_t *t, const VkTexImage *img) {
++    ImgList *l = ctx;
++    if (l->n == l->cap && !(l->v = realloc(l->v, sizeof *l->v * (size_t)(l->cap = l->cap ? l->cap * 2 : 256))))
++        rt_fatal("capture: out of memory (images)");
++    l->v[l->n++] = (ImgEnt){*t, *img};
++}
++
++static CapImg img_head(const VkTexImage *img, const tex_t *t, uint64_t bytes) {
++    CapImg h = {.format = img->format, .aspect = img->aspect, .type = img->type, .width = img->width,
++                .height = img->height, .depth = img->depth, .levels = img->levels, .layers = img->layers,
++                .samples = img->samples, .scale = img->scale, .bytes = bytes};
++    if (t) h.t = *t;
++    return h;
++}
++
++static void begin(uint64_t frame) {
++    vk_present_drain();
++    vk_sync_finish();   // every earlier submission done and written back
++    uint64_t t0 = kern_now_ns();
++    const char *d = cfg_get("NX2NAVI_CAPTURE_DIR");
++    cap_frame = frame + 1;
++    snprintf(cdir, sizeof cdir, "%s/f%llu", d && *d ? d : "capture", (unsigned long long)cap_frame);
++    plat_file_mkdir_p(cdir);
++    char path[1100];
++    snprintf(path, sizeof path, "%s/cap.bin", cdir);
++    plat_mutex_lock(&wl);
++    if (!(cf = fopen(path, "wb"))) {
++        plat_mutex_unlock(&wl);
++        rt_log("capture: cannot write %s", path);
++        return;
++    }
++    setvbuf(cf, NULL, _IOFBF, 8 << 20);
++    memset(n_rec, 0, sizeof n_rec), memset(b_rec, 0, sizeof b_rec);
++    nvn_hm_clear(&seen, NULL);
++    aslr_lo = mem_layout()->aslr.base;
++    char info[256];
++    const char *rs = cfg_get("NX2NAVI_RENDER_SCALE");
++    int k = snprintf(info, sizeof info, "frame %llu render_scale %s", (unsigned long long)cap_frame, rs ? rs : "-");
++    put_parts(CR_HEAD, 0, CAP_MAGIC, aslr_lo, info, (uint64_t)k, NULL, 0);
++    PoolList pl = {0};
++    vk_mem_capture_pools(pool_cb, &pl);
++    uint64_t gpu_mib = 0;
++    for (int i = 0; i < pl.n; i++) {   // guest bytes and objects first, then the pools (virtual ones last), then GPU bytes
++        PoolEnt *e = &pl.v[i];
++        obj(e->key, sizeof(pool_t));
++        if (e->kind == 0) put_guest(e->lo, e->size, MEM_START);
++    }
++    for (int pass = 0; pass < 2; pass++)
++        for (int i = 0; i < pl.n; i++)
++            if ((pl.v[i].kind == 2) == pass) put_pool(&pl.v[i]);
++    for (int i = 0; i < pl.n; i++) {
++        PoolEnt *e = &pl.v[i];
++        if (e->kind != 1 || !e->buf) continue;
++        for (uint64_t off = 0; off < e->size; off += CHUNK) {
++            uint64_t n = e->size - off < CHUNK ? e->size - off : CHUNK;
++            uint8_t *p = buf_read(e->buf, off, n);
++            for (uint64_t x = 0; x < n; x += ZERO_RUN) {   // zero runs left out: a replay's physical pools start zeroed
++                uint64_t m = n - x < ZERO_RUN ? n - x : ZERO_RUN;
++                int z = 1;
++                for (uint64_t j = 0; j < m && z; j += 8) z = !*(const uint64_t *)(const void *)(p + x + j);
++                if (!z) put_parts(CR_GPUMEM, 0, e->lo + off + x, 0, p + x, m, NULL, 0);
++            }
++            free(p);
++            gpu_mib += n >> 20;
++        }
++        free(e->map);
++    }
++    free(pl.v);
++    ImgList il = {0};
++    vk_texture_capture(slot_cb, samp_cb, image_cb, &il);
++    int skipped = 0;
++    for (int i = 0; i < il.n; i++) {
++        uint64_t n;
++        uint8_t *p = img_read(&il.v[i].img, &n);
++        if (!p) { skipped++; continue; }
++        CapImg h = img_head(&il.v[i].img, &il.v[i].t, n);
++        put_parts(CR_IMAGE, 0, il.v[i].img.addr, 0, &h, sizeof h, p, n);
++        free(p);
++    }
++    free(il.v);
++    const VkExec *ex = vk_exec_state();   // the replay thread's own, idle here
++    const dpool_t *tp = ex->tex_pool, *sp = ex->samp_pool;
++    if (tp) obj(tp, sizeof *tp), obj(tp->pool, sizeof(pool_t));
++    if (sp) obj(sp, sizeof *sp), obj(sp->pool, sizeof(pool_t));
++    if (ex->prog) {
++        obj(ex->prog, sizeof *ex->prog);
++        for (uint32_t i = 0; i < ex->prog->nstage && i < 6; i++)
++            if (ex->prog->sd[i].control) obj(ex->prog->sd[i].control, ctl_size(ex->prog->sd[i].control));
++    }
++    put_parts(CR_STATE, 0, (uintptr_t)tp, (uintptr_t)sp, ex, sizeof *ex, NULL, 0);
++    __atomic_store_n(&vk_capture_on, 1, __ATOMIC_RELEASE);
++    plat_mutex_unlock(&wl);
++    rt_log("capture: frame %llu starts: %llu pools, %llu MiB guest, %llu MiB physical, %llu slots, %llu images "
++           "(%d not copyable), %.0f ms",
++           (unsigned long long)cap_frame, (unsigned long long)n_rec[CR_POOL], (unsigned long long)(b_rec[CR_MEM] >> 20),
++           (unsigned long long)gpu_mib, (unsigned long long)n_rec[CR_TSLOT], (unsigned long long)n_rec[CR_IMAGE], skipped,
++           (kern_now_ns() - t0) / 1e6);
++}
++
++static void end(const tex_t *t, const int crop[4]) {
++    vk_present_drain();
++    vk_sync_finish();
++    plat_mutex_lock(&wl);
++    __atomic_store_n(&vk_capture_on, 0, __ATOMIC_RELEASE);
++    CapPresent pr = {.t = *t, .has_crop = crop != NULL};
++    if (crop) memcpy(pr.crop, crop, sizeof pr.crop);
++    put_parts(CR_PRESENT, 0, 0, cap_frame, &pr, sizeof pr, NULL, 0);
++    const VkTexImage *img = vk_texture_get(t);
++    uint64_t n = 0;
++    uint8_t *p = img ? img_read(img, &n) : NULL;
++    if (p) {
++        CapImg h = img_head(img, t, n);
++        put_parts(CR_FINAL, 0, 0, 0, &h, sizeof h, p, n);
++        uint8_t *rgba = malloc((size_t)h.width * h.height * 4);
++        char path[1100];
++        snprintf(path, sizeof path, "%s/final.png", cdir);
++        if (rgba && to_rgba8(&h, p, rgba)) rt_write_png(path, rgba, h.width, h.height);
++        free(rgba), free(p);
++    }
++    put_parts(CR_END, 0, 0, 0, NULL, 0, NULL, 0);
++    fclose(cf);
++    cf = NULL;
++    char path[1100];
++    snprintf(path, sizeof path, "%s/meta.txt", cdir);
++    FILE *m = fopen(path, "w");
++    uint64_t total = 0;
++    for (int i = 1; i < CR_N; i++) {
++        total += b_rec[i] + n_rec[i] * sizeof(CapRec);
++        if (m) fprintf(m, "%-8s %8llu records %12llu bytes\n", cr_name[i], (unsigned long long)n_rec[i], (unsigned long long)b_rec[i]);
++    }
++    if (m) fclose(m);
++    plat_mutex_unlock(&wl);
++    rt_log("capture: frame %llu in %s: %llu MiB, %llu submits, %llu shadow-sync writes (%llu KiB), %llu objects, "
++           "%llu registrations, %llu releases",
++           (unsigned long long)cap_frame, cdir, (unsigned long long)(total >> 20), (unsigned long long)n_rec[CR_SUBMIT],
++           (unsigned long long)n_rec[CR_MEM], (unsigned long long)(b_rec[CR_MEM] >> 10),
++           (unsigned long long)n_rec[CR_HOSTOBJ], (unsigned long long)(n_rec[CR_TSLOT] + n_rec[CR_SSLOT]),
++           (unsigned long long)n_rec[CR_RELEASE]);
++}
++
++void vk_capture_present(const tex_t *t, const int crop[4], uint64_t frame) {
++    static int init;
++    if (!init) {
++        init = 1;
++        const char *e = cfg_get("NX2NAVI_CAPTURE");
++        want_frame = e && *e ? strtoull(e, NULL, 10) : 0;
++        const char *r = cfg_get("NX2NAVI_CAPTURE_REQ");
++        req_on = r && atoi(r) == 1 && gfx_shader_beside_cache("capture.req", req_path, sizeof req_path);
++        if (want_frame || req_on)
++            rt_log("capture: %s%s", want_frame ? "the frame after present " : "", req_on ? "capture.req polled" : "");
++    }
++    if (__atomic_load_n(&vk_capture_on, __ATOMIC_ACQUIRE)) {
++        end(t, crop);
++        return;
++    }
++    if (want_frame && frame == want_frame) {
++        begin(frame);
++    } else if (req_on && plat_file_exists(req_path)) {
++        plat_file_delete(req_path);
++        begin(frame);
++    }
++}
++
++void vk_capture_submit(const uint64_t *handles, int n) {
++    plat_mutex_lock(&wl);
++    if (cf) {
++        Buf o = {0};
++        for (int i = 0; i < n; i++) {
++            size_t at = o.n;
++            uint64_t hdr[2] = {handles[i], 0};
++            buf_put(&o, hdr, sizeof hdr);
++            flatten(&o, nvn_op_first(handles[i]), 0);
++            uint64_t sz = o.n - at - sizeof hdr;
++            memcpy(o.p + at + 8, &sz, 8);
++        }
++        put_parts(CR_SUBMIT, 0, (uint64_t)n, 0, o.p, o.n, NULL, 0);
++        free(o.p);
++    }
++    plat_mutex_unlock(&wl);
++}
++
++void vk_capture_guest(uint64_t addr, uint64_t size) {
++    plat_mutex_lock(&wl);
++    if (cf) put_parts(CR_MEM, MEM_DELTA, addr, 0, (const void *)(uintptr_t)addr, size, NULL, 0);
++    plat_mutex_unlock(&wl);
++}
++
++void vk_capture_register(int id, const tex_t *t, const view_t *v, const samp_par *s) {
++    plat_mutex_lock(&wl);
++    if (cf && t) slot_cb(NULL, id, t, v);
++    if (cf && s) samp_cb(NULL, id, s);
++    plat_mutex_unlock(&wl);
++}
++
++void vk_capture_release(const tex_t *t) {
++    plat_mutex_lock(&wl);
++    if (cf) put_parts(CR_RELEASE, 0, (uintptr_t)t->mem, 0, t, sizeof *t, NULL, 0);
++    plat_mutex_unlock(&wl);
++}
++
++void vk_capture_pool(const pool_t *p) {
++    PoolList pl = {0};
++    vk_mem_capture_pools(pool_cb, &pl);
++    plat_mutex_lock(&wl);
++    for (int i = 0; cf && i < pl.n; i++)
++        if (pl.v[i].key == p) {
++            obj(p, sizeof *p);
++            if (pl.v[i].kind == 0) put_guest(pl.v[i].lo, pl.v[i].size, MEM_START);
++            put_pool(&pl.v[i]);
++        }
++    plat_mutex_unlock(&wl);
++    for (int i = 0; i < pl.n; i++) free(pl.v[i].map);
++    free(pl.v);
++}
++
++// ---------------------------------------------------------------- the replay
++typedef struct { uint64_t lo, hi; } Range;
++typedef struct { Range *r; int n; int all; } Ranges;
++static Ranges r_skip, r_only, r_per;
++static uint64_t draw_no, n_skipped;
++static int rec0;   // VkExec.recorded before the draw: what it recorded goes to draws.txt
++static FILE *draws_f;
++
++static Ranges ranges_of(const char *name) {
++    Ranges rs = {0};
++    const char *e = cfg_get(name);
++    if (!e || !*e) return rs;
++    if (!strcmp(e, "1") && !strcmp(name, "NX2NAVI_REPLAY_PER_DRAW")) { rs.all = 1; return rs; }
++    for (const char *q = e; *q;) {
++        char *x;
++        uint64_t lo = strtoull(q, &x, 10), hi = lo;
++        if (x == q) break;
++        if (*x == '-') hi = strtoull(x + 1, &x, 10);
++        rs.r = realloc(rs.r, sizeof *rs.r * (size_t)(rs.n + 1));
++        rs.r[rs.n++] = (Range){lo, hi};
++        q = *x == ',' ? x + 1 : x;
++        if (*x && *x != ',') break;
++    }
++    return rs;
++}
++static int in_ranges(const Ranges *rs, uint64_t v) {
++    if (rs->all) return 1;
++    for (int i = 0; i < rs->n; i++)
++        if (v >= rs->r[i].lo && v <= rs->r[i].hi) return 1;
++    return 0;
++}
++
++static int is_draw(int op) {
++    return op == OP_DRAW || op == OP_DRAW_IDX || op == OP_DRAW_IDX_IND || op == OP_DISPATCH || op == OP_DISPATCH_IND ||
++           op == OP_DRAW_MESH || op == OP_DRAW_MESH_IND;
++}
++
++static int replay_hook(VkExec *ex, int op, int after) {
++    if (!is_draw(op)) return 0;
++    if (!after) {
++        int skip = in_ranges(&r_skip, draw_no) || ((r_only.n || r_only.all) && !in_ranges(&r_only, draw_no));
++        if (skip) {
++            if (draws_f) fprintf(draws_f, "%llu %s skipped\n", (unsigned long long)draw_no, nvn_op_name((uint32_t)op));
++            draw_no++, n_skipped++;
++        }
++        rec0 = ex->recorded;
++        return skip;
++    }
++    if (draws_f) {
++        const GfxShader *vs, *fs;
++        vk_exec_draw_shaders(&vs, &fs);
++        char a[17] = "-", b[17] = "-";
++        if (vs && op != OP_DISPATCH && op != OP_DISPATCH_IND) gfx_shader_name(vs, a);
++        if (fs && op != OP_DISPATCH && op != OP_DISPATCH_IND) gfx_shader_name(fs, b);
++        fprintf(draws_f, "%llu %s vs %s fs %s pass %u recorded %d target %p %#llx %ux%u\n", (unsigned long long)draw_no,
++                nvn_op_name((uint32_t)op), a, b, ex->pass_serial, ex->recorded - rec0, (void *)ex->color[0].image,
++                ex->color[0].img ? (unsigned long long)ex->color[0].img->addr : 0ull, ex->pass_w, ex->pass_h);
++    }
++    if (in_ranges(&r_per, draw_no)) vk_exec_barrier(ex);   // the pass ends: a dump copies its targets now
++    draw_no++;
++    return 0;
++}
++
++// [a, a+n) usable at the same address: inside mem_init's reservation it is committed, elsewhere mapped.
++static void commit(uint64_t a, uint64_t n) {
++    uint64_t lo = a & ~0xfffull, hi = (a + n + 0xfff) & ~0xfffull;
++    if (plat_mem_commit(lo, hi - lo)) return;
++    for (uint64_t p = lo; p < hi; p += 0x1000) {   // partly outside: page by page
++        if (plat_mem_commit(p, 0x1000)) continue;
++        void *m = mmap((void *)(uintptr_t)p, 0x1000, PROT_READ | PROT_WRITE,
++                       MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
++        if (m == MAP_FAILED && errno == EEXIST) mprotect((void *)(uintptr_t)p, 0x1000, PROT_READ | PROT_WRITE);
++        else if (m == MAP_FAILED) rt_fatal("replay: cannot map guest page %#llx", (unsigned long long)p);
++    }
++}
++
++typedef struct { uint64_t *h; int n; uint8_t *ops; } Pending;
++
++static void relocate(uint8_t *ops, uint64_t n, const nvn_hmap *host) {
++#define RELOC(field) do { uint64_t k_ = (uintptr_t)(field); void *v_ = k_ ? nvn_hm_get(host, &k_) : NULL; if (v_) (field) = v_; } while (0)
++    for (uint64_t at = 0; at < n;) {
++        op_hdr *h = (op_hdr *)(void *)(ops + at);
++        void *a = h + 1;
++        switch (h->op) {
++        case OP_SET_RT: {
++            p_set_rt *s = a;
++            for (int i = 0; i < 8; i++) RELOC(s->color[i]);
++            RELOC(s->depth);
++            break;
++        }
++        case OP_BIND_PROGRAM: RELOC(((p_bind_program *)a)->prog); break;
++        case OP_SET_TEX_POOL: case OP_SET_SAMP_POOL: RELOC(((p_set_pool *)a)->pool); break;
++        case OP_COPY_B2T: case OP_COPY_T2B: RELOC(((p_copy_b2t *)a)->tex); break;
++        case OP_COPY_T2T: RELOC(((p_copy_t2t *)a)->src); RELOC(((p_copy_t2t *)a)->dst); break;
++        case OP_CLEAR_TEX: RELOC(((p_clear_tex *)a)->tex); break;
++        default: break;
++        }
++        if (h->size < sizeof *h) rt_fatal("replay: corrupt op stream");
++        at += h->size;
++    }
++#undef RELOC
++}
++
++static void flush(const GfxBackend *b, Pending *p) {
++    if (!p->ops) return;
++    b->submit(p->h, p->n);
++    b->finish();   // the next one's guest bytes go in after this one ran
++    free(p->h), free(p->ops);
++    *p = (Pending){0};
++}
++
++static void save_buf_ranges(const char *dir, const char *when) {
++    const char *e = cfg_get("NX2NAVI_REPLAY_BUF");
++    for (const char *q = e; q && *q;) {
++        char *x;
++        uint64_t a = strtoull(q, &x, 16), n = *x == ':' ? strtoull(x + 1, &x, 16) : 0;
++        uint8_t *p = n ? gpu_bytes(a, n) : NULL;
++        char path[1100];
++        snprintf(path, sizeof path, "%s/buf_%llx_%s.bin", dir, (unsigned long long)a, when);
++        if (p) plat_file_write(path, p, n);
++        else rt_log("replay: buffer %#llx+%#llx is not backed", (unsigned long long)a, (unsigned long long)n);
++        free(p);
++        q = *x == ',' ? x + 1 : "";
++    }
++}
++
++static void compare(const char *dir, const CapImg *want, const uint8_t *wp, const CapImg *got, const uint8_t *gp) {
++    if (want->width != got->width || want->height != got->height || want->format != got->format) {
++        rt_log("replay: the presented image differs in shape: %ux%u fmt %d captured, %ux%u fmt %d replayed", want->width,
++               want->height, want->format, got->width, got->height, got->format);
++        printf("replay: FAILED (image shape differs)\n");
++        return;
++    }
++    size_t px = (size_t)want->width * want->height;
++    uint8_t *a = malloc(px * 4), *c = malloc(px * 4), *d = malloc(px * 4);
++    if (!a || !c || !d || !to_rgba8(want, wp, a) || !to_rgba8(got, gp, c)) {
++        printf("replay: cannot compare format %d\n", want->format);
++        free(a), free(c), free(d);
++        return;
++    }
++    uint64_t sum = 0, over2 = 0, over16 = 0;
++    int mx = 0;
++    double se = 0;
++    for (size_t i = 0; i < px; i++) {
++        int pm = 0;
++        for (int k = 0; k < 3; k++) {
++            int v = abs((int)a[4 * i + k] - (int)c[4 * i + k]);
++            sum += (uint64_t)v, se += (double)v * v;
++            pm = v > pm ? v : pm;
++            d[4 * i + k] = (uint8_t)(v * 8 > 255 ? 255 : v * 8);
++        }
++        d[4 * i + 3] = 255;
++        mx = pm > mx ? pm : mx;
++        over2 += pm > 2, over16 += pm > 16;
++    }
++    char path[1100];
++    snprintf(path, sizeof path, "%s/replay.png", dir);
++    rt_write_png(path, c, got->width, got->height);
++    snprintf(path, sizeof path, "%s/diff.png", dir);
++    rt_write_png(path, d, got->width, got->height);
++    double mse = se / ((double)px * 3), psnr = mse > 0 ? 10 * log10(255.0 * 255.0 / mse) : INFINITY;
++    printf("replay: %ux%u against final.png: mean |diff| %.3f, max %d, pixels >2: %.3f%%, >16: %.3f%%, PSNR %.1f dB\n",
++           want->width, want->height, (double)sum / ((double)px * 3), mx, 100.0 * (double)over2 / (double)px,
++           100.0 * (double)over16 / (double)px, psnr);
++    rt_log("replay: mean |diff| %.3f, max %d, pixels >2: %.3f%%, >16: %.3f%%, PSNR %.1f dB", (double)sum / ((double)px * 3),
++           mx, 100.0 * (double)over2 / (double)px, 100.0 * (double)over16 / (double)px, psnr);
++    free(a), free(c), free(d);
++}
++
++int vk_capture_replay(const char *dir) {
++    char path[1100];
++    snprintf(path, sizeof path, "%s/cap.bin", dir);
++    FILE *f = fopen(path, "rb");
++    if (!f) { printf("replay: cannot open %s\n", path); return 2; }
++    setvbuf(f, NULL, _IOFBF, 8 << 20);
++    vk_hdr_off();
++    vk_sync_start();
++    const GfxBackend *b = &gfx_vulkan_backend;
++    r_skip = ranges_of("NX2NAVI_REPLAY_SKIP"), r_only = ranges_of("NX2NAVI_REPLAY_ONLY");
++    r_per = ranges_of("NX2NAVI_REPLAY_PER_DRAW");
++    vk_exec_draw_hook = replay_hook;
++    snprintf(path, sizeof path, "%s/draws.txt", dir);
++    draws_f = fopen(path, "w");
++    nvn_hmap host = {.klen = 8}, pools = {.klen = 8};
++    Pending pend = {0};
++    uint64_t counts[CR_N] = {0}, bad_img = 0, t0 = kern_now_ns();
++    uint8_t *final = NULL, *got = NULL;
++    CapImg final_h = {0}, got_h = {0};
++    int done = 0;
++    CapRec r;
++    while (!done && fread(&r, sizeof r, 1, f) == 1) {
++        uint8_t *p = r.len ? malloc(r.len) : NULL;
++        if (r.len && (!p || fread(p, r.len, 1, f) != 1)) rt_fatal("replay: %s is cut short", dir);
++        if (r.type >= CR_N) rt_fatal("replay: record type %u", r.type);
++        counts[r.type]++;
++        if (!(r.type == CR_MEM && r.flags == MEM_DELTA)) flush(b, &pend);
++        switch (r.type) {
++        case CR_HEAD:
++            if (r.a != CAP_MAGIC) rt_fatal("replay: %s is not a capture", dir);
++            aslr_lo = mem_layout()->aslr.base;
++            if (r.b != aslr_lo)
++                rt_fatal("replay: the guest block sits at %#llx here, at %#llx in the capture", (unsigned long long)aslr_lo,
++                         (unsigned long long)r.b);
++            rt_log("replay: %.*s", (int)r.len, (const char *)p);
++            break;
++        case CR_MEM:   // only the pages that change: a written page counts as a CPU write (textures there upload again)
++            commit(r.a, r.len);
++            for (uint64_t x = r.a; x < r.a + r.len;) {
++                uint64_t e = (x | 0xfff) + 1 < r.a + r.len ? (x | 0xfff) + 1 : r.a + r.len;
++                if (memcmp((void *)(uintptr_t)x, p + (x - r.a), e - x)) memcpy((void *)(uintptr_t)x, p + (x - r.a), e - x);
++                x = e;
++            }
++            break;
++        case CR_HOSTOBJ: {
++            void *copy = malloc(r.len);
++            memcpy(copy, p, r.len);
++            nvn_hm_put(&host, &r.a, copy);
++            break;
++        }
++        case CR_POOL: {
++            const CapPool *cp = (const CapPool *)(const void *)p;
++            pool_t *pp = (pool_t *)(uintptr_t)r.a;
++            if (guest_ptr(r.a)) commit(r.a, sizeof *pp), memcpy(pp, &cp->p, sizeof *pp);
++            else pp = malloc(sizeof *pp), *pp = cp->p, nvn_hm_put(&host, &r.a, pp);
++            if (cp->kind == 0) commit(cp->lo, cp->size);
++            if (!b->pool_init(pp)) rt_log("replay: pool %#llx (flags %#x) did not initialize", (unsigned long long)cp->lo, cp->flags);
++            if (cp->kind == 2 && cp->nmap && !b->pool_map_virtual(pp, (int)cp->nmap, cp + 1))
++                rt_log("replay: virtual pool %#llx: mapping failed", (unsigned long long)cp->lo);
++            nvn_hm_put(&pools, &r.a, pp);
++            break;
++        }
++        case CR_GPUMEM: {
++            VkMemSpan sp;
++            if (vk_mem_resolve(r.a, r.len, &sp) && sp.buffer) buf_write(sp.buffer, sp.offset, p, r.len);
++            break;
++        }
++        case CR_TSLOT: {
++            tex_t t;
++            view_t v;
++            memcpy(&t, p, sizeof t), memcpy(&v, p + sizeof t, sizeof v);
++            b->texture_register((int)r.a, &t, r.b ? &v : NULL);
++            break;
++        }
++        case CR_SSLOT: b->sampler_register((int)r.a, (const samp_par *)(const void *)p); break;
++        case CR_IMAGE: {
++            const CapImg *h = (const CapImg *)(const void *)p;
++            const VkTexImage *img = vk_texture_get(&h->t);
++            if (img && img->format == h->format && img->width == h->width && img->height == h->height &&
++                img->levels == h->levels && img->layers == h->layers) {
++                img_write(img, p + sizeof *h, h->bytes);
++                vk_texture_gpu_written(&h->t);
++            } else {
++                bad_img++;
++            }
++            break;
++        }
++        case CR_STATE: {
++            vk_upload_flush(1);
++            save_buf_ranges(dir, "before");
++            uint64_t ops[16] = {0};
++            op_hdr *h = (op_hdr *)(void *)ops;
++            *h = (op_hdr){OP_BEGIN, sizeof *h}, h = h + 1;
++            const dpool_t *dp[2] = {(const dpool_t *)(uintptr_t)r.a, (const dpool_t *)(uintptr_t)r.b};
++            for (int i = 0; i < 2; i++) {
++                if (!dp[i]) continue;
++                *h = (op_hdr){i ? OP_SET_SAMP_POOL : OP_SET_TEX_POOL, sizeof *h + sizeof(p_set_pool)};
++                ((p_set_pool *)(void *)(h + 1))->pool = dp[i];
++                h = (op_hdr *)(void *)((uint8_t *)h + h->size);
++            }
++            *h = (op_hdr){OP_END, sizeof *h};
++            uint64_t hd = (uintptr_t)ops;
++            b->submit(&hd, 1);
++            b->finish();
++            if (r.len == sizeof(VkExec)) {   // bindings and state the frame inherits from the one before
++                VkExec *st = (VkExec *)(void *)p;
++                uint64_t k = (uintptr_t)st->prog;
++                void *v = k ? nvn_hm_get(&host, &k) : NULL;
++                if (v) st->prog = v;
++                vk_exec_state_load(st);
++            }
++            draw_no = 0;
++            break;
++        }
++        case CR_SUBMIT: {
++            pend.n = (int)r.a;
++            pend.h = calloc((size_t)pend.n + 1, sizeof *pend.h);
++            pend.ops = p, p = NULL;
++            uint64_t at = 0;
++            for (int i = 0; i < pend.n; i++) {
++                uint64_t sz;
++                memcpy(&sz, pend.ops + at + 8, 8);
++                at += 16;
++                relocate(pend.ops + at, sz, &host);
++                pend.h[i] = (uintptr_t)(pend.ops + at);
++                at += sz;
++            }
++            break;
++        }
++        case CR_RELEASE: {
++            tex_t *t = malloc(sizeof *t);
++            memcpy(t, p, sizeof *t);
++            b->texture_release(t);
++            b->finish();
++            break;
++        }
++        case CR_PRESENT: {
++            const CapPresent *pr = (const CapPresent *)(const void *)p;
++            b->finish();
++            vk_sync_finish();
++            save_buf_ranges(dir, "after");
++            const VkTexImage *img = vk_texture_get(&pr->t);
++            if (draws_f && img) fprintf(draws_f, "present %p %#llx %ux%u format %d\n", (void *)img->image, (unsigned long long)img->addr, img->width, img->height, img->format);
++            uint64_t n = 0;
++            got = img ? img_read(img, &n) : NULL;
++            if (got) got_h = img_head(img, &pr->t, n);
++            if (vk_dump_armed) vk_dump_present(1);
++            break;
++        }
++        case CR_FINAL:
++            final_h = *(const CapImg *)(const void *)p;
++            final = malloc(final_h.bytes);
++            memcpy(final, p + sizeof final_h, final_h.bytes);
++            break;
++        case CR_END: done = 1; break;
++        default: break;
++        }
++        free(p);
++    }
++    flush(b, &pend);
++    fclose(f);
++    if (draws_f) fclose(draws_f);
++    printf("replay: %s: %llu submits, %llu draws (%llu skipped), %llu pools, %llu slots, %llu images (%llu not matched), "
++           "%llu shadow writes, %.1f s\n",
++           dir, (unsigned long long)counts[CR_SUBMIT], (unsigned long long)draw_no, (unsigned long long)n_skipped,
++           (unsigned long long)counts[CR_POOL], (unsigned long long)(counts[CR_TSLOT] + counts[CR_SSLOT]),
++           (unsigned long long)counts[CR_IMAGE], (unsigned long long)bad_img, (unsigned long long)counts[CR_MEM],
++           (kern_now_ns() - t0) / 1e9);
++    if (final && got) compare(dir, &final_h, final, &got_h, got);
++    else printf("replay: no presented image to compare (%s)\n", done ? "capture has none" : "capture ended early");
++    free(final), free(got);
++    b->finish();
++    vk_pipeline_shutdown();   // saves the pipeline cache; the pools and images stay to the process exit (no Finalize)
++    fflush(stdout);
++    _exit(done ? 0 : 1);
++}
+diff --git a/runtime/vk_exec.c b/runtime/vk_exec.c
+index 3cc1fc7..0b6ce4a 100644
+--- a/runtime/vk_exec.c
++++ b/runtime/vk_exec.c
+@@ -1067,7 +1067,9 @@ static void walk(VkExec *ex, const op_hdr *h, int depth) {
+         case OP_BIND_PROGRAM: case OP_BIND_STATE: case OP_BIND_VATTR: case OP_BIND_VSTREAM: case OP_BIND_VBUF:
+         case OP_BIND_UBO: case OP_BIND_SSBO: case OP_BIND_TEX: case OP_BIND_SAMP: case OP_BIND_IMG: case OP_PUSH_CC:
+         case OP_DRAW_MESH: case OP_DRAW_MESH_IND:
++            if (vk_exec_draw_hook && vk_exec_draw_hook(ex, (int)h->op, 0)) break;   // a replay's draw filter
+             vk_exec_op_draw(ex, h->op, a);
++            if (vk_exec_draw_hook) vk_exec_draw_hook(ex, (int)h->op, 1);
+             break;
+         case OP_COPY_B2B: case OP_COPY_B2T: case OP_COPY_T2B: case OP_COPY_T2T: case OP_CLEAR_TEX:
+             if (h->op != OP_CLEAR_TEX) vk_exec_frame.copies++;
+@@ -1092,6 +1094,36 @@ static void walk(VkExec *ex, const op_hdr *h, int depth) {
+     }
+ }
+ 
++int (*vk_exec_draw_hook)(VkExec *ex, int op, int after);
++
++const VkExec *vk_exec_state(void) { return &X; }
++
++// The queue state a captured frame starts from (vk_capture.c): fixed-function and pipeline state objects, bindings and
++// pools as the op stream left them. Render targets, shaders and Vulkan objects stay this run's own.
++void vk_exec_state_load(const VkExec *s) {
++    VkExec *ex = &X;
++    memcpy(ex->vp, s->vp, sizeof ex->vp), ex->has_vp = s->has_vp;
++    ex->scissor = s->scissor, ex->has_scissor = s->has_scissor;
++    memcpy(ex->depth_range, s->depth_range, sizeof ex->depth_range);
++    memcpy(ex->st_vmask, s->st_vmask, sizeof ex->st_vmask), memcpy(ex->st_wmask, s->st_wmask, sizeof ex->st_wmask);
++    memcpy(ex->st_ref, s->st_ref, sizeof ex->st_ref);
++    ex->point_size = s->point_size, ex->poly_offset = s->poly_offset, ex->prim_restart = s->prim_restart;
++    memcpy(ex->blend_color, s->blend_color, sizeof ex->blend_color);
++    ex->copy_stride = s->copy_stride, ex->tex_pool = s->tex_pool, ex->samp_pool = s->samp_pool;
++    VkPipeState *p = &ex->pipe;
++    const VkPipeState *q = &s->pipe;
++    p->depth_clamp = q->depth_clamp, p->raster_discard = q->raster_discard;
++    memcpy(p->blend, q->blend, sizeof p->blend);
++    p->color = q->color, p->chmask = q->chmask, p->ms = q->ms, p->poly = q->poly, p->ds = q->ds;
++    memcpy(p->vattr, q->vattr, sizeof p->vattr), memcpy(p->vstream, q->vstream, sizeof p->vstream);
++    ex->prog = s->prog, ex->prog_stages = s->prog_stages;
++    memcpy(ex->vbuf, s->vbuf, sizeof ex->vbuf), memcpy(ex->ubo, s->ubo, sizeof ex->ubo), memcpy(ex->ssbo, s->ssbo, sizeof ex->ssbo);
++    memcpy(ex->cs_push, s->cs_push, sizeof ex->cs_push);
++    memcpy(ex->tex, s->tex, sizeof ex->tex), memcpy(ex->samp, s->samp, sizeof ex->samp), memcpy(ex->img, s->img, sizeof ex->img);
++    ex->tex_serial++;
++    ex->dirty = VK_EXEC_DIRTY_ALL;
++}
++
+ int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t fence) {
+     VkExec *ex = &X;
+     if (!x_ready) state_reset(ex), vk_dump_init(), x_ready = 1;
+diff --git a/runtime/vk_exec.h b/runtime/vk_exec.h
+index 5131da3..1ac4e26 100644
+--- a/runtime/vk_exec.h
++++ b/runtime/vk_exec.h
+@@ -187,6 +187,9 @@ void vk_dump_dispatch_ind(VkExec *ex, uint64_t addr);   // an indirect dispatch'
+ extern int vk_dump_mesh;   // NX2NAVI_DUMP_MESH (default 1): mesh draws in dumps
+ void vk_dump_dispatch(VkExec *ex, const GfxShader *cs, VkPipeline p, const VkPipeInfo *info, const p_dispatch *d);
+ void vk_dump_copy(VkExec *ex, uint32_t op, const void *payload);   // before a copy or texture clear is replayed
++extern int (*vk_exec_draw_hook)(VkExec *ex, int op, int after);   // vk_capture.c replay: after 0 returning 1 skips the draw
++const VkExec *vk_exec_state(void);                                 // vk_capture.c: the replay state now
++void vk_exec_state_load(const VkExec *s);                         // vk_capture.c replay: a captured frame's start state
+ void vk_dump_present(uint64_t frame);    // vk_be_present: waits for the dump frame's copies and closes the logs
+ 
+ // c0, the NVN driver constant bank of one stage (vk_exec_draw.c; NX2NAVI_FIX_C0=0 binds zeros instead): bank is
+diff --git a/runtime/vk_memory.c b/runtime/vk_memory.c
+index 71ea187..531bef4 100644
+--- a/runtime/vk_memory.c
++++ b/runtime/vk_memory.c
+@@ -1040,6 +1040,7 @@ static void shadow_copy(PoolRec *r, uint64_t a, uint64_t b, int i) {
+             return;
+         }
+     shadow_memcpy(r->smap + (a - r->import_lo), (const void *)(uintptr_t)a, b - a);
++    if (vk_capture_on) vk_capture_guest(a, b - a);   // a frame capture keeps what the GPU got
+     if (w_hi && a < w_hi && b > w_lo) vk_watch("cpu->shadow", a, b - a, nspend, r->smap + (w_lo - r->import_lo));
+     s_copied += b - a;
+ }
+@@ -2885,3 +2886,38 @@ void vk_mem_shutdown(void) {
+     for (uint64_t i = 0; i < GEN_CHUNKS; i++) free(gen_chunk[i]), gen_chunk[i] = NULL;
+     plat_mutex_unlock(&gen_lock);
+ }
++
++// ---- frame capture (vk_capture.c): every pool record, in address order, under pool_lock. kind 0 import, 1 physical,
++// 2 virtual; buf: the buffer the GPU reads (a physical pool's device memory; VK_NULL_HANDLE for the others). A virtual
++// pool's mapping comes as runs of map (nvn_mapping_t, physical_pool = the physical pool's key).
++void vk_mem_capture_pools(void (*fn)(void *ctx, const pool_t *key, int kind, uint32_t flags, uint64_t lo, uint64_t size,
++                                     VkBuffer buf, const void *map, int nmap),
++                          void *ctx) {
++    plat_mutex_lock(&pool_lock);
++    for (int i = 0; i < pool_index.n; i++) {
++        const PoolRec *r = pool_index.e[i].buf;
++        nvn_mapping_t *map = NULL;
++        int nmap = 0;
++        if (r->kind == POOL_VIRT) {
++            map = calloc(r->npages ? r->npages : 1, sizeof *map);
++            if (!map) rt_fatal("vk: out of memory (capture)");
++            for (uint64_t k = 0; k < r->npages;) {
++                const VPage *v = &r->pt[k];
++                uint64_t j = k + 1;
++                while (j < r->npages && r->pt[j].phys == v->phys &&
++                       (!v->phys || r->pt[j].off == v->off + (j - k) * NVN_VPOOL_PAGE))
++                    j++;
++                if (v->phys)
++                    map[nmap++] = (nvn_mapping_t){.physical_pool = (const NVNmemoryPool *)(const void *)v->phys->key,
++                                                  .physical_offset = (int64_t)v->off,
++                                                  .virtual_offset = (int64_t)(k * NVN_VPOOL_PAGE),
++                                                  .size = (j - k) * NVN_VPOOL_PAGE};
++                k = j;
++            }
++        }
++        fn(ctx, r->key, r->kind == POOL_IMPORT ? 0 : r->kind == POOL_PHYS ? 1 : 2, r->flags, r->lo, r->size,
++           r->kind == POOL_PHYS ? r->buf : VK_NULL_HANDLE, map, nmap);
++        free(map);
++    }
++    plat_mutex_unlock(&pool_lock);
++}
+diff --git a/runtime/vk_texture.c b/runtime/vk_texture.c
+index c4f898f..39cbfb7 100644
+--- a/runtime/vk_texture.c
++++ b/runtime/vk_texture.c
+@@ -3208,3 +3208,22 @@ void vk_texture_shutdown(void) {
+     if (sinfo) memset(sinfo, 0, sizeof *sinfo << 20), memset(sce, 0, sizeof *sce << 20);   // no slot is registered: tokens 0
+     unlock();
+ }
++
++// ---------------------------------------------------------------- frame capture (vk_capture.c)
++// Every used texture and sampler descriptor slot, then every live entry whose image holds content the GPU made (a
++// render target, a copy or storage target, or a mirrored texture not written back): what a standalone replay must
++// register and upload before it runs the captured frame. Texture lock held throughout.
++void vk_texture_capture(void (*slot)(void *ctx, int id, const tex_t *t, const view_t *v),
++                        void (*samp)(void *ctx, int id, const samp_par *p),
++                        void (*image)(void *ctx, const tex_t *t, const VkTexImage *img), void *ctx) {
++    lock();
++    for (int i = 0; i < ntslots; i++)
++        if (tslots[i].used) slot(ctx, i, &tslots[i].t, tslots[i].has_view ? &tslots[i].v : NULL);
++    for (int i = 0; i < nsslots; i++)
++        if (sslots[i].used) samp(ctx, i, &sslots[i].p);
++    for (uint32_t i = 0; i < by_key.cap; i++) {
++        Tex *e = by_key.vals[i];
++        if (e && !e->released && e->pub.image && (e->pub.gpu_owned || e->wr_fence || e->gpu_dirty)) image(ctx, &e->t, &e->pub);
++    }
++    unlock();
++}
+-- 
+2.56.0
+

@@ -1,0 +1,30 @@
+#!/bin/bash
+# replay <capture dir> [KEY=VALUE...]: runs one frame captured with NX2NAVI_CAPTURE / capture.req (runtime/vk_capture.c)
+# again without the game: `nx2navi.<exe> --replay <dir>`. Prints the `replay:` lines (draw counts, and the comparison of
+# the replayed picture with the captured final.png); replay.png, diff.png, draws.txt land in the capture dir.
+# Default lavapipe (software, no GPU, no lock, cores 12-15,28-31). REPLAY_GPU=1: RADV under the lab lock, refused while
+# Cal's game runs. REPLAY_EXE (default cap). Knobs: NX2NAVI_REPLAY_SKIP / _ONLY / _PER_DRAW=<draw ranges>,
+# NX2NAVI_REPLAY_BUF=<addr>:<size>, NX2NAVI_SKIP_SHADERS=<hash>, NX2NAVI_DUMP=1 NX2NAVI_DUMP_DIR=<dir> (per-pass or,
+# with _PER_DRAW, per-draw images; NX2NAVI_DUMP_UBO=<n> constants). Use the capture run's shader cache
+# (REPLAY_CACHE, default the shader-cache next to the capture's lab dir) and the same NX2NAVI_RENDER_SCALE.
+set -u
+cap=$(realpath "$1"); shift
+ROOT=$HOME/claude/nx2navi; BIN=$ROOT/NX2navi/build/v111
+envs=("$@")
+cache=${REPLAY_CACHE:-$(realpath -m "$cap/../../shader-cache")}
+[ -d "$cache" ] || cache=$cap/shader-cache; mkdir -p "$cache"
+envs=("NX2NAVI_SHADER_CACHE=$cache" "NX2NAVI_PIPELINE_CACHE=$cap/replay-pipeline-cache.bin" NX2NAVI_RENDER_SCALE=${REPLAY_SCALE:-50} NX2NAVI_PIPE_SKIP=strict "${envs[@]}")
+pin=(taskset -c 12-15,28-31)
+if [ -z "${REPLAY_GPU:-}" ]; then
+  mesa=$(nix build nixpkgs#mesa --no-link --print-out-paths | head -1) || exit 4
+  lvp=$mesa/share/vulkan/icd.d/lvp_icd.x86_64.json
+  envs=("VK_DRIVER_FILES=$lvp" "VK_ICD_FILENAMES=$lvp" LP_NUM_THREADS=8 "${envs[@]}")
+else
+  hostlog=$(ls -t "$BIN"/logs/play-*.log 2>/dev/null | head -1)
+  [ -n "$hostlog" ] && [ $(( $(date +%s) - $(stat -c %Y "$hostlog") )) -lt 180 ] && { echo "replay: Cal's game is running; refusing" >&2; exit 3; }
+  exec 9>/tmp/nx2navi-lab.lock; flock -w 3600 9 || exit 3; pin=()
+fi
+cd "$BIN" && exec nice -n 19 "${pin[@]}" env WAYLAND_DISPLAY=${LAB_DISPLAY:-gpu-display} \
+  XDG_RUNTIME_DIR=${LAB_RUNTIME:-$HOME/claude/.services/gpu-display/runtime} \
+  nix develop "$ROOT" --command env TERM=dumb SDL_VIDEODRIVER=wayland "${envs[@]}" \
+  "./nx2navi.${REPLAY_EXE:-cap}" --replay "$cap"
