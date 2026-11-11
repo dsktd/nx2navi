@@ -5,6 +5,11 @@
         reads build/v111/msg-edit/<lang>/<msbt path>.json (only the labels you change), writes
         build/v111/mods-dev/<name>/romfs (load with NX2NAVI_MODS_DIR)/Mals/<lang>.Product.110.sarc.zs, recompressed with its own zstd dictionary.
     msgmod.py tags   [--lang USen]          -> count of every control tag (group.type) and a sample label
+    msgmod.py rename [--lang USen] --old Link --new Cal --edits <dir>
+        writes an edits tree (as msg-edit) with every whole-word <old> in display text replaced; tags are left alone
+    build/check take --edits <dir> (default msg-edit) and --mods-dir <dir> (default mods-dev)
+    msgmod.py check  [--lang USen] --mod <name>  -> re-reads the built mod: edited labels equal the edits, the rest
+        byte-identical to the game's
 
 Messages are UTF-8 in 1.1.1 (MSBT encoding byte 0; UTF-16LE handled too). Message text: control tags are written {group.type:hexparams} (0x0E) and {/group.type} (0x0F), a literal
 brace is {{ or }}. Game data: everything read or written stays under build/ (NX2navi/AGENTS.md).
@@ -250,9 +255,23 @@ def cmd_export(args):
     print(f"{len(files)} MSBT files -> {out}")
 
 
+def edits_dir(args):
+    return (Path(args.edits) if args.edits else TREE / "build" / VERSION / "msg-edit") / args.lang
+
+
+def mod_path(args):
+    mods = Path(args.mods_dir) if args.mods_dir else TREE / "build" / VERSION / "mods-dev"
+    return mods / args.mod / "romfs" / mals_path(args.lang)
+
+
+def load_edits(args):
+    edits = edits_dir(args)
+    return {str(p.relative_to(edits))[: -len(".json")]: json.loads(p.read_text()) for p in sorted(edits.rglob("*.json"))}
+
+
 def cmd_build(args):
     sarc, d = load_sarc(args.lang)
-    edits = TREE / "build" / VERSION / "msg-edit" / args.lang
+    edits = edits_dir(args)
     files = msbts(sarc)
     new = {}
     for path in sorted(edits.rglob("*.json")):
@@ -261,10 +280,49 @@ def cmd_build(args):
         new[name] = msbt_replace(files[name], json.loads(path.read_text()))
     assert new, f"no edits under {edits}"
     packed = zstd.compress(sarc_replace(sarc, new), level=19, zstd_dict=d)
-    out = TREE / "build" / VERSION / "mods-dev" / args.mod / "romfs" / mals_path(args.lang)
+    out = mod_path(args)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_bytes(packed)
     print(f"{len(new)} MSBT files edited -> {out} ({len(packed)} bytes, dict {d.dict_id if d else 0})")
+
+
+def rename_text(text, old, new):
+    """whole-word old -> new in display text only: control tags {...} and escaped braces are kept as they are."""
+    word = re.compile(rf"\b{re.escape(old)}\b")
+    parts = re.split(r"(\{\{|\}\}|\{[^{}]*\})", text)
+    return "".join(p if i % 2 else word.sub(new, p) for i, p in enumerate(parts))
+
+
+def cmd_rename(args):
+    sarc, _ = load_sarc(args.lang)
+    out = edits_dir(args)
+    files = labels = 0
+    for name, data in msbts(sarc).items():
+        changed = {k: n for k, t in msbt_messages(data).items() if (n := rename_text(t, args.old, args.new)) != t}
+        if changed:
+            path = out / (name + ".json")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(changed, ensure_ascii=False, indent=1) + "\n")
+            files, labels = files + 1, labels + len(changed)
+    print(f"{labels} messages in {files} MSBT files -> {out}")
+
+
+def cmd_check(args):
+    sarc, _ = load_sarc(args.lang)
+    mod, _ = unpack_zs(mod_path(args).read_bytes(), dictionaries(romfs_reader(TREE)))
+    game, built = msbts(sarc), msbts(mod)
+    assert set(game) == set(built), "member list differs"
+    edits = load_edits(args)
+    bad = 0
+    for name, data in game.items():
+        want = msbt_messages(data) | edits.get(name, {})
+        if name not in edits:
+            bad += data != built[name]
+        elif msbt_messages(built[name]) != want or msbt_replace(data, edits[name]) != built[name]:
+            bad += 1
+            print(f"mismatch: {name}")
+    print(f"{len(game)} MSBT files, {len(edits)} edited, {bad} mismatches")
+    return 1 if bad else 0
 
 
 def cmd_tags(args):
@@ -282,13 +340,20 @@ def cmd_tags(args):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("export", "build", "tags"):
+    cmds = {"export": cmd_export, "build": cmd_build, "check": cmd_check, "rename": cmd_rename, "tags": cmd_tags}
+    for name in cmds:
         p = sub.add_parser(name)
         p.add_argument("--lang", default="USen")
-        if name == "build":
+        if name in ("build", "check"):
             p.add_argument("--mod", required=True)
+            p.add_argument("--mods-dir")
+        if name in ("build", "check", "rename"):
+            p.add_argument("--edits")
+        if name == "rename":
+            p.add_argument("--old", required=True)
+            p.add_argument("--new", required=True)
     args = ap.parse_args()
-    {"export": cmd_export, "build": cmd_build, "tags": cmd_tags}[args.cmd](args)
+    return cmds[args.cmd](args)
 
 
 if __name__ == "__main__":

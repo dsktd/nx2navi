@@ -104,7 +104,9 @@ Growing it:
 
 ## Next steps
 
-1. Verify the text mod in the lab on the title menu (`text-demo` changes "Continue"); then a BYML tool.
+1. Done 2026-11-11: lab (play10, title menu) shows "Continue (modded)" from `text-demo`; `msgmod.py rename --old Link
+   --new Cal` (whole words, tags untouched: 702 messages in 175 files) built as `mods-dev-link/link-cal` loads and reaches
+   the title; `msgmod.py check` verifies both round trips. Dialogue not yet seen in the lab. Next: a BYML tool.
 2. hooks.c with pre/replace through FN_ENTER behind `NX2NAVI_MOD_PLUGINS`, plus the dlopen loader and NxModApi.
 3. Signature hashing in strxref's walk; name the LMS message tag dispatcher (the function that switches on group
    0/1/2/3/4/5/201 near f_7001175080's callers).
