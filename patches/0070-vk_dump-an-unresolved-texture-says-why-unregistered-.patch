@@ -1,0 +1,70 @@
+From 02ee5fbbc979695ee4b884871605050b28029f28 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 21:30:11 -0500
+Subject: [PATCH] vk_dump: an unresolved texture says why (unregistered,
+ registered with no storage, registered and resolved empty) with its storage
+ address and descriptor hash (#169)
+
+---
+ runtime/vk.h         | 3 +++
+ runtime/vk_dump.c    | 9 ++++++++-
+ runtime/vk_texture.c | 9 +++++++++
+ 3 files changed, 20 insertions(+), 1 deletion(-)
+
+diff --git a/runtime/vk.h b/runtime/vk.h
+index 8e18a2f..e4b15bc 100644
+--- a/runtime/vk.h
++++ b/runtime/vk.h
+@@ -442,6 +442,9 @@ VkImage vk_tonemap_record(VkCommandBuffer cb, VkImage src, VkFormat sf, uint32_t
+ uint64_t vk_texture_slot_token(int id);
+ uint64_t vk_texture_same_regs(void);
+ void vk_texture_bucket_stats(char *out, size_t n);   // diagnosis for the pool log (vk_texture.c)
++// vk_dump: why slot id resolved to no image: 0 unregistered, 1 registered with no storage, 2 registered and resolved
++// empty; *mem the descriptor's storage address, *khash its descriptor hash (0 when unregistered)
++int vk_texture_slot_why_nil(int id, uint64_t *mem, uint64_t *khash);
+ uint64_t vk_texture_slot_khash_locked(int id);       // vk_texture.c: descriptor hash of a GPU-written slot, 0 otherwise
+ uint32_t vk_texture_entry_gen(void);                 // vk_texture.c: bumped by every entry change   // registrations that changed nothing (vk_texture_register), for the pool log
+ // Slots whose token may have changed since *pos (0 at first; then the value these calls leave): fn is called for each
+diff --git a/runtime/vk_dump.c b/runtime/vk_dump.c
+index 24de927..c699c9b 100644
+--- a/runtime/vk_dump.c
++++ b/runtime/vk_dump.c
+@@ -768,7 +768,14 @@ static void describe_bindings(Str *b, const VkExec *ex, const VkPipeInfo *info)
+             view_t v;
+             int hv = 0;
+             const VkTexImage *t = vk_texture_by_id(NVN_HANDLE_TEX(h), &v, &hv);
+-            if (!t) { sp(b, "tex %d unresolved (dummy)\n", NVN_HANDLE_TEX(h)); continue; }
++            if (!t) {   // which case: unregistered, registered with no storage, or registered and resolved empty
++                static const char *why[] = {"unregistered", "registered, no storage", "registered, resolve empty"};
++                uint64_t mem, kh;
++                int w = vk_texture_slot_why_nil(NVN_HANDLE_TEX(h), &mem, &kh);
++                sp(b, "tex %d unresolved (dummy): %s, mem 0x%llx khash %016llx\n", NVN_HANDLE_TEX(h), why[w],
++                   (unsigned long long)mem, (unsigned long long)kh);
++                continue;
++            }
+             static const char *vt[] = {"1D", "2D", "3D", "cube", "1DArray", "2DArray", "cubeArray"};
+             sp(b, "tex %d %s(%d) %ux%ux%u levels %u layers %u image %s vkimage %p", NVN_HANDLE_TEX(h), fmt_name(t->format, fn),
+                (int)t->format, t->width, t->height, t->depth, t->levels, t->layers,
+diff --git a/runtime/vk_texture.c b/runtime/vk_texture.c
+index d0b2dd5..8f180a3 100644
+--- a/runtime/vk_texture.c
++++ b/runtime/vk_texture.c
+@@ -2115,6 +2115,15 @@ int vk_texture_fresh_check_locked(int id) {
+ }
+ 
+ // vk_dump: the swizzle selectors of the descriptor registered in slot id; 0 when the slot is empty.
++int vk_texture_slot_why_nil(int id, uint64_t *mem, uint64_t *khash) {
++    lock();
++    int used = id >= 0 && id < ntslots && tslots[id].used;
++    *mem = used ? (uint64_t)(uintptr_t)tslots[id].t.mem : 0;
++    *khash = used ? tslots[id].khash : 0;
++    unlock();
++    return !used ? 0 : !*mem ? 1 : 2;
++}
++
+ int vk_texture_slot_swz(int id, uint8_t swz[4]) {
+     lock();
+     int ok = id >= 0 && id < ntslots && tslots[id].used;
+-- 
+2.56.0
+
