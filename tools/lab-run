@@ -60,6 +60,10 @@ if [ -n "$soft" ]; then
   pin=(taskset -c "${LAB_SOFT_CPUS:-12-15,28-31}"); vkwrap=env
   envs=("VK_DRIVER_FILES=$lvp" "VK_ICD_FILENAMES=$lvp" LP_NUM_THREADS=${LAB_SOFT_THREADS:-8} NX2NAVI_RENDER_SCALE=50
     NX2NAVI_FPS_LIMIT=30 "NX2NAVI_PIPELINE_CACHE=$OUT/pipeline-cache.bin" "${envs[@]}")
+  # and never the live shader cache: a reflink copy unless one was given
+  printf '%s\n' "${envs[@]}" | grep -q '^NX2NAVI_SHADER_CACHE=' || {
+    cp -a --reflink=auto "$BIN/shader-cache" "$OUT/shader-cache" 2>/dev/null || mkdir -p "$OUT/shader-cache"
+    envs+=("NX2NAVI_SHADER_CACHE=$OUT/shader-cache"); }
 fi
 if [ -n "${LAB_VALIDATE:-}" ]; then
   vvl=$(nix build nixpkgs#vulkan-validation-layers --no-link --print-out-paths | tail -1) || exit 4
@@ -93,8 +97,13 @@ if [[ -z $prof && -d $bundle ]]; then
   prof=$OUT/profile; mkdir -p "$prof"
   cp -a "$live"/. "$prof"/ && rm -rf "$prof"/save "$prof"/save-tx "$prof"/save-backup && cp -a "$bundle"/. "$prof"/ || exit 4
   envs+=("NX2NAVI_PROFILE_DIR=$prof"); echo "lab-run: profile from bundle ${bundle##*/}"
+elif [[ -z $prof && -n $soft ]]; then
+  # soft runs may overlap Cal's game: never snapshot/restore his live saves, run on a fresh copy
+  prof=$OUT/profile; mkdir -p "$prof"; cp -a "$live"/. "$prof"/ || exit 4
+  envs+=("NX2NAVI_PROFILE_DIR=$prof"); echo "lab-run: soft, profile copy in $prof"
 elif [[ -z $prof ]]; then echo "lab-run: no bundle for ${rec##*/}; using the live profile (saves restored after)" >&2; fi
 [ $dry = 1 ] && { echo "profile: ${prof:-$live}"; ls -la "${prof:-$live}"; exit 0; }
+[[ -n $soft && $(realpath -m "$prof") == "$live" ]] && { echo "lab-run: LAB_SOFT never runs on the live profile" >&2; exit 4; }
 if [[ -z $prof || $(realpath -m "$prof") == "$live" ]]; then
   snap=$(mktemp -d "${TMPDIR:-/tmp}/nx2navi-save.XXXXXX")
   cp -a "$live/save" "$live/save-tx" "$live/save-backup" "$snap"/ 2>/dev/null
