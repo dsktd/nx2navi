@@ -1,0 +1,28 @@
+From feb8e60b0ead3191460c2c14a455f2fe9f052b85 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 17:42:14 -0500
+Subject: [PATCH] build_xlate: expect 35 translator patches (0036, the texel
+ fetch clamp, is the 35th: the numbers have a gap)
+
+---
+ tools/build_xlate.py | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/tools/build_xlate.py b/tools/build_xlate.py
+index cf356d9..2053644 100644
+--- a/tools/build_xlate.py
++++ b/tools/build_xlate.py
+@@ -99,8 +99,8 @@ def prepare_sources() -> Path:
+     for junk in list(src.glob("src/*/obj")) + list(src.glob("src/*/bin")):
+         shutil.rmtree(junk)
+     patches = sorted((XLATE / "patches").glob("*.patch"))
+-    if len(patches) != 34:
+-        sys.exit(f"expected 34 patches, found {len(patches)}")
++    if len(patches) != 35:
++        sys.exit(f"expected 35 patches, found {len(patches)}")
+     for patch in patches:
+         # git apply works outside a repository when given a directory; --check first so a failure names the patch.
+         for extra in (["--check"], []):
+-- 
+2.56.0
+
