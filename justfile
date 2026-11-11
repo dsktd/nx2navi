@@ -157,17 +157,18 @@ try-i2f *args:
     NX2NAVI_PIPELINE_CACHE="{{src}}/build/{{ver}}/pipeline-cache-i2f.bin" \
     {{just_executable()}} -f "{{justfile()}}" try {{args}}
 
-# Rename Link in all English dialogue to NAME (whole words only, tags untouched; run in the container, the venv
-# is a container Nix path): rebuilds the mod in
-# NX2navi/build/{{ver}}/mods-name/link-name from the game's own text and checks it. Play it with `just try-name`.
+# Rename Link in all English dialogue to NAME (whole words only, tags untouched): rebuilds the mod in
+# NX2navi/build/{{ver}}/mods-name/link-name from the game's own text and checks it. Python 3.14 from nixpkgs (stdlib
+# only), so it runs on the host and in the container alike.
 rename NAME:
     cd "{{src}}" && rm -rf "build/{{ver}}/msg-edit-name" && \
-    .venv-py314/bin/python ../tools/msgmod.py rename --old Link --new "{{NAME}}" --edits "build/{{ver}}/msg-edit-name" && \
-    .venv-py314/bin/python ../tools/msgmod.py build --mod link-name --mods-dir "build/{{ver}}/mods-name" --edits "build/{{ver}}/msg-edit-name" && \
-    .venv-py314/bin/python ../tools/msgmod.py check --mod link-name --mods-dir "build/{{ver}}/mods-name" --edits "build/{{ver}}/msg-edit-name"
+    nix shell nixpkgs#python314 -c python3 -I ../tools/msgmod.py rename --old Link --new "{{NAME}}" --edits "build/{{ver}}/msg-edit-name" && \
+    nix shell nixpkgs#python314 -c python3 -I ../tools/msgmod.py build --mod link-name --mods-dir "build/{{ver}}/mods-name" --edits "build/{{ver}}/msg-edit-name" && \
+    nix shell nixpkgs#python314 -c python3 -I ../tools/msgmod.py check --mod link-name --mods-dir "build/{{ver}}/mods-name" --edits "build/{{ver}}/msg-edit-name"
 
-# try-vram with the renamed-Link mod from `just rename NAME`
-try-name *args:
+# try-vram with Link renamed: `just try-name` plays the last built name, `just try-name Zed` renames first.
+try-name NAME="" *args:
+    {{ if NAME != "" { just_executable() + " -f " + justfile() + " rename '" + NAME + "' &&" } else { "" } }} \
     NX2NAVI_MODS_DIR="${NX2NAVI_MODS_DIR:-{{src}}/build/{{ver}}/mods-name}" {{just_executable()}} -f "{{justfile()}}" try-vram {{args}}
 
 # try-i2f on play11 with the VRAM hold settings (#160): reuse released render targets, trim at 85%, released cap
