@@ -193,6 +193,16 @@ try-name NAME="" *args:
 # tiles recovered, 0 unresolved). MARK_CHORD=off gives L3+R3 back to the game (mark with yakin's ...+Start). Any variable can be overridden from the environment.
 # RT_RECYCLE is off (2026-11-11): on play11 it gave back render targets the game took back with their content lost,
 # environment lighting flickered with camera angle and time of day (play-20261111-115322).
+# #174 texel fetch clamp: nx2navi.tld with TLD_CLAMP=1 and TEX_DESC_STRICT=1, its own translator (xlate-tld), shader
+# cache and pipeline cache copy (*-tld). Live dumps (dump.req) land in build/v111/dump as with every try.
+try-tld *args:
+    NX2NAVI_EXE="${NX2NAVI_EXE:-tld}" NX2NAVI_TLD_CLAMP="${NX2NAVI_TLD_CLAMP:-1}" \
+    NX2NAVI_TEX_DESC_STRICT="${NX2NAVI_TEX_DESC_STRICT:-1}" \
+    NX2NAVI_XLATE="${NX2NAVI_XLATE:-{{src}}/build/{{ver}}/xlate-tld/nx2navi_xlate}" \
+    NX2NAVI_SHADER_CACHE="${NX2NAVI_SHADER_CACHE:-{{src}}/build/{{ver}}/shader-cache-tld}" \
+    NX2NAVI_PIPELINE_CACHE="${NX2NAVI_PIPELINE_CACHE:-{{src}}/build/{{ver}}/pipeline-cache-tld.bin}" \
+    {{just_executable()}} -f "{{justfile()}}" try-i2f {{args}}
+
 try-vram *args:
     NX2NAVI_EXE="${NX2NAVI_EXE:-play11}" NX2NAVI_TEX_RT_RECYCLE="${NX2NAVI_TEX_RT_RECYCLE:-1}" \
     NX2NAVI_TEX_RT_TRIM="${NX2NAVI_TEX_RT_TRIM:-85}" NX2NAVI_TEX_RT_TRIM_PER_MIN="${NX2NAVI_TEX_RT_TRIM_PER_MIN:-0}" \
