@@ -1,0 +1,87 @@
+From 378c119631186d00436f0b7ec0ff433685ceb7bd Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 12:08:35 -0500
+Subject: [PATCH] vk_texture: a GPU slot that follows a live entry of another
+ size or format at its address is logged (32, with the slot's descriptor) and
+ counted; NX2NAVI_TEX_DESC_STRICT=1 (default 0) resolves it to its own
+ descriptor's entry instead, so a storage image write is no longer clipped to
+ the followed image (#172)
+
+---
+ runtime/cfg.c        |  4 ++--
+ runtime/vk_texture.c | 29 ++++++++++++++++++++++++++++-
+ 2 files changed, 30 insertions(+), 3 deletions(-)
+
+diff --git a/runtime/cfg.c b/runtime/cfg.c
+index 97a251c..b300888 100644
+--- a/runtime/cfg.c
++++ b/runtime/cfg.c
+@@ -97,7 +97,7 @@ static const struct { const char *key, *section; } sections[] = {
+     {"TIMER_1MS", "performance"}, {"PIPE_WAIT", "performance"}, {"PIPE_SKIP", "performance"},
+     {"LIB_PREBUILD", "performance"}, {"LIB_PREBUILD_THREADS", "performance"}, {"PIPE_PREBUILD", "performance"},
+     {"PREWARM_XLATE", "performance"}, {"GPL", "performance"}, {"ASTC", "performance"}, {"MEMORY", "performance"},
+-    {"TEX_ALIAS", "performance"}, {"TEX_VRAM_PRESSURE", "performance"}, {"TEX_STALE_GONE", "performance"}, {"TEX_STALE_LIVE", "performance"}, {"TEX_LIVE_EVICT", "performance"}, {"TEX_LIVE_RT_IDLE", "performance"}, {"VMA_BLOCK_MIB", "performance"}, {"TEX_RT_RECYCLE", "performance"}, {"TEX_LIVE_IDLE", "performance"}, {"TEX_LIVE_GUARD", "performance"}, {"ASTC_BC", "performance"}, {"LOD_GUARD", "performance"}, {"FIX_C0", "performance"}, {"FIX_ZERO", "performance"},
++    {"TEX_ALIAS", "performance"}, {"TEX_VRAM_PRESSURE", "performance"}, {"TEX_STALE_GONE", "performance"}, {"TEX_STALE_LIVE", "performance"}, {"TEX_DESC_STRICT", "performance"}, {"TEX_LIVE_EVICT", "performance"}, {"TEX_LIVE_RT_IDLE", "performance"}, {"VMA_BLOCK_MIB", "performance"}, {"TEX_RT_RECYCLE", "performance"}, {"TEX_LIVE_IDLE", "performance"}, {"TEX_LIVE_GUARD", "performance"}, {"ASTC_BC", "performance"}, {"LOD_GUARD", "performance"}, {"FIX_C0", "performance"}, {"FIX_ZERO", "performance"},
+     {"BIND_SKIP", "performance"}, {"SHADER_MEMO", "performance"}, {"PIPE_MEMO", "performance"}, {"TEX_MEMO", "performance"}, {"TEX_SAME", "performance"}, {"DESC_TEMPLATE", "performance"},
+     {"PUSH_SKIP", "performance"}, {"SPLIT_DRAWS", "performance"}, {"SPLIT_US", "performance"}, {"VK_VALIDATION", "performance"},
+     {"VK_DYN_VERTEX", "performance"}, {"VK_DYN_A2C", "performance"}, {"VK_SUBGROUP_PIN", "performance"},
+@@ -173,7 +173,7 @@ static const CfgMeta metas[] = {
+     {"PIPE_PREBUILD", "1", "0|1", RESTART}, {"PREWARM_XLATE", "", "1..64", RESTART}, {"GPL", "1", "0|1", RESTART},
+     // textures and memory
+     {"ASTC", "auto", "auto|gpu|native|cpu", RESTART}, {"MEMORY", "auto", "auto|import|mirror|verify", RESTART},
+-    {"TEX_ALIAS", "1", "0|1", RESTART}, {"TEX_VRAM_PRESSURE", "90", "0..100", RESTART}, {"TEX_STALE_GONE", "0", "0|1", RESTART}, {"TEX_STALE_LIVE", "0", "0|1", RESTART}, {"TEX_LIVE_EVICT", "85", "0..100", RESTART}, {"TEX_LIVE_RT_IDLE", "0", "0..1000000", RESTART}, {"VMA_BLOCK_MIB", "0", "0..1024", RESTART}, {"TEX_RT_RECYCLE", "0", "0|1", RESTART}, {"TEX_LIVE_IDLE", "3600", "1..1000000", RESTART}, {"TEX_LIVE_GUARD", "240", "0..1000000", RESTART}, {"ASTC_BC", "", "0|1", RESTART}, {"ZSTD_NATIVE", "1", "0|1", RESTART}, {"ZSTD_CHECK", "0", "0|1", RESTART},
++    {"TEX_ALIAS", "1", "0|1", RESTART}, {"TEX_VRAM_PRESSURE", "90", "0..100", RESTART}, {"TEX_STALE_GONE", "0", "0|1", RESTART}, {"TEX_STALE_LIVE", "0", "0|1", RESTART}, {"TEX_DESC_STRICT", "0", "0|1", RESTART}, {"TEX_LIVE_EVICT", "85", "0..100", RESTART}, {"TEX_LIVE_RT_IDLE", "0", "0..1000000", RESTART}, {"VMA_BLOCK_MIB", "0", "0..1024", RESTART}, {"TEX_RT_RECYCLE", "0", "0|1", RESTART}, {"TEX_LIVE_IDLE", "3600", "1..1000000", RESTART}, {"TEX_LIVE_GUARD", "240", "0..1000000", RESTART}, {"ASTC_BC", "", "0|1", RESTART}, {"ZSTD_NATIVE", "1", "0|1", RESTART}, {"ZSTD_CHECK", "0", "0|1", RESTART},
+     // render fixes
+     {"LOD_GUARD", "1", "0|1", RESTART}, {"FIX_C0", "1", "0|1", RESTART}, {"FIX_ZERO", "1", "0|1", RESTART},
+     {"BIND_SKIP", "1", "0|1", RESTART}, {"SHADER_MEMO", "1", "0|1", RESTART}, {"PIPE_MEMO", "1", "0|1", RESTART}, {"TEX_MEMO", "1", "0|1", RESTART}, {"TEX_SAME", "1", "0|1", RESTART},
+diff --git a/runtime/vk_texture.c b/runtime/vk_texture.c
+index 0f6832c..c4f898f 100644
+--- a/runtime/vk_texture.c
++++ b/runtime/vk_texture.c
+@@ -176,6 +176,14 @@ static uint64_t n_gone_made, n_gone_blocked, n_gone_unkeyed, n_gone_resets;
+ static uint64_t n_gone_live, n_nil_stale, n_nil_gone, n_nil_held, n_nil_failed;
+ static uint64_t n_stale_live;   // stale-rule slots over a live NVN texture of their descriptor
+ static int stale_live = -1;     // NX2NAVI_TEX_STALE_LIVE
++static int desc_strict = -1;    // NX2NAVI_TEX_DESC_STRICT
++static uint64_t n_desc_follow, n_desc_own;   // GPU slot resolutions following another size/format; of them own (#172)
++
++// Whether two keys at one address describe images of another size or format (not only another swizzle).
++static int desc_differs(const TexKey *a, const TexKey *b) {
++    return a->d.width != b->d.width || a->d.height != b->d.height || a->d.depth != b->d.depth ||
++           a->d.format != b->d.format;
++}
+ static void nil_note(const char *why, const TexKey *k, uint64_t *n) {
+     if (++*n <= 16)
+         rt_log("vk: slot resolves to nothing (%s): addr 0x%llx %ux%u fmt %u", why, (unsigned long long)k->addr,
+@@ -2131,8 +2139,27 @@ static Tex *slot_resolve(TexSlot *s, view_t *view, int *has_view) {
+         // freeing its storage, and reviving it uploaded from that storage while another thread unmapped it (an
+         // access violation in tex_bl_copy from the pool refresh, Kokiri Forest). It resolves to nothing; a slot
+         // registered again after the release is live and revives the entry.
++        // A GPU slot following a live entry of another size or format (#172): a storage image bound so is written
++        // only where the two overlap (a 960x540 blur pass into a 1696x129 r11g11b10f image left the right 43% of the
++        // picture stale). Logged (32) and counted; NX2NAVI_TEX_DESC_STRICT=1 resolves the slot to its own
++        // descriptor's entry instead (taken back or made by entry_of below), so its writers and readers meet there.
++        int strict_own = 0;
++        if (!e && any && !cpu_slot && desc_differs(&any->key, &k)) {
++            if (desc_strict < 0) desc_strict = cfg_bool("NX2NAVI_TEX_DESC_STRICT");
++            if (++n_desc_follow <= 32) {
++                const nvn_texdesc *d = &s->t.d;
++                rt_log("vk: slot %d (serial %u) follows another descriptor at 0x%llx: slot target %d %ux%ux%u fmt %d "
++                       "flags 0x%x levels %u stride %u, entry %ux%ux%u fmt %d; own entry %s (%s)",
++                       (int)(s - tslots), (unsigned)(sinfo[s - tslots] >> 16), (unsigned long long)k.addr, d->target,
++                       d->width, d->height, d->depth, d->format, (unsigned)d->flags, d->levels, d->stride,
++                       any->key.d.width, any->key.d.height, any->key.d.depth, any->key.d.format,
++                       !own ? "none" : own->released ? "released" : "live",
++                       desc_strict ? "own descriptor" : "followed; NX2NAVI_TEX_DESC_STRICT=1 takes its own");
++            }
++            if (desc_strict) any = NULL, strict_own = 1, n_desc_own++;
++        }
+         if (!e && any) e = any;
+-        else if (!e && !cpu_slot) e = own;
++        else if (!e && !cpu_slot && !strict_own) e = own;
+         else if (!e && own && (uint32_t)(sinfo[s - tslots] >> 16) <= own->rel_serial) {
+             // NX2NAVI_TEX_STALE_LIVE=1: the storage holds an initialized NVN texture of the slot's own descriptor
+             // again (finalized and initialized anew without a new registration; the descriptor in the guest pool
+-- 
+2.56.0
+
