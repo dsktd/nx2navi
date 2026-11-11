@@ -1,6 +1,6 @@
 # NX2navi architecture
 
-How *The Legend of Zelda: Ocarina of Time* for Switch 2 (game 1.1.1, build dir `v111`) runs as a native Linux x86-64 program here. Sources: the upstream worktree `~/claude/nx2navi/NX2navi` (branch `build` = upstream plus our private patches) and the tooling repo `~/claude/nx2navi`. Paths below are relative to `NX2navi/` unless they start with `~/claude/nx2navi/`. "Not established" means the code and logs read for this document do not answer the question.
+How _The Legend of Zelda: Ocarina of Time_ for Switch 2 (game 1.1.1, build dir `v111`) runs as a native Linux x86-64 program here. Sources: the upstream worktree `~/claude/nx2navi/NX2navi` (branch `build` = upstream plus our private patches) and the tooling repo `~/claude/nx2navi`. Paths below are relative to `NX2navi/` unless they start with `~/claude/nx2navi/`. "Not established" means the code and logs read for this document do not answer the question.
 
 ## 1. What it is
 
@@ -41,27 +41,27 @@ There are three ways across the boundary:
 - **Hooked symbol.** `HOST_OVERRIDE("<mangled nn:: name>", fn)` replaces that symbol in every GOT/relocation of every module. `HOST_OBSERVER` wraps it and can still call the original (`runtime/host.h:108-111`). These host functions get synthetic guest addresses (`runtime/hostfn.c:1-6`). There are 295 overrides in total.
 - **Function-pointer table.** NVN is reached through `nvnBootstrapLoader` / `nvnDeviceGetProcAddress`, which hand out host functions for 545 proc names (`runtime/nvn_procs.c:2`, `runtime/nvn_procs.inc`). Missing procs are traps that log their first call (play log lines 92-140).
 
-| Subsystem | Game code runs? | Replaced by (file) | Patched? | How it crosses |
-|---|---|---|---|---|
-| Kernel: threads, sync, virtual cores | `nn::os` is lifted and runs; only the kernel below it is host (`kernel.c:5-8`) | `runtime/kernel.c`: one host thread per guest thread, 6 virtual cores (`kernel.c:29-30`), priority preemption | no | SVC |
-| Kernel: fibers | the game's job code is lifted | `kernel.c:2396-2399` | no | override of `InitializeFiber`, `SwitchToFiber`, ... |
-| Kernel: memory | no | `runtime/memory.c` | no | SVC (SetHeapSize, MapPhysicalMemory, QueryMemory) |
-| Handles, IPC, `sm:` | client side lifted | `runtime/ipc.c`: in-process IPC; only `sm:` and `audren:u` are real services (`ipc.c:3, 186-198`) | no | SVC 0x21 SendSyncRequest |
-| fs / RomFS | no | `runtime/romfs.c:1281-1284` (`MountRom`, ...), `runtime/fs_host.c` | no | override |
-| Saves | no | `fs_host.c`: a host directory plus a working copy committed on `Commit` (play log 339-342) | no | override |
-| hid / input | no | `runtime/ov_input.c`, `input.c`, `input_sdl.c` (SDL3) | no | override |
-| Audio out | `nn::atk` (sound engine) is lifted and runs | `runtime/audren.c`, `audio_mixer.c`, `audio_effects.c`: host audio renderer, SDL output | no | IPC `audren:u` |
-| vi / display, HDR queries | no | `runtime/ov_gfx.c:178-185` | no | override |
-| time, settings, account, applet, oe, pctl, aoc, err | no | `runtime/ov_system.c` (85 overrides), `net_offline.c` (57) | no | override |
-| NVN graphics | the game's renderer is lifted and runs | `nvn_api_core.c`, `nvn_api_cmd.c`, `nvn_api_obj.c`, `nvn_tex.c` front end; `vk_*.c` Vulkan back end | no | proc table |
-| Shaders | the game's binaries are used as data | translated by `nx2navi_xlate` (section 7) | SPIR-V post-passes | from the NVN program object |
-| Movies | no | `runtime/ov_movie.c`, `ov_movie2.c` (AV1 via dav1d, play log 436) | no | override |
-| Physics / middleware | lifted if present | none | no | none; whether Havok is in this title is not established |
-| Fonts | the game's text rendering is lifted | the menu overlay only reads the game's fonts (play log 60) | no | none |
-| Memory allocators (game heaps) | lifted (sead and game allocators) | the region underneath is `memory.c` | no | SVC |
-| Job system | lifted; fibers move between workers (`kernel.c:115-117`) | fiber primitives only | no | override |
-| Frame pacing, game step | the game's own controller runs | `runtime/frame_rate.c` | `ostep` set (section 8) | patch page |
-| `memcpy` | no | `nvn_api_core.c:74` | no | override |
+| Subsystem                                           | Game code runs?                                                                | Replaced by (file)                                                                                            | Patched?                | How it crosses                                          |
+| --------------------------------------------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------- | ----------------------- | ------------------------------------------------------- |
+| Kernel: threads, sync, virtual cores                | `nn::os` is lifted and runs; only the kernel below it is host (`kernel.c:5-8`) | `runtime/kernel.c`: one host thread per guest thread, 6 virtual cores (`kernel.c:29-30`), priority preemption | no                      | SVC                                                     |
+| Kernel: fibers                                      | the game's job code is lifted                                                  | `kernel.c:2396-2399`                                                                                          | no                      | override of `InitializeFiber`, `SwitchToFiber`, ...     |
+| Kernel: memory                                      | no                                                                             | `runtime/memory.c`                                                                                            | no                      | SVC (SetHeapSize, MapPhysicalMemory, QueryMemory)       |
+| Handles, IPC, `sm:`                                 | client side lifted                                                             | `runtime/ipc.c`: in-process IPC; only `sm:` and `audren:u` are real services (`ipc.c:3, 186-198`)             | no                      | SVC 0x21 SendSyncRequest                                |
+| fs / RomFS                                          | no                                                                             | `runtime/romfs.c:1281-1284` (`MountRom`, ...), `runtime/fs_host.c`                                            | no                      | override                                                |
+| Saves                                               | no                                                                             | `fs_host.c`: a host directory plus a working copy committed on `Commit` (play log 339-342)                    | no                      | override                                                |
+| hid / input                                         | no                                                                             | `runtime/ov_input.c`, `input.c`, `input_sdl.c` (SDL3)                                                         | no                      | override                                                |
+| Audio out                                           | `nn::atk` (sound engine) is lifted and runs                                    | `runtime/audren.c`, `audio_mixer.c`, `audio_effects.c`: host audio renderer, SDL output                       | no                      | IPC `audren:u`                                          |
+| vi / display, HDR queries                           | no                                                                             | `runtime/ov_gfx.c:178-185`                                                                                    | no                      | override                                                |
+| time, settings, account, applet, oe, pctl, aoc, err | no                                                                             | `runtime/ov_system.c` (85 overrides), `net_offline.c` (57)                                                    | no                      | override                                                |
+| NVN graphics                                        | the game's renderer is lifted and runs                                         | `nvn_api_core.c`, `nvn_api_cmd.c`, `nvn_api_obj.c`, `nvn_tex.c` front end; `vk_*.c` Vulkan back end           | no                      | proc table                                              |
+| Shaders                                             | the game's binaries are used as data                                           | translated by `nx2navi_xlate` (section 7)                                                                     | SPIR-V post-passes      | from the NVN program object                             |
+| Movies                                              | no                                                                             | `runtime/ov_movie.c`, `ov_movie2.c` (AV1 via dav1d, play log 436)                                             | no                      | override                                                |
+| Physics / middleware                                | lifted if present                                                              | none                                                                                                          | no                      | none; whether Havok is in this title is not established |
+| Fonts                                               | the game's text rendering is lifted                                            | the menu overlay only reads the game's fonts (play log 60)                                                    | no                      | none                                                    |
+| Memory allocators (game heaps)                      | lifted (sead and game allocators)                                              | the region underneath is `memory.c`                                                                           | no                      | SVC                                                     |
+| Job system                                          | lifted; fibers move between workers (`kernel.c:115-117`)                       | fiber primitives only                                                                                         | no                      | override                                                |
+| Frame pacing, game step                             | the game's own controller runs                                                 | `runtime/frame_rate.c`                                                                                        | `ostep` set (section 8) | patch page                                              |
+| `memcpy`                                            | no                                                                             | `nvn_api_core.c:74`                                                                                           | no                      | override                                                |
 
 ## 4. Game components used as they are
 
@@ -123,20 +123,20 @@ Read at run time:
 
 Costs per frame in the Hyrule Field standing window, lab replay of Cal's 19:13 recording, mean frame 23.4-25.9 ms, 40-43 fps (`~/claude/nx2navi/NOTES-perf-2026-11-09.md`, "Round 3"; `NX2NAVI_TRACE=nvn` and `perf`):
 
-| What | Thread | Cost | Notes |
-|---|---|---|---|
-| Translating and recording a frame | replay | about 22 ms | the bound; notes "After fixes 1+2", section 4 |
-| of it: texture pool entry refresh | replay | 2.7-3.2 ms | 32.8k slots walked, 17k refilled, 5.7k storage checks; 6.3 ms in the graveyard |
-| of it: shadow sync | replay | 2.8-3.1 ms | 915 pool syncs, 10 MiB copied; write-watch queries 1.5 ms |
-| Submit finish wait (`nvnQueueSubmitCommands`) | main 0x1003 | 9.3 ms | waits for the replay thread to record and submit the frame's first submission, then the GPU |
-| Waiting for the job workers (`svc 0x34`) | main | 7.9 ms | 23 waits per frame |
-| Guest code | main | 4.1 ms | 16% of its frame |
-| Guest code / runtime calls | each of 4 workers | 3.8 / 1.6 ms | idle the other 20 ms |
-| Sleep until woken by the main thread | presenting 0x1008 | 24.6 ms | then 4 submits and the present |
-| GPU busy | | 10.2 ms | |
-| Write-back compare | completion | 4.2 ms | 66 MiB compared, off the frame's path |
-| Audio mix | audio | 1.5 ms | |
-| Pipeline binds | | about 690 | |
+| What                                          | Thread            | Cost         | Notes                                                                                       |
+| --------------------------------------------- | ----------------- | ------------ | ------------------------------------------------------------------------------------------- |
+| Translating and recording a frame             | replay            | about 22 ms  | the bound; notes "After fixes 1+2", section 4                                               |
+| of it: texture pool entry refresh             | replay            | 2.7-3.2 ms   | 32.8k slots walked, 17k refilled, 5.7k storage checks; 6.3 ms in the graveyard              |
+| of it: shadow sync                            | replay            | 2.8-3.1 ms   | 915 pool syncs, 10 MiB copied; write-watch queries 1.5 ms                                   |
+| Submit finish wait (`nvnQueueSubmitCommands`) | main 0x1003       | 9.3 ms       | waits for the replay thread to record and submit the frame's first submission, then the GPU |
+| Waiting for the job workers (`svc 0x34`)      | main              | 7.9 ms       | 23 waits per frame                                                                          |
+| Guest code                                    | main              | 4.1 ms       | 16% of its frame                                                                            |
+| Guest code / runtime calls                    | each of 4 workers | 3.8 / 1.6 ms | idle the other 20 ms                                                                        |
+| Sleep until woken by the main thread          | presenting 0x1008 | 24.6 ms      | then 4 submits and the present                                                              |
+| GPU busy                                      |                   | 10.2 ms      |                                                                                             |
+| Write-back compare                            | completion        | 4.2 ms       | 66 MiB compared, off the frame's path                                                       |
+| Audio mix                                     | audio             | 1.5 ms       |                                                                                             |
+| Pipeline binds                                |                   | about 690    |                                                                                             |
 
 - **What the replay thread spends.** About a third is libc and kernel, not runtime code: shadow-sync memcpy, write-watch (PAGEMAP_SCAN) and submit ioctls, RADV re-creating the gang (ACE) follower preamble on every submit that holds a task-shader draw (Mesa 26.2.6 `radv_update_gang_preambles` has no early return); compiler flags (-O3, znver3, ThinLTO) change nothing (NOTES-perf "Runtime optimisation").
 - **Where the game waits.** In the submit finish wait, which is the replay thread's backlog, and on `pool_fini` at area changes.
@@ -168,7 +168,29 @@ Written pages are found with a userfaultfd in asynchronous write-protect mode pl
 Two lifetime mechanisms keep graphics objects alive just long enough:
 
 - **Texture pins.** Recordings name immutable host copies of each texture initialisation. A copy is freed some submits after nothing reads it (`runtime/nvn_api_cmd.c:234-248`; play log: "6625 live, 6605 waiting").
-- **Released textures.** Textures released for take-back are kept, up to 2048 entries (`runtime/vk_texture.c:914`). Our patch 0019 caps their memory (`NX2NAVI_TEX_RELEASED_MIB=3072` in `just play`; play log 388). `NX2NAVI_TEX_RELEASED_YIELD` (0042) makes the list give memory back, render targets included, above a share of the VRAM budget. The pressure valve (`NX2NAVI_TEX_VRAM_PRESSURE`) never drops render targets. VMA keeps part-empty 256 MiB blocks: the driver's usage does not fall when allocations are freed, only VMA's own allocation count does. On RADV render targets sat in those blocks too (it does not ask for dedicated memory for plain images), so the yield, which subtracts that block slack from the driver's use, never fired with the card full (#160: 15.2 of 15.2 GiB used, 2.8-4.1 GiB slack). Patch 0052 gives render targets of 4 MiB and more their own memory (`NX2NAVI_TEX_RT_DEDICATED_MIB`) and drops released ones oldest first above 95% of the driver's budget (`NX2NAVI_TEX_RT_TRIM`), logging each run of drops as `vk: VRAM above 95%: released render targets trimmed`. `mem: heaps` / `mem: textures` lines every 1800 frames (0037, 0038) show driver, VMA and kernel figures and texture memory by format. Death Mountain needs about 11.6 GiB VRAM: 5.5 render targets (3.3 released), 2.0 ASTC as BC3, 1.0 mirrors; GTT 5.6 of which 4.85 shadow.
+- **Released textures.** See "Texture cache" below.
+
+### Texture cache (`runtime/vk_texture.c`)
+
+Bindless slots (`TexSlot`, 16 kinds x 32768) hold the game's NVN descriptors. An entry (`Tex`) is a Vulkan image keyed by descriptor (`TexKey`: address + format/size/target...), found by key (`by_key`) or by storage address (`by_addr`, chained by `next_at`).
+
+- **Live vs released.** `nvnTextureFinalize` releases an entry instead of destroying it (`released`, `rel_serial` = registration serial at release), so a re-initialisation of the same key takes it back with its content. Released entries go on a capped list (2048 entries; `NX2NAVI_TEX_RELEASED_MIB`, 3072 in `just play`, 1536 + `TEX_RELEASED_LRU=1` in `try-vram`). When a released entry is destroyed its key goes to the `gone` map with its serial (0066).
+- **`slot_resolve` (vk_texture.c `slot_resolve`, ~2107).** A slot whose own entry is live uses it. Otherwise, in order:
+  1. _Follow by address_: a live entry at the same address with the same target. A swizzle-only difference wins; otherwise the first other one (`any`). CPU-written (mirrored) slots follow only entries holding GPU content (glyph atlases reuse freed memory at other widths).
+  2. _Follow another descriptor_ (#172): a GPU slot following an entry of another size or format is logged (`vk: slot N ... follows another descriptor`, first 32). A storage image bound so is written only where the two overlap: the 56.6% seam was a 960x540 blur store into a leftover 1696x129 r11g11b10f entry. `NX2NAVI_TEX_DESC_STRICT=1` (0079, default 0) resolves to the slot's own descriptor instead.
+  3. _Stale rule_: a CPU slot registered at or before its own entry's release is stale and resolves to nothing (prevents uploading from storage being unmapped). Ocarina finalises and re-initialises terrain height tiles (r32f 260x260) at the same storage without re-registering the pool slot, so they went to the dummy (#149/#169 holes and columns). `NX2NAVI_TEX_STALE_LIVE=1` (0074, default 0, on in `try-vram`) takes the entry back when `nvn_tex_live_at` shows an initialised texture of the slot's own key there. Lab: 3974 tiles recovered, 0 unresolved.
+  4. _Gone rule_: own entry destroyed, slot registered before that. Default: a new **live** entry is made from the old storage (no Finalize ever releases it: a source of #160 growth). `NX2NAVI_TEX_STALE_GONE=1` (0066) resolves to nothing, but only when no live entry is at the address (0068; the unconditional version blanked live terrain).
+  5. Else `entry_of` makes the entry from storage (bounded by the create budget during pool refresh).
+     Every nothing-path is counted per path (stale, gone, create held, create failed) in the `mem: textures` line; the first 16 of each are logged. A dump's `tex N unresolved (dummy)` says why (0070).
+- **VRAM knobs and what they cost.** VMA keeps part-empty 256 MiB blocks (`NX2NAVI_VMA_BLOCK_MIB`, 0077), so driver usage does not fall when allocations are freed; on RADV plain images share those blocks.
+  - `TEX_RT_DEDICATED_MIB` (0052, default 4): render targets of that size and up get their own memory, so freeing them frees VRAM.
+  - `TEX_RT_TRIM` (0052/0065, default 95, 85 in `try-vram`): drop released RTs above that share of the budget. The game takes many RTs straight back, so a trim is judged 32 submits later and backs off (`_COOLDOWN`, `_AGE` 240, `_PER_MIN` 6). Without the backoff it churned 14 GB/min with no gain.
+  - `TEX_RT_RECYCLE` (0075/0078, default 0): a new RT takes the image and memory of an idle released RT of the same description instead of allocating. This is the perf lever under streaming: off, released-RT churn (count sweep destroyed 34 GiB in 46k frames) costs about 30 fps in Hyrule; on, lab card use 84-94% vs 91-99%, worst frame 27 vs 98 ms. Risk: content lost when the game takes a recycled RT back (lighting flicker with camera/time of day, play11); 0078 skips taken-back and remade keys.
+  - `TEX_RELEASED_YIELD` (0039/0042): the released list gives memory back above a budget share; never fired on RADV with the card full because block slack hides the frees.
+  - `TEX_LIVE_EVICT` (0072, default 85, `_IDLE` 3600 / 900 in `try-vram`, `_GUARD`): drops the longest-unbound mirrored, not GPU-written, live entries above the threshold; they return from storage on next bind. `TEX_LIVE_RT_IDLE` (0076) for live RTs: dropped 47 MiB in 46k frames, worse worst frame, not adopted. Live RTs are not idle.
+  - The pressure valve `TEX_VRAM_PRESSURE` never drops RTs.
+- **Where VRAM goes.** A fresh start holds about 5 GB of game textures in an area; a 90-minute session grew live sampled textures 3.5 -> 11.3 GiB (ASTC 5x5 0.7 -> 3.2, 4 GiB from stale slots of gone keys). Death Mountain: 11.6 GiB = 5.5 RTs (3.3 released), 2.0 ASTC as BC3, 1.0 mirrors; GTT 5.6 of which 4.85 shadow. `mem: heaps` / `mem: textures` lines every 1800 frames (0037, 0038) show driver, VMA, kernel and per-format figures. Driver/VMA/fdinfo agree: no hidden memory.
+- **Streaming cost (#173).** Riding fast: `pool_fini` waits (1.6 s per 1800 frames), 49 ms pipeline-build spikes, 94k texture releases per 1800 frames.
 
 ## 7. Shaders
 
@@ -180,6 +202,7 @@ Two lifetime mechanisms keep graphics objects alive just long enough:
   - the translator "answers" (bind state), masked to the slots the shader reads.
 
   Host capability answers are mixed in too (`gfx_shader.c:6-20, 318-320`).
+
 - **Post-passes per pipeline.** `vk_pipeline.c:645-964` applies rebind, descriptor set, dual source, added outputs, fixups and pool rebind. A TXD gradient transpose exists but stays off for Switch 2 titles (`gfx_shader.c:797-806`).
 - **Pipeline cache.** `pipeline-cache.bin` (play log 45). Our patch 0032 skips redundant exit saves.
 - **Prewarm.** At boot, 44,195 shaders and 6,418 pipeline keys are prepared in about 1.4 s warm. The guest starts 4.9 s after process start (play log 48, 66, 69).
@@ -190,6 +213,11 @@ Two lifetime mechanisms keep graphics objects alive just long enough:
   - waits within a 50 ms per-frame budget if it is a full-screen draw.
 
   `NX2NAVI_PIPE_SKIP=any` is our default.
+
+- **Lowering bug class: bit positions.** `AmpereLowering.cs` re-encodes SM86 instructions as Maxwell; a field put at the wrong bit silently changes semantics. I2F carried the signed flag in bit 12 instead of 13, so every signed int-to-float converted as unsigned (Jabu floor/walls; fix 0064, check `tests/i2f_sign_check.py`). Suspect this class for geometry that is right in sign-free cases. A translator fix changes the translator id and re-keys the whole cache (`just try-i2f` uses its own `xlate-i2f/`, `shader-cache-i2f`, `pipeline-cache-i2f.bin`).
+- **Invalid SPIR-V.** Mesa rejects some modules and RADV then dereferences NULL in `radv_shader_spirv_to_nir`. Known case: a layer-count size query (component 2 of `OpImageQuerySizeLod`) on a texture typed 2D by default (`tools/txq-array-fix.py`, patch 0050; guard 0033). Check suspects with `spirv-val`.
+- **Window origin.** The upper-left origin and a y-flipped viewport put NDC +y at row 0 as NVN does, so front-face winding maps unchanged (`vk_pipeline.c` `vk_pipeline_set_dynamic`).
+- **FMZ.** The game's SM86 shaders never set FMZ; the sky-SH NaN was a shadow-sync bug (0004), not 0*inf.
 
 ## 8. Timing
 
@@ -212,6 +240,7 @@ Two lifetime mechanisms keep graphics objects alive just long enough:
 All are in `~/claude/nx2navi/patches/`, as local commits on `build`. Status comes from `~/claude/nx2navi/README.md`.
 
 **Memory / shadow**
+
 - 0001: write back only pages the GPU changed. On.
 - 0004: shadow sync takes the CPU's bytes under the next part's GPU writes (sky-SH fix). On.
 - 0008: page compare outside `shadow_lock`. On.
@@ -220,6 +249,7 @@ All are in `~/claude/nx2navi/patches/`, as local commits on `build`. Status come
 - 0034-mem, 0035-mem: SetHeapSize / MapPhysicalMemory logging. On (logs only).
 
 **Textures**
+
 - 0009: compact freshness arrays. On.
 - 0019: `TEX_RELEASED_MIB`, 3072 in `just play`. On.
 - 0027: tex trace. Debug.
@@ -227,11 +257,13 @@ All are in `~/claude/nx2navi/patches/`, as local commits on `build`. Status come
 - 0030: `TEX_STATE_GEN` / `TEX_CHECK_SKIP`. Off (no gain).
 
 **Sync / replay**
+
 - 0013, 0016: `NX2NAVI_EVENT_WAITS`. Off.
 - 0024: `NX2NAVI_GPU_WAIT`. Default 0 (=1 is suspected of causing the horizon bands).
 - 0036: `NX2NAVI_FINISH_DEFER`. Off (no gain).
 
 **Draw / pipeline**
+
 - 0006: clamp the mesh-stage c0 table. On (fixes the upstream overflow).
 - 0018: RGBX/sRGB/BGRX vertex formats. On.
 - 0012: `NX2NAVI_UNJITTER`. Auto.
@@ -241,30 +273,52 @@ All are in `~/claude/nx2navi/patches/`, as local commits on `build`. Status come
   SPIR-V: a layer-count size query on a texture typed 2D by default (README, patch 0050 and `tools/txq-array-fix.py`).
 
 **Shaders**
+
 - 0002: xlate honours fmz. Private translator build only.
 - 0003: shader hot reload. Debug.
 
 **Crash**
+
 - 0031: Linux crash context. Not swapped.
 
 **Input**
+
 - 0014: Steam Input pad. On.
 - 0034-input: `NX2NAVI_MOTION_PAD`, auto. On.
 - 0051-input: `NX2NAVI_MOTION_SOCK`, auto (yakin socket, only without gamepad sensors). In `nx2navi.motion` only.
 
 **Debug and tooling**
+
 - 0005 (`NX2NAVI_WATCH`), 0007 (shot crop), 0011 (`DUMP_REQ`), 0015 (mark this moment), 0017 (`DUMP_DRAWS`), 0020 (`OQ_FORCE`).
 - 0022 (counters), 0023 (Tracy), 0026 (`NX2NAVI_RDOC`), 0035-nvn (`TRACE=nvn`).
 
 Open problems mapped onto the architecture:
+
 - **#132 performance.** The game thread is the critical path (finish wait plus 17.8 ms unzoned). Then the completion thread's compares and the replay's shadow sync and pool refresh (section 5).
 - **#146 AO flicker.** Replay ordering: the replay ignores `nvnCommandBufferWaitEvent`, so AO reads last frame's half-res depth and trails one frame behind motion (identical while nothing moves). `NX2NAVI_AO_ORDER=1` (0046, `vk_exec.c` "ambient occlusion after its event") runs the occlusion again at the signal op; `NX2NAVI_AO=0` (0045) turns it off; 0013/0016 cut submissions and darken the picture.
 - **#141 crash guard.** Driver faults in RADV `spirv_to_nir` during pipeline builds (0031/0033), plus device losses possibly tied to VRAM pressure.
-- **#149 missing terrain.** Memory: 211 MapPhysicalMemory refusals (0x10801, LimitReached) against the 9809 MiB pool in the same session (play log 561-563). Next test: a larger `NX2NAVI_APP_POOL`.
+- **#149/#169 missing or stretched terrain.** Texture cache stale rule on re-initialised height tiles (section 6, `TEX_STALE_LIVE`). LimitReached map refusals are the game's own evict-and-retry signal and benign; a bigger `APP_POOL` only grows the heap, `NX2NAVI_ALIAS_EXTRA_MIB` gives alias room.
+- **#160 VRAM growth / #173 streaming.** Section 6, texture cache.
+- **#172 seam.** Follow-another-descriptor (`TEX_DESC_STRICT`).
+- **#168 grass.** Grass uses direct mesh draws; indirect mesh records are zero and the readback is right; cause open.
+
+Patches since 0051 (README has each entry): 0052/0065 RT dedicated + trim, 0053-0063 watch/buf/dump/pick tooling, 0064 I2F sign, 0066/0068 gone rule, 0067 mesh draws in dumps, 0069 cfg row, 0070 unresolved reasons, 0071 find/poke.req, 0072 live evict, 0073 upstream 42ae87b port, 0074 STALE_LIVE, 0075/0078 RT recycle, 0076 live RT idle, 0077 VMA block size, 0079 DESC_STRICT.
+
 - **#138 bushes.** Not a renderer problem: the leaf cards are never drawn. The cause is in the lifted game's LOD/cull decision.
 - **#128 intro audio.** Game timing: atk's per-frame update starts voices per present, and `ostep` does not cover that path.
 
-## 11. Glossary
+## 11. Working rules and tooling
+
+- **cfg rule.** Every key read with `cfg_value`/`cfg_bool`/`cfg_int`/`cfg_double` needs a row in the settings table in `runtime/cfg.c`, or the game stops at start with `cfg: X has no row in the settings table` (play6, fixed by 0069). `cfg_get` alone does not need one.
+- **Builds.** Build a variant only from a clean, committed tree (a worktree such as `.lab/wt-<name>` at a named commit): play20 was built over uncommitted edits of other agents, so its contents could not be named afterwards. Record the commit in the README entry.
+- **Current recipes.** `just play` (stock defaults), `just try` (debug requests on), `try-i2f` (fixed translator, own caches), `try-vram` (on `try-i2f` with the VRAM hold set and `STALE_LIVE=1`; current daily recipe), `try-name NAME` (`try-vram` plus the text mod). Exes: `play11` is `try-vram`'s default, `play13` = play11 + DESC_STRICT. Check the justfile, not this list, before telling Cal a command.
+- **Dumps (`runtime/vk_dump.c`).** `NX2NAVI_DUMP_REQ=1`, then touch `dump.req`. It may hold `buf=<spec>|off ubo=<n> draws=0|1 skip_runs=0|1`, kept for later dumps. `draws=1` (per-draw images, `NX2NAVI_DUMP_DRAWS`) lands on a later frame than requested: read the frame number from the folder name. `passes.txt` lists passes, draws with shader hashes, bindings and c-bank addresses; `gpu_owned/written-since` does not count compute image stores. Mesh draws are in dumps since 0067 (`ts/ms/fs`); `mesh.txt` holds each indirect mesh draw's `{count, first}` record read after the fence (frame, pass, draw, address). Picks (`pick.req`, F5) list draws covering the centre pixel. `watch.req`, `buf.req`, `find.req`/`poke.req` need `NX2NAVI_WATCH_REQ=1`. `NX2NAVI_WATCH` is GPU-side; CPU counters need a `/proc/pid/mem` sampler or gdb.
+- **Software runs.** `LAB_SOFT=1 tools/lab-run` renders on lavapipe (mesh shaders, float64, descriptor indexing all present), about 6 fps at render scale 50, no GPU opened, may overlap Cal's play. Not for perf or GPU-specific bugs: subgroup size is 8, not 32.
+- **Replays.** Only standing-still windows measure; recordings drift and late frames are not repeatable. Castle 1500 and graveyard gate repeat within RMSE 0.07 (broken pictures 0.24+). `scenarios/` + `just regress`.
+- **Game data.** MSBT text in 1.1.1 is UTF-8, "Link" is literal (no name tag); text mods via `tools/msgmod.py` / `itemtext.py` and `NX2NAVI_MODS_DIR` (`runtime/mods.c`). Switch 2 BNTX block-linear keeps Switch 1's GOB order but orders the 16-byte units inside a GOB x/32, y/4, x/16, y/2, y; BRTI +0x34 is log2 GOB rows (`tools/modelx.py`).
+- **Upstream tools.** Reach for `NX2navi/tools/` (perf_summary, crit_path, shader_census, ...) before writing new scripts.
+
+## 12. Glossary
 
 - **NVN:** the Switch's native graphics API. The game calls it through a proc table; NX2navi implements it on Vulkan.
 - **SVC:** supervisor call, the ARM64 instruction for a kernel request. Here it is a call to `rt_svc`.

@@ -6,7 +6,9 @@ description: Troubleshoot NX2navi (Zelda OoT Switch 2 recompilation) rendering b
 # NX2navi rendering and shader debugging
 
 Tooling lives in `~/claude/nx2navi` (tools/, patches/, justfile). The full log of the first investigation is
-`NOTES-fog-nan.md`: read it before repeating anything. Game dir: `NX2navi/build/v111` (logs/, shader-cache/, dump-*).
+`NOTES-fog-nan.md`: read it before repeating anything. How the pieces fit: `ARCHITECTURE.md` section 7 (shaders,
+lowering bugs, invalid SPIR-V, window origin), section 6 "Texture cache" (wrong or missing textures), section 11
+(dump options, picks, lavapipe runs). Game dir: `NX2navi/build/v111` (logs/, shader-cache/, dump-*).
 
 ## Method, in order
 
@@ -23,7 +25,9 @@ Tooling lives in `~/claude/nx2navi` (tools/, patches/, justfile). The full log o
 3. **Dumps.** `NX2NAVI_DUMP=<frame>` (counts presents) with `NX2NAVI_DUMP_DIR`, `NX2NAVI_DUMP_UBO=n` (constants) and
    `NX2NAVI_DUMP_BUF=addr:size` (one range). Read `images.txt` for per-image NaN counts and `passes.txt` for
    which pass writes what. Note: NClamp/NMax in shaders turns NaN into 0, so "no NaN in the frame" can still mean a
-   NaN was silently clamped to black. Dump SPIR-V is raw translator output, not the cache file (names are not its sha256);
+   NaN was silently clamped to black. Live: `NX2NAVI_DUMP_REQ=1` + `dump.req` (options `buf= ubo= draws=0|1
+   skip_runs=`; `draws=1` lands on a later frame), `pick.req`/F5 for draws under the centre pixel, mesh draws listed
+   as `ts/ms/fs` since 0067 (`mesh.txt` = indirect mesh records). Dump SPIR-V is raw translator output, not the cache file (names are not its sha256);
    match by size + cmp.
 4. **Narrow the culprit.**
    - `NX2NAVI_SKIP_SHADERS=<hash,...>` drops shaders: which one makes the artefact appear or vanish.
@@ -53,6 +57,19 @@ Tooling lives in `~/claude/nx2navi` (tools/, patches/, justfile). The full log o
 - A write-back storm (pointer-bound SSBO with size 0 noted as "to end of pool") is a separate, fixed bug
   (patches/0001, 0008). Brightening from stale GPU bytes copied over CPU writes is the related hazard.
 
+## Known pitfalls
+
+- **Bit-position lowering bugs.** `AmpereLowering.cs` re-encodes SM86 as Maxwell; I2F had its signed flag in bit 12
+  instead of 13 (all signed int-to-float unsigned; fix 0064, `tests/i2f_sign_check.py`). Geometry blown up only where
+  values are negative points here. A translator fix re-keys the whole cache: use `just try-i2f`'s own caches.
+- **Mesa-rejected SPIR-V** crashes RADV (NULL in `radv_shader_spirv_to_nir`): run `spirv-val`; known case is a
+  layer-count size query on a default-2D texture (`tools/txq-array-fix.py`).
+- **Wrong-size or blank texture is often the texture cache**, not the shader: `slot_resolve` follows another
+  descriptor at the address (#172 seam, `TEX_DESC_STRICT`) or applies the stale/gone rule (#149/#169, `TEX_STALE_LIVE`).
+- **Hot-reload bisects need a fixed camera**; a moved view voids pixel metrics.
+- **lavapipe** (`LAB_SOFT=1`) has subgroup size 8, not 32: no verdict on subgroup-dependent shaders there.
+- `gpu_owned/written-since` in passes.txt ignores compute image stores.
+
 ## Rules
 
 - **Never write the live shader cache outside the reload loop** (backed up, temp + rename, restored after). Use a
@@ -70,3 +87,4 @@ Tooling lives in `~/claude/nx2navi` (tools/, patches/, justfile). The full log o
   followed by `sudo chown $env.USER ~/claude/nx2navi/perf.data`. Test the syntax with `nu -c` first.
 - One step per message to Cal, with the expected outcome stated. Self-verify (logs, dumps, lab) before asking him.
 - No Claude trailers (Co-Authored-By, Claude-Session) on any commit or PR here.
+- Durable findings go into `ARCHITECTURE.md` (the matching section) before you finish, not only into the feed.

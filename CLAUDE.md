@@ -2,7 +2,11 @@
 
 This repo builds and runs NX2navi on Cal's Arch desktop through Nix. NX2navi is a static recompilation of Zelda: Ocarina of Time (Switch 2, version 1.1.1) to x86-64 with Vulkan. The GPU is an RX 6900 XT on RADV, and the desktop is Niri with a 240 Hz BenQ QD-OLED.
 
-Read `README.md` first: build steps, workarounds, private patches. The investigation log is in `NOTES-fog-nan.md`. To debug rendering, load the skill `.claude/skills/nx2navi-shader-debug/SKILL.md`.
+Read `README.md` first: build steps, workarounds, private patches. The investigation log is in `NOTES-fog-nan.md`. To debug rendering, load the skill `.claude/skills/nx2navi-shader-debug/SKILL.md`. How it all works, plus pitfalls and current recipes: `ARCHITECTURE.md`.
+
+Before you finish, add durable findings (facts and where in the code) to the matching section of `ARCHITECTURE.md`, not just the feed; correct it where a finding contradicts it.
+
+Shared lab board `~/claude/nx2navi/.lab/BOARD.md` (scratch, not committed): read it at start and before each build or GPU run; add your line under "Working now" (task, exe/files you change, since) when starting, update it at each milestone, remove it when done. If someone already changes the same file (e.g. `runtime/vk_texture.c`), coordinate there ("after X") instead of editing in parallel. Claim the next patch number on the board before writing it. Note GPU lock holder/waiters under "GPU queue"; add dated one-liners to "Fresh findings" (newest first, trim to ~40).
 
 ## Layout
 
