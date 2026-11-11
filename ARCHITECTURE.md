@@ -63,6 +63,8 @@ There are three ways across the boundary:
 | Frame pacing, game step                             | the game's own controller runs                                                 | `runtime/frame_rate.c`                                                                                        | `ostep` set (section 8) | patch page                                              |
 | `memcpy`                                            | no                                                                             | `nvn_api_core.c:74`                                                                                           | no                      | override                                                |
 
+- **Save states are not possible as built** (DESIGN-savestate.md, 2026-11-11). Every guest `BL` is a host call (`kernel.c:5`), so a thread's guest call chain lives in its 256 MiB host stack (`mmap(NULL, ...)`, ASLR'd, `platform/linux.c:335`) as host return addresses and host pointers. `Cpu` holds only the innermost registers. Guest RAM and GPU state could be restored; the threads cannot be, short of CRIU, and the container has no checkpoint capabilities.
+
 ## 4. Game components used as they are
 
 Identified inside the lifted code:
