@@ -1,0 +1,96 @@
+From a0ebec63552e848de960f3068409fe0e01d99380 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 11:22:55 -0500
+Subject: [PATCH 77/78] vk_device: NX2NAVI_VMA_BLOCK_MIB=n (default 0: VMA's
+ 256 MiB) sets the size of VMA's memory blocks in large heaps, so partly used
+ blocks empty and go back sooner; the VRAM headroom check uses the same size
+ (#160)
+
+---
+ runtime/cfg.c         |  6 +++---
+ runtime/vk.h          |  1 +
+ runtime/vk_device.c   | 11 +++++++++++
+ runtime/vk_headroom.c |  2 +-
+ 4 files changed, 16 insertions(+), 4 deletions(-)
+
+diff --git a/runtime/cfg.c b/runtime/cfg.c
+index 645eadd..97a251c 100644
+--- a/runtime/cfg.c
++++ b/runtime/cfg.c
+@@ -59,7 +59,7 @@ static const char *const known[] = {
+     "SHOTS_FULL", "SPEED_PROBE", "SPIN", "SPIN_HANDOFF_US", "SPLIT_DRAWS", "SPLIT_US", "STICK_DEADZONE", "STICK_SENS",
+     "SWKBD_ANSWER",
+     "SWKBD_TEST", "TAA", "TEST_PAD", "TEST_PAD_AT", "TEST_PREPARE_SHADERS", "TEX_ALIAS", "TEX_MEMO", "TEX_LIVE_EVICT", "TEX_LIVE_RT_IDLE", "TEX_RT_RECYCLE", "TEX_SAME", "TEX_LIVE_GUARD", "TEX_LIVE_IDLE", "TEX_STALE_GONE", "TEX_VRAM_PRESSURE", "TIMER_1MS", "TRACE", "TXD_TRANSPOSE", "UBO_SNAPSHOT", "UNJITTER", "UPSCALER", "VK_DYN_A2C", "VK_DYN_VERTEX", "VK_NOOPT", "VK_NO_FLOAT64",
+-    "VK_PRESENT", "VK_RECORDER", "VK_SSBO_ALIGN", "VK_SUBGROUP", "VK_SUBGROUP_PIN", "VK_VALIDATION", "VOLUME", "VRAM_HEADROOM", "VS_OUTS",
++    "VK_PRESENT", "VK_RECORDER", "VMA_BLOCK_MIB", "VK_SSBO_ALIGN", "VK_SUBGROUP", "VK_SUBGROUP_PIN", "VK_VALIDATION", "VOLUME", "VRAM_HEADROOM", "VS_OUTS",
+     "WALK_KEY", "WALK_SCALE", "WB_EXACT", "WB_FENCE_LIMIT", "WB_MERGE", "WINDOW_SIZE", "XLATE", "XLATE_ID", "XLATE_KEEP", "XLATE_PROCS",
+     "ZSTD_CHECK", "ZSTD_NATIVE",
+ };
+@@ -97,7 +97,7 @@ static const struct { const char *key, *section; } sections[] = {
+     {"TIMER_1MS", "performance"}, {"PIPE_WAIT", "performance"}, {"PIPE_SKIP", "performance"},
+     {"LIB_PREBUILD", "performance"}, {"LIB_PREBUILD_THREADS", "performance"}, {"PIPE_PREBUILD", "performance"},
+     {"PREWARM_XLATE", "performance"}, {"GPL", "performance"}, {"ASTC", "performance"}, {"MEMORY", "performance"},
+-    {"TEX_ALIAS", "performance"}, {"TEX_VRAM_PRESSURE", "performance"}, {"TEX_STALE_GONE", "performance"}, {"TEX_STALE_LIVE", "performance"}, {"TEX_LIVE_EVICT", "performance"}, {"TEX_LIVE_RT_IDLE", "performance"}, {"TEX_RT_RECYCLE", "performance"}, {"TEX_LIVE_IDLE", "performance"}, {"TEX_LIVE_GUARD", "performance"}, {"ASTC_BC", "performance"}, {"LOD_GUARD", "performance"}, {"FIX_C0", "performance"}, {"FIX_ZERO", "performance"},
++    {"TEX_ALIAS", "performance"}, {"TEX_VRAM_PRESSURE", "performance"}, {"TEX_STALE_GONE", "performance"}, {"TEX_STALE_LIVE", "performance"}, {"TEX_LIVE_EVICT", "performance"}, {"TEX_LIVE_RT_IDLE", "performance"}, {"VMA_BLOCK_MIB", "performance"}, {"TEX_RT_RECYCLE", "performance"}, {"TEX_LIVE_IDLE", "performance"}, {"TEX_LIVE_GUARD", "performance"}, {"ASTC_BC", "performance"}, {"LOD_GUARD", "performance"}, {"FIX_C0", "performance"}, {"FIX_ZERO", "performance"},
+     {"BIND_SKIP", "performance"}, {"SHADER_MEMO", "performance"}, {"PIPE_MEMO", "performance"}, {"TEX_MEMO", "performance"}, {"TEX_SAME", "performance"}, {"DESC_TEMPLATE", "performance"},
+     {"PUSH_SKIP", "performance"}, {"SPLIT_DRAWS", "performance"}, {"SPLIT_US", "performance"}, {"VK_VALIDATION", "performance"},
+     {"VK_DYN_VERTEX", "performance"}, {"VK_DYN_A2C", "performance"}, {"VK_SUBGROUP_PIN", "performance"},
+@@ -173,7 +173,7 @@ static const CfgMeta metas[] = {
+     {"PIPE_PREBUILD", "1", "0|1", RESTART}, {"PREWARM_XLATE", "", "1..64", RESTART}, {"GPL", "1", "0|1", RESTART},
+     // textures and memory
+     {"ASTC", "auto", "auto|gpu|native|cpu", RESTART}, {"MEMORY", "auto", "auto|import|mirror|verify", RESTART},
+-    {"TEX_ALIAS", "1", "0|1", RESTART}, {"TEX_VRAM_PRESSURE", "90", "0..100", RESTART}, {"TEX_STALE_GONE", "0", "0|1", RESTART}, {"TEX_STALE_LIVE", "0", "0|1", RESTART}, {"TEX_LIVE_EVICT", "85", "0..100", RESTART}, {"TEX_LIVE_RT_IDLE", "0", "0..1000000", RESTART}, {"TEX_RT_RECYCLE", "0", "0|1", RESTART}, {"TEX_LIVE_IDLE", "3600", "1..1000000", RESTART}, {"TEX_LIVE_GUARD", "240", "0..1000000", RESTART}, {"ASTC_BC", "", "0|1", RESTART}, {"ZSTD_NATIVE", "1", "0|1", RESTART}, {"ZSTD_CHECK", "0", "0|1", RESTART},
++    {"TEX_ALIAS", "1", "0|1", RESTART}, {"TEX_VRAM_PRESSURE", "90", "0..100", RESTART}, {"TEX_STALE_GONE", "0", "0|1", RESTART}, {"TEX_STALE_LIVE", "0", "0|1", RESTART}, {"TEX_LIVE_EVICT", "85", "0..100", RESTART}, {"TEX_LIVE_RT_IDLE", "0", "0..1000000", RESTART}, {"VMA_BLOCK_MIB", "0", "0..1024", RESTART}, {"TEX_RT_RECYCLE", "0", "0|1", RESTART}, {"TEX_LIVE_IDLE", "3600", "1..1000000", RESTART}, {"TEX_LIVE_GUARD", "240", "0..1000000", RESTART}, {"ASTC_BC", "", "0|1", RESTART}, {"ZSTD_NATIVE", "1", "0|1", RESTART}, {"ZSTD_CHECK", "0", "0|1", RESTART},
+     // render fixes
+     {"LOD_GUARD", "1", "0|1", RESTART}, {"FIX_C0", "1", "0|1", RESTART}, {"FIX_ZERO", "1", "0|1", RESTART},
+     {"BIND_SKIP", "1", "0|1", RESTART}, {"SHADER_MEMO", "1", "0|1", RESTART}, {"PIPE_MEMO", "1", "0|1", RESTART}, {"TEX_MEMO", "1", "0|1", RESTART}, {"TEX_SAME", "1", "0|1", RESTART},
+diff --git a/runtime/vk.h b/runtime/vk.h
+index e4b15bc..ff01164 100644
+--- a/runtime/vk.h
++++ b/runtime/vk.h
+@@ -45,6 +45,7 @@ typedef struct VkCtx {
+     // VK_FEEDBACK_RESTART (the pass ends and restarts behind the full barrier).
+     int feedback;                           // VK_FEEDBACK_*
+     uint32_t min_imported_host_alignment;   // VK_EXT_external_memory_host
++    VkDeviceSize vma_block;                 // NX2NAVI_VMA_BLOCK_MIB in bytes, 0: VMA's default (256 MiB)
+     int device_index;                       // index in vkEnumeratePhysicalDevices
+ } VkCtx;
+ enum { VK_FEEDBACK_OFF, VK_FEEDBACK_RESTART, VK_FEEDBACK_LAYOUT };
+diff --git a/runtime/vk_device.c b/runtime/vk_device.c
+index 50348bf..e9f26b7 100644
+--- a/runtime/vk_device.c
++++ b/runtime/vk_device.c
+@@ -412,6 +412,17 @@ static int create_device(void) {
+                                  .flags = (g_vk.has_buffer_device_address ? VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT : 0) |
+                                           (g_vk.has_memory_budget ? VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT : 0),
+                                  .pDeviceMemoryCallbacks = vk_headroom_callbacks()};
++    // NX2NAVI_VMA_BLOCK_MIB (default 0: VMA's 256 MiB): the size of VMA's memory blocks in large heaps. A block goes back
++    // to the driver only once every allocation in it is gone, and texture churn leaves many blocks partly used: lab
++    // replays (#160) after 45k frames hold 13.4-14.0 GiB of blocks for 9.0-9.5 GiB of allocations. Smaller blocks empty
++    // sooner, at the cost of more vkAllocateMemory calls.
++    const char *vb = cfg_get("NX2NAVI_VMA_BLOCK_MIB");
++    int vbm = vb && *vb ? atoi(vb) : 0;
++    if (vbm > 0 && vbm <= 1024) {
++        g_vk.vma_block = (VkDeviceSize)vbm << 20;
++        ai.preferredLargeHeapBlockSize = g_vk.vma_block;
++        rt_log("vk: VMA blocks of %d MiB in large heaps (NX2NAVI_VMA_BLOCK_MIB)", vbm);
++    }
+     if ((r = vmaCreateAllocator(&ai, &g_vk.vma)) != VK_SUCCESS) { rt_log("vk: vmaCreateAllocator failed (%d)", (int)r); return 0; }
+ 
+     VkSemaphoreTypeCreateInfo st = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
+diff --git a/runtime/vk_headroom.c b/runtime/vk_headroom.c
+index 7809c64..3a6e1e0 100644
+--- a/runtime/vk_headroom.c
++++ b/runtime/vk_headroom.c
+@@ -55,7 +55,7 @@ const VmaDeviceMemoryCallbacks *vk_headroom_callbacks(void) {
+ 
+ static VkDeviceSize block_size(const VkCtx *c, uint32_t type) {
+     VkDeviceSize heap = c->mem_props.memoryHeaps[c->mem_props.memoryTypes[type].heapIndex].size;
+-    return heap <= HR_SMALL_HEAP ? heap / 8 : 256ull << 20;   // VMA's default preferredLargeHeapBlockSize
++    return heap <= HR_SMALL_HEAP ? heap / 8 : c->vma_block ? c->vma_block : 256ull << 20;   // VMA's preferredLargeHeapBlockSize
+ }
+ 
+ static int room(const VkCtx *c, uint32_t type, VkDeviceSize block) {
+-- 
+2.56.0
+

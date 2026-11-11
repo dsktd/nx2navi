@@ -1,0 +1,135 @@
+From 531b5d3a8814ae20a0c420703478f9e11749a519 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 11:00:12 -0500
+Subject: [PATCH 76/78] vk_texture: with NX2NAVI_TEX_LIVE_RT_IDLE=n (default 0:
+ off) live render targets unbound for n submits are dropped above
+ NX2NAVI_TEX_LIVE_EVICT too; dropped keys made again are counted in a new mem
+ line (#160)
+
+---
+ runtime/cfg.c        |  6 +++---
+ runtime/vk_texture.c | 34 +++++++++++++++++++++++++++++++---
+ 2 files changed, 34 insertions(+), 6 deletions(-)
+
+diff --git a/runtime/cfg.c b/runtime/cfg.c
+index 49d0cf5..645eadd 100644
+--- a/runtime/cfg.c
++++ b/runtime/cfg.c
+@@ -58,7 +58,7 @@ static const char *const known[] = {
+     "SHADER_MEMO", "SHADER_RELOAD", "SHADOW_COMPARE", "SHADOW_RANGE", "SHADOW_RES", "SHADOW_SCALE", "SHARED_FONTS", "SHARPNESS", "SHOTS", "SHOTS_DIR",
+     "SHOTS_FULL", "SPEED_PROBE", "SPIN", "SPIN_HANDOFF_US", "SPLIT_DRAWS", "SPLIT_US", "STICK_DEADZONE", "STICK_SENS",
+     "SWKBD_ANSWER",
+-    "SWKBD_TEST", "TAA", "TEST_PAD", "TEST_PAD_AT", "TEST_PREPARE_SHADERS", "TEX_ALIAS", "TEX_MEMO", "TEX_LIVE_EVICT", "TEX_RT_RECYCLE", "TEX_SAME", "TEX_LIVE_GUARD", "TEX_LIVE_IDLE", "TEX_STALE_GONE", "TEX_VRAM_PRESSURE", "TIMER_1MS", "TRACE", "TXD_TRANSPOSE", "UBO_SNAPSHOT", "UNJITTER", "UPSCALER", "VK_DYN_A2C", "VK_DYN_VERTEX", "VK_NOOPT", "VK_NO_FLOAT64",
++    "SWKBD_TEST", "TAA", "TEST_PAD", "TEST_PAD_AT", "TEST_PREPARE_SHADERS", "TEX_ALIAS", "TEX_MEMO", "TEX_LIVE_EVICT", "TEX_LIVE_RT_IDLE", "TEX_RT_RECYCLE", "TEX_SAME", "TEX_LIVE_GUARD", "TEX_LIVE_IDLE", "TEX_STALE_GONE", "TEX_VRAM_PRESSURE", "TIMER_1MS", "TRACE", "TXD_TRANSPOSE", "UBO_SNAPSHOT", "UNJITTER", "UPSCALER", "VK_DYN_A2C", "VK_DYN_VERTEX", "VK_NOOPT", "VK_NO_FLOAT64",
+     "VK_PRESENT", "VK_RECORDER", "VK_SSBO_ALIGN", "VK_SUBGROUP", "VK_SUBGROUP_PIN", "VK_VALIDATION", "VOLUME", "VRAM_HEADROOM", "VS_OUTS",
+     "WALK_KEY", "WALK_SCALE", "WB_EXACT", "WB_FENCE_LIMIT", "WB_MERGE", "WINDOW_SIZE", "XLATE", "XLATE_ID", "XLATE_KEEP", "XLATE_PROCS",
+     "ZSTD_CHECK", "ZSTD_NATIVE",
+@@ -97,7 +97,7 @@ static const struct { const char *key, *section; } sections[] = {
+     {"TIMER_1MS", "performance"}, {"PIPE_WAIT", "performance"}, {"PIPE_SKIP", "performance"},
+     {"LIB_PREBUILD", "performance"}, {"LIB_PREBUILD_THREADS", "performance"}, {"PIPE_PREBUILD", "performance"},
+     {"PREWARM_XLATE", "performance"}, {"GPL", "performance"}, {"ASTC", "performance"}, {"MEMORY", "performance"},
+-    {"TEX_ALIAS", "performance"}, {"TEX_VRAM_PRESSURE", "performance"}, {"TEX_STALE_GONE", "performance"}, {"TEX_STALE_LIVE", "performance"}, {"TEX_LIVE_EVICT", "performance"}, {"TEX_RT_RECYCLE", "performance"}, {"TEX_LIVE_IDLE", "performance"}, {"TEX_LIVE_GUARD", "performance"}, {"ASTC_BC", "performance"}, {"LOD_GUARD", "performance"}, {"FIX_C0", "performance"}, {"FIX_ZERO", "performance"},
++    {"TEX_ALIAS", "performance"}, {"TEX_VRAM_PRESSURE", "performance"}, {"TEX_STALE_GONE", "performance"}, {"TEX_STALE_LIVE", "performance"}, {"TEX_LIVE_EVICT", "performance"}, {"TEX_LIVE_RT_IDLE", "performance"}, {"TEX_RT_RECYCLE", "performance"}, {"TEX_LIVE_IDLE", "performance"}, {"TEX_LIVE_GUARD", "performance"}, {"ASTC_BC", "performance"}, {"LOD_GUARD", "performance"}, {"FIX_C0", "performance"}, {"FIX_ZERO", "performance"},
+     {"BIND_SKIP", "performance"}, {"SHADER_MEMO", "performance"}, {"PIPE_MEMO", "performance"}, {"TEX_MEMO", "performance"}, {"TEX_SAME", "performance"}, {"DESC_TEMPLATE", "performance"},
+     {"PUSH_SKIP", "performance"}, {"SPLIT_DRAWS", "performance"}, {"SPLIT_US", "performance"}, {"VK_VALIDATION", "performance"},
+     {"VK_DYN_VERTEX", "performance"}, {"VK_DYN_A2C", "performance"}, {"VK_SUBGROUP_PIN", "performance"},
+@@ -173,7 +173,7 @@ static const CfgMeta metas[] = {
+     {"PIPE_PREBUILD", "1", "0|1", RESTART}, {"PREWARM_XLATE", "", "1..64", RESTART}, {"GPL", "1", "0|1", RESTART},
+     // textures and memory
+     {"ASTC", "auto", "auto|gpu|native|cpu", RESTART}, {"MEMORY", "auto", "auto|import|mirror|verify", RESTART},
+-    {"TEX_ALIAS", "1", "0|1", RESTART}, {"TEX_VRAM_PRESSURE", "90", "0..100", RESTART}, {"TEX_STALE_GONE", "0", "0|1", RESTART}, {"TEX_STALE_LIVE", "0", "0|1", RESTART}, {"TEX_LIVE_EVICT", "85", "0..100", RESTART}, {"TEX_RT_RECYCLE", "0", "0|1", RESTART}, {"TEX_LIVE_IDLE", "3600", "1..1000000", RESTART}, {"TEX_LIVE_GUARD", "240", "0..1000000", RESTART}, {"ASTC_BC", "", "0|1", RESTART}, {"ZSTD_NATIVE", "1", "0|1", RESTART}, {"ZSTD_CHECK", "0", "0|1", RESTART},
++    {"TEX_ALIAS", "1", "0|1", RESTART}, {"TEX_VRAM_PRESSURE", "90", "0..100", RESTART}, {"TEX_STALE_GONE", "0", "0|1", RESTART}, {"TEX_STALE_LIVE", "0", "0|1", RESTART}, {"TEX_LIVE_EVICT", "85", "0..100", RESTART}, {"TEX_LIVE_RT_IDLE", "0", "0..1000000", RESTART}, {"TEX_RT_RECYCLE", "0", "0|1", RESTART}, {"TEX_LIVE_IDLE", "3600", "1..1000000", RESTART}, {"TEX_LIVE_GUARD", "240", "0..1000000", RESTART}, {"ASTC_BC", "", "0|1", RESTART}, {"ZSTD_NATIVE", "1", "0|1", RESTART}, {"ZSTD_CHECK", "0", "0|1", RESTART},
+     // render fixes
+     {"LOD_GUARD", "1", "0|1", RESTART}, {"FIX_C0", "1", "0|1", RESTART}, {"FIX_ZERO", "1", "0|1", RESTART},
+     {"BIND_SKIP", "1", "0|1", RESTART}, {"SHADER_MEMO", "1", "0|1", RESTART}, {"PIPE_MEMO", "1", "0|1", RESTART}, {"TEX_MEMO", "1", "0|1", RESTART}, {"TEX_SAME", "1", "0|1", RESTART},
+diff --git a/runtime/vk_texture.c b/runtime/vk_texture.c
+index e3d2594..64653d4 100644
+--- a/runtime/vk_texture.c
++++ b/runtime/vk_texture.c
+@@ -1142,6 +1142,14 @@ static void sweep_rt_trim(uint64_t used, uint64_t budget) {   // tex_lock held;
+ // recently is counted as a detection; the idle rule makes it 0 unless the use bookkeeping misses bindings.
+ static int live_evict = -1, live_idle, live_guard;
+ static uint64_t le_n, le_bytes, le_guard_n, le_tot_n, le_tot_bytes;
++// NX2NAVI_TEX_LIVE_RT_IDLE (submits, default 0 = off): above NX2NAVI_TEX_LIVE_EVICT, live render targets (GPU-written,
++// so their content cannot come back from storage) that nothing bound or sampled for that many submits go too. Lab
++// replays (#160) show the card's growth after 30k frames is live render targets of a few descriptors (1260x0, 970x0,
++// 1220x0: 0.3 to 1.1 GiB) the game never releases, while sampled textures stay flat. A dropped key made again later is
++// counted (rt_dropped) as a detection: such a use may show a hole for the frame that remakes it.
++static int live_rt_idle = -1;
++static uint64_t lr_n, lr_bytes, lr_tot_n, lr_tot_bytes, lr_back_n;
++static nvn_hmap rt_dropped = {.klen = sizeof(TexKey)};
+ 
+ static uint32_t tex_used_at(const Tex *e) { return e->checked > e->last_use ? e->checked : e->last_use; }
+ 
+@@ -1151,9 +1159,11 @@ static void sweep_live(uint64_t used, uint64_t budget) {   // tex_lock held
+     int np = 0;
+     for (uint32_t i = 0; i < by_key.cap; i++) {   // the PRESSURE_STEP longest-unused candidates
+         Tex *e = by_key.vals[i];
+-        if (!e || e->released || !e->pub.mirrored || e->pub.gpu_owned || e->gpu_dirty || e->listed || e->share) continue;
++        if (!e || e->released || e->listed || e->share) continue;
++        int rt = e->pub.gpu_owned || e->gpu_dirty;
++        if (rt ? !live_rt_idle || !e->alloc : !e->pub.mirrored) continue;
+         uint32_t u = tex_used_at(e);
+-        if (submit_epoch - u < (uint32_t)live_idle) continue;
++        if (submit_epoch - u < (uint32_t)(rt ? live_rt_idle : live_idle)) continue;
+         if (np < PRESSURE_STEP) { pick[np++] = e; continue; }
+         int w = 0;
+         for (int k = 1; k < np; k++) if (tex_used_at(pick[k]) > tex_used_at(pick[w])) w = k;
+@@ -1162,7 +1172,10 @@ static void sweep_live(uint64_t used, uint64_t budget) {   // tex_lock held
+     dcause = DC_YIELD;
+     for (int k = 0; k < np; k++) {
+         if (submit_epoch - tex_used_at(pick[k]) < (uint32_t)live_guard) le_guard_n++;
+-        le_n++, le_bytes += own_bytes(pick[k]);
++        if (pick[k]->pub.gpu_owned || pick[k]->gpu_dirty) {
++            lr_n++, lr_bytes += own_bytes(pick[k]);
++            nvn_hm_put(&rt_dropped, &pick[k]->key, (void *)1);
++        } else le_n++, le_bytes += own_bytes(pick[k]);
+         destroy_tex(pick[k]);
+     }
+     dcause = DC_NEW;
+@@ -1201,6 +1214,12 @@ static void sweep_pressure(void) {   // tex_lock held
+         if (live_guard < 0) live_guard = 0;
+         rt_log("vk: live textures unbound for %d submits %s%d%% of the VRAM budget (NX2NAVI_TEX_LIVE_EVICT, _IDLE, _GUARD %d)",
+                live_idle, live_evict ? "dropped above " : "kept: off, ", live_evict, live_guard);
++        const char *r = cfg_get("NX2NAVI_TEX_LIVE_RT_IDLE");
++        live_rt_idle = r && *r ? atoi(r) : 0;
++        if (live_rt_idle < 0) live_rt_idle = 0;
++        if (live_rt_idle)
++            rt_log("vk: live render targets unbound for %d submits dropped above %d%% too (NX2NAVI_TEX_LIVE_RT_IDLE)",
++                   live_rt_idle, live_evict);
+     }
+     if ((!rel_head && !trim_ep_n && !trim_pend_freed && !live_evict) || submit_epoch & 7) return;   // the budget query every 8 submits
+     uint64_t used, budget;
+@@ -1868,6 +1887,7 @@ static Tex *entry_of(const tex_t *t) {
+         tex_gen_bump(e, ST_ADD);
+         if (gone_slot) e->from_gone = 1, n_gone_made++;
+         else nvn_hm_del(&gone, &k);   // made by a live use: the key is current again
++        if (rt_dropped.n && nvn_hm_get(&rt_dropped, &k)) nvn_hm_del(&rt_dropped, &k), lr_back_n++;
+     }
+     if (e->released) e->released = 0, e->took_back = 1, nreleased--, rel_unlink(e), n_site[2]++, tb_n++, tex_gen_bump(e, ST_FLIP);
+     e->t = *t;
+@@ -3082,6 +3102,9 @@ void vk_texture_format_log(uint64_t frame) {
+     le_tot_n += le_n, le_tot_bytes += le_bytes;
+     uint64_t len = le_n, lenb = le_bytes, letn = le_tot_n, letb = le_tot_bytes, leg = le_guard_n;
+     le_n = le_bytes = 0;
++    lr_tot_n += lr_n, lr_tot_bytes += lr_bytes;
++    uint64_t lrn = lr_n, lrb = lr_bytes, lrtn = lr_tot_n, lrtb = lr_tot_bytes, lrback = lr_back_n;
++    lr_n = lr_bytes = 0;
+     uint64_t rcn = rc_n, rcb = rc_bytes;
+     unlock();
+     // Why live textures stay (#160): live entries made again from a stale slot after their key went, the keys known
+@@ -3099,6 +3122,11 @@ void vk_texture_format_log(uint64_t frame) {
+            "%.0f MiB since the last line, %llu %.0f MiB since start; of them used within NX2NAVI_TEX_LIVE_GUARD submits %llu",
+            (unsigned long long)frame, (unsigned long long)len, lenb / 1048576.0, (unsigned long long)letn,
+            letb / 1048576.0, (unsigned long long)leg);
++    if (live_rt_idle > 0)
++        rt_log("mem: textures frame %llu: live render targets dropped unbound (NX2NAVI_TEX_LIVE_RT_IDLE) %llu %.0f MiB since "
++               "the last line, %llu %.0f MiB since start; dropped keys made again %llu",
++               (unsigned long long)frame, (unsigned long long)lrn, lrb / 1048576.0, (unsigned long long)lrtn,
++               lrtb / 1048576.0, (unsigned long long)lrback);
+     rt_log("mem: textures frame %llu: gone keys with a live entry at the address (not blanked) %llu; slots resolved to "
+            "nothing: stale rule %llu, gone rule %llu, create held %llu, create failed %llu; stale slots over a live texture "
+            "of their descriptor %llu (%s)",
+-- 
+2.56.0
+

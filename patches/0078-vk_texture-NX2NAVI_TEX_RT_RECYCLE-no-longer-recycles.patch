@@ -1,0 +1,65 @@
+From 582ed071d6f76fbc56e55102d1b2d18b9fd81a46 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 11:59:52 -0500
+Subject: [PATCH 78/78] vk_texture: NX2NAVI_TEX_RT_RECYCLE no longer recycles a
+ released render target that was taken back before, or whose key was made
+ again after an earlier recycle (its content lost: environment lighting
+ flickered in a play11 session); such remakes are counted in a mem line (#160)
+
+---
+ runtime/vk_texture.c | 16 ++++++++++++++--
+ 1 file changed, 14 insertions(+), 2 deletions(-)
+
+diff --git a/runtime/vk_texture.c b/runtime/vk_texture.c
+index 64653d4..0f6832c 100644
+--- a/runtime/vk_texture.c
++++ b/runtime/vk_texture.c
+@@ -655,9 +655,14 @@ static int shadow_scale_of(const nvn_texdesc *d, const TexVkFormat *f, uint32_t
+ // session destroyed 39 GiB of released entries by the count sweep and created as much again (#160). The image starts
+ // over from UNDEFINED in init_image, as a new one would; its views and replay caches go with vk_exec_image_gone. The age
+ // keeps entries the game may still take back, and the frames in flight that read the image long done.
++// A recycled entry is destroyed, so a game that takes the released texture back (light probes and other render targets
++// kept across finalize and initialize, which a play11 session showed as environment lighting flickering with camera
++// angle and time of day) gets a new image cleared to zero instead of its content. Such keys are counted when made
++// again (rc_back_n) and never recycled after (rc_keep); an entry already taken back once is not recycled either.
+ #define RECYCLE_AGE 16
+ static int rt_recycle_on = -1;
+-static uint64_t rc_n, rc_bytes;
++static uint64_t rc_n, rc_bytes, rc_back_n;
++static nvn_hmap rc_keys = {.klen = sizeof(TexKey)}, rc_keep = {.klen = sizeof(TexKey)};
+ static int dedicated_own(const Tex *e);
+ static void destroy_tex(Tex *e);
+ static int trim_age = -1;   // NX2NAVI_TEX_RT_TRIM_AGE (sweep_rt_trim)
+@@ -676,7 +681,9 @@ static VkImage rt_recycle(const VkImageCreateInfo *ci, int target, Tex *e) {   /
+             p->height != ci->extent.height || p->depth != ci->extent.depth || p->levels != ci->mipLevels ||
+             p->layers != ci->arrayLayers || p->samples != (uint32_t)ci->samples || (int)r->key.d.target != target)
+             continue;
+-        if (submit_epoch - r->last_use < age || !dedicated_own(r)) continue;
++        if (submit_epoch - r->last_use < age || !dedicated_own(r) || r->took_back) continue;
++        if (rc_keep.n && nvn_hm_get(&rc_keep, &r->key)) continue;
++        nvn_hm_put(&rc_keys, &r->key, (void *)1);
+         VkImage img = p->image;
+         e->alloc = r->alloc;
+         vk_exec_image_gone(img);
+@@ -1888,6 +1895,8 @@ static Tex *entry_of(const tex_t *t) {
+         if (gone_slot) e->from_gone = 1, n_gone_made++;
+         else nvn_hm_del(&gone, &k);   // made by a live use: the key is current again
+         if (rt_dropped.n && nvn_hm_get(&rt_dropped, &k)) nvn_hm_del(&rt_dropped, &k), lr_back_n++;
++        if (rc_keys.n && nvn_hm_get(&rc_keys, &k))   // a recycled render target wanted back: its content is lost
++            nvn_hm_del(&rc_keys, &k), nvn_hm_put(&rc_keep, &k, (void *)1), rc_back_n++;
+     }
+     if (e->released) e->released = 0, e->took_back = 1, nreleased--, rel_unlink(e), n_site[2]++, tb_n++, tex_gen_bump(e, ST_FLIP);
+     e->t = *t;
+@@ -3122,6 +3131,9 @@ void vk_texture_format_log(uint64_t frame) {
+            "%.0f MiB since the last line, %llu %.0f MiB since start; of them used within NX2NAVI_TEX_LIVE_GUARD submits %llu",
+            (unsigned long long)frame, (unsigned long long)len, lenb / 1048576.0, (unsigned long long)letn,
+            letb / 1048576.0, (unsigned long long)leg);
++    if (rt_recycle_on > 0)
++        rt_log("mem: textures frame %llu: recycled render targets made again (content lost, never recycled again) %llu",
++               (unsigned long long)frame, (unsigned long long)rc_back_n);
+     if (live_rt_idle > 0)
+         rt_log("mem: textures frame %llu: live render targets dropped unbound (NX2NAVI_TEX_LIVE_RT_IDLE) %llu %.0f MiB since "
+                "the last line, %llu %.0f MiB since start; dropped keys made again %llu",
+-- 
+2.56.0
+
