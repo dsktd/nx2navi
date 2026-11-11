@@ -1,0 +1,186 @@
+From c5bbb2a314359c5c96cd5f8c449c48b10236cee5 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 20:07:14 -0500
+Subject: [PATCH] vk_texture: the render-target trim converges: each trim is
+ judged once its frees are done and held off (NX2NAVI_TEX_RT_TRIM_COOLDOWN, 2
+ s doubling to 64 s) when the driver's use did not fall by a quarter of it;
+ entries used in the last NX2NAVI_TEX_RT_TRIM_AGE submits are kept; at most
+ NX2NAVI_TEX_RT_TRIM_PER_MIN trims a minute; tests/rt_trim_check.c checks the
+ backoff (#160)
+
+---
+ runtime/rt_trim_backoff.h | 26 ++++++++++++++++++++
+ runtime/vk_texture.c      | 51 ++++++++++++++++++++++++++++++++++-----
+ tests/rt_trim_check.c     | 30 +++++++++++++++++++++++
+ 3 files changed, 101 insertions(+), 6 deletions(-)
+ create mode 100644 runtime/rt_trim_backoff.h
+ create mode 100644 tests/rt_trim_check.c
+
+diff --git a/runtime/rt_trim_backoff.h b/runtime/rt_trim_backoff.h
+new file mode 100644
+index 0000000..c6a3e36
+--- /dev/null
++++ b/runtime/rt_trim_backoff.h
+@@ -0,0 +1,26 @@
++// The render-target trim's backoff (vk_texture.c, NX2NAVI_TEX_RT_TRIM, #160): a trim counts only if the driver's use
++// fell by at least a quarter of what it dropped once the frees were done. The game takes released render targets back
++// within frames, so a trim it undoes at once (a play log: 64 trimmed every few frames, 6.6 GiB in 15 s, the heap at
++// 13.4-13.6 GiB throughout) only churns. A trim that did not count doubles the hold, from base up to max; one that did
++// clears it. Pure, so tests/rt_trim_check.c checks it on the host.
++#ifndef RT_TRIM_BACKOFF_H
++#define RT_TRIM_BACKOFF_H
++#include <stdint.h>
++
++static inline int rt_trim_worked(uint64_t before, uint64_t after, uint64_t freed) {
++    return after < before && before - after >= freed / 4;
++}
++
++static inline uint64_t rt_trim_next_hold(uint64_t hold, int worked, uint64_t base, uint64_t max) {
++    if (worked || !base) return 0;
++    hold = hold ? hold * 2 : base;
++    return hold > max ? max : hold;
++}
++
++// Trims allowed per minute window: 1 if the window is new or under cap, 0 otherwise (cap 0 = no cap).
++static inline int rt_trim_rate_ok(uint64_t now, uint64_t *win_start, uint32_t *n, uint32_t cap) {
++    if (!cap) return 1;
++    if (now - *win_start >= 60000000000ull) *win_start = now, *n = 0;
++    return *n < cap;
++}
++#endif
+diff --git a/runtime/vk_texture.c b/runtime/vk_texture.c
+index 2a63743..5035ddb 100644
+--- a/runtime/vk_texture.c
++++ b/runtime/vk_texture.c
+@@ -27,6 +27,7 @@
+ #include "vk_dlaa.h"
+ #include "vk_exec.h"
+ #include "platform/platform.h"
++#include "rt_trim_backoff.h"
+ 
+ typedef struct {
+     uint64_t addr;
+@@ -977,8 +978,17 @@ static uint64_t n_pressure_drops;
+ // only dedicated memory is dropped, so every byte freed leaves the driver's count (the yield subtracted the 2.8-4 GiB
+ // of slack and never fired while the card was full, #160). The drops of one query still count against the next one,
+ // as the images go only once the GPU is done with them. Each run of queries that dropped something logs one line.
+-static int rt_trim = -1;
+-static uint64_t trim_last, trim_ep_n, trim_ep_bytes, trim_tot_n, trim_tot_bytes;
++// Each trim is then judged (rt_trim_backoff.h): TRIM_SETTLE submits later, when its frees are done, the driver's use
++// must have fallen by a quarter of what it dropped, or the game took the render targets back and the trim is held off
++// for NX2NAVI_TEX_RT_TRIM_COOLDOWN seconds (default 2; 0 = no hold), doubled per trim that did not count, up to 64 s.
++// Entries looked up less than NX2NAVI_TEX_RT_TRIM_AGE submits ago (default 240; 0 = any) are kept: the game takes them
++// back next frame. NX2NAVI_TEX_RT_TRIM_PER_MIN (default 6; 0 = no cap) caps the trims per minute.
++#define TRIM_SETTLE 32
++static int rt_trim = -1, trim_age = -1, trim_per_min = -1;
++static uint64_t trim_ep_n, trim_ep_bytes, trim_tot_n, trim_tot_bytes;
++static uint64_t trim_cool_base, trim_hold, trim_until, trim_win;
++static uint64_t trim_pend_before, trim_pend_freed, trim_pend_n;
++static uint32_t trim_pend_epoch, trim_win_n;
+ 
+ static int dedicated_own(const Tex *e) {
+     if (!e->alloc || (e->share && e->share->refs > 1)) return 0;
+@@ -996,23 +1006,52 @@ static void trim_log(uint64_t used, uint64_t budget) {
+ }
+ 
+ static void sweep_rt_trim(uint64_t used, uint64_t budget) {   // tex_lock held; used/budget from vk_mem_vram (exact)
+-    used -= trim_last < used ? trim_last : used;
+-    trim_last = 0;
++    if (trim_age < 0) {
++        const char *a = cfg_get("NX2NAVI_TEX_RT_TRIM_AGE"), *c = cfg_get("NX2NAVI_TEX_RT_TRIM_COOLDOWN"),
++                   *m = cfg_get("NX2NAVI_TEX_RT_TRIM_PER_MIN");
++        trim_age = a && *a ? atoi(a) : 240;
++        trim_cool_base = (uint64_t)(c && *c ? atoi(c) : 2) * 1000000000ull;
++        trim_per_min = m && *m ? atoi(m) : 6;
++        if (trim_age < 0) trim_age = 0;
++        if (trim_per_min < 0) trim_per_min = 0;
++        rt_log("vk: render-target trim: entries idle %d submits, hold %llu s doubling to 64 s when a trim is taken back, "
++               "%d a minute (NX2NAVI_TEX_RT_TRIM_AGE, _COOLDOWN, _PER_MIN)", trim_age,
++               (unsigned long long)(trim_cool_base / 1000000000ull), trim_per_min);
++    }
++    uint64_t now = plat_now_ns();
++    if (trim_pend_freed) {   // judge the last trim once its frees are done; no trim before that
++        if (submit_epoch - trim_pend_epoch < TRIM_SETTLE) return;
++        int ok = rt_trim_worked(trim_pend_before, used, trim_pend_freed);
++        uint64_t prev = trim_hold;
++        trim_hold = rt_trim_next_hold(trim_hold, ok, trim_cool_base, 64000000000ull);
++        if (trim_hold) trim_until = now + trim_hold;
++        if (trim_hold && trim_hold != prev)
++            rt_log("vk: render-target trim of %llu (%.0f MiB) gave back %.0f MiB (%.0f -> %.0f MiB): the game took them "
++                   "back; no trim for %llu s", (unsigned long long)trim_pend_n, trim_pend_freed / 1048576.0,
++                   (used < trim_pend_before ? trim_pend_before - used : 0) / 1048576.0, trim_pend_before / 1048576.0,
++                   used / 1048576.0, (unsigned long long)(trim_hold / 1000000000ull));
++        trim_pend_freed = 0;
++    }
+     if (used <= budget / 100 * (uint64_t)rt_trim) {
+         if (trim_ep_n) trim_log(used, budget);
+         return;
+     }
++    if (now < trim_until || !rt_trim_rate_ok(now, &trim_win, &trim_win_n, (uint32_t)trim_per_min)) return;
+     uint64_t want = used - budget / 100 * (uint64_t)(rt_trim - YIELD_HYST), freed = 0;
+     int k = 0;
+     dcause = DC_YIELD;
+     for (Tex *e = rel_head, *next; e && k < YIELD_STEP && freed < want; e = next) {
+         next = e->rel_next;
++        if (trim_age && submit_epoch - e->last_use < (uint32_t)trim_age) continue;
+         if (!dedicated_own(e)) continue;
+         freed += e->rel_acct, k++;
+         destroy_tex(e);
+     }
+     dcause = DC_NEW;
+-    trim_last = freed, trim_ep_n += (uint64_t)k, trim_ep_bytes += freed;
++    if (!k) return;
++    trim_win_n++;
++    trim_pend_before = used, trim_pend_freed = freed, trim_pend_n = (uint64_t)k, trim_pend_epoch = submit_epoch;
++    trim_ep_n += (uint64_t)k, trim_ep_bytes += freed;
+     if (trim_ep_n >= 1024) trim_log(used, budget);   // a long run still shows up while it lasts
+ }
+ 
+@@ -1038,7 +1077,7 @@ static void sweep_pressure(void) {   // tex_lock held
+         rt_log("vk: released render targets in their own memory %s%d%% of the VRAM budget (NX2NAVI_TEX_RT_TRIM)",
+                rt_trim ? "trimmed above " : "kept: off, ", rt_trim);
+     }
+-    if ((!rel_head && !trim_ep_n) || submit_epoch & 7) return;   // the budget query every 8 submits
++    if ((!rel_head && !trim_ep_n && !trim_pend_freed) || submit_epoch & 7) return;   // the budget query every 8 submits
+     uint64_t used, budget;
+     int exact;
+     if (!(vram_pressure || rel_yield || rt_trim) || !vk_mem_vram(&used, &budget, &exact)) return;
+diff --git a/tests/rt_trim_check.c b/tests/rt_trim_check.c
+new file mode 100644
+index 0000000..f8e320c
+--- /dev/null
++++ b/tests/rt_trim_check.c
+@@ -0,0 +1,30 @@
++// runtime/rt_trim_backoff.h: the render-target trim's judgement, hold and per-minute cap. Build and run:
++// cc -Iruntime tests/rt_trim_check.c -o rt_trim_check && ./rt_trim_check (exits 1 on a failure).
++#include <stdio.h>
++
++#include "rt_trim_backoff.h"
++
++static int fails;
++#define CHECK(x) ((x) ? 0 : (printf("FAIL %s:%d %s\n", __FILE__, __LINE__, #x), fails++))
++
++int main(void) {
++    const uint64_t M = 1048576, S = 1000000000ull;
++    CHECK(rt_trim_worked(13800 * M, 13400 * M, 394 * M));    // the trim's bytes left the heap
++    CHECK(!rt_trim_worked(13800 * M, 13750 * M, 394 * M));   // taken back: a fall under a quarter
++    CHECK(!rt_trim_worked(13400 * M, 13500 * M, 394 * M));   // use rose
++    uint64_t h = 0;
++    h = rt_trim_next_hold(h, 0, 2 * S, 64 * S), CHECK(h == 2 * S);
++    h = rt_trim_next_hold(h, 0, 2 * S, 64 * S), CHECK(h == 4 * S);
++    for (int i = 0; i < 10; i++) h = rt_trim_next_hold(h, 0, 2 * S, 64 * S);
++    CHECK(h == 64 * S);
++    CHECK(rt_trim_next_hold(h, 1, 2 * S, 64 * S) == 0);
++    CHECK(rt_trim_next_hold(0, 0, 0, 64 * S) == 0);   // cooldown 0: never held
++    uint64_t w = 0;
++    uint32_t n = 0;
++    for (int i = 0; i < 6; i++) CHECK(rt_trim_rate_ok(100 * S, &w, &n, 6)), n++;
++    CHECK(!rt_trim_rate_ok(110 * S, &w, &n, 6));
++    CHECK(rt_trim_rate_ok(161 * S, &w, &n, 6) && n == 0);
++    CHECK(rt_trim_rate_ok(0, &w, &n, 0));
++    printf("%s\n", fails ? "rt_trim_check: FAILED" : "rt_trim_check: ok");
++    return fails != 0;
++}
+-- 
+2.56.0
+
