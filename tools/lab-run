@@ -17,8 +17,10 @@
 set -u
 # lab-run [--show] ...: --show also writes latest-frame.png (only if the dump frame was reached); off by default.
 # lab-run --dry ...: assemble the profile, print it, exit (no lock, no replay).
-show=0; dry=0
-while :; do case ${1:-} in --show) show=1; shift;; --dry) dry=1; shift;; *) break;; esac; done
+# lab-run --warp '<spec>' ...: edit the run's profile copy with tools/warp-save <spec> (e.g. 'scene="lost woods" age=child
+#   entrance=LostWood_Entrance'), so a title-menu recording that loads a save starts there. Never on the live profile.
+show=0; dry=0; warp=""
+while :; do case ${1:-} in --show) show=1; shift;; --dry) dry=1; shift;; --warp) warp=$2; shift 2;; *) break;; esac; done
 rec=$1 frame=$2 label=$3; shift 3
 ROOT=$HOME/claude/nx2navi
 BIN=${LAB_BIN:-$ROOT/NX2navi/build/v111}
@@ -101,7 +103,14 @@ elif [[ -z $prof && -n $soft ]]; then
   # soft runs may overlap Cal's game: never snapshot/restore his live saves, run on a fresh copy
   prof=$OUT/profile; mkdir -p "$prof"; cp -a "$live"/. "$prof"/ || exit 4
   envs+=("NX2NAVI_PROFILE_DIR=$prof"); echo "lab-run: soft, profile copy in $prof"
+elif [[ -z $prof && -n $warp ]]; then
+  prof=$OUT/profile; mkdir -p "$prof"; cp -a "$live"/. "$prof"/ || exit 4
+  envs+=("NX2NAVI_PROFILE_DIR=$prof"); echo "lab-run: warp, profile copy in $prof"
 elif [[ -z $prof ]]; then echo "lab-run: no bundle for ${rec##*/}; using the live profile (saves restored after)" >&2; fi
+if [[ -n $warp ]]; then
+  [[ $(realpath -m "$prof") == "$live" ]] && { echo "lab-run: --warp never edits the live profile" >&2; exit 4; }
+  eval "w=($warp)"; "$ROOT/tools/warp-save" "$prof" "${w[@]}" || exit 4
+fi
 [ $dry = 1 ] && { echo "profile: ${prof:-$live}"; ls -la "${prof:-$live}"; exit 0; }
 [[ -n $soft && $(realpath -m "$prof") == "$live" ]] && { echo "lab-run: LAB_SOFT never runs on the live profile" >&2; exit 4; }
 if [[ -z $prof || $(realpath -m "$prof") == "$live" ]]; then

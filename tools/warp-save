@@ -1,0 +1,98 @@
+#!/usr/bin/env python3
+"""warp-save <profile-dir> scene=<name> [entrance=<index|name>] [pos=x,y,z] [yaw=<deg>] [age=child|adult] [slot=<n>]
+
+Teleport by save edit: rewrites progress.sav in a profile COPY so loading it puts Link in that scene at that spot.
+Refuses Cal's live profile. Edits every slot_*/progress.sav (or only slot=<n>) under <profile>/save/<uid>/.
+scene: a tools/scenes.toml name, matched case/space/underscore-insensitively, with the age suffix tried
+(scene="lost woods" age=child -> LostWood_Child). entrance: index or name in the scene's StartPos list (default 0);
+pos/yaw override it. age defaults from the scene suffix, else the save's own. time= is not supported yet.
+Save layout (1.1.1, found 2026-11-11): magic 04030201, then (u32 murmur3 hash, u32 value) pairs from 0x28;
+String64/Vector3 values are offsets to the data. Keys used: 0x1d6189da current scene (String64), Player_Pos_For_Map
++ 0x960ad56a, 0xc884818d, 0x8773f02d (Vector3, all hold Link's position), Player_Rot_For_Map + 0xa4aee8cd (float
+yaw, degrees), Sequence_IsChildhood (bool).
+"""
+import glob, os, re, struct, sys, tomllib
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from mm3 import mm3
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+LIVE = os.path.realpath(os.path.expanduser("~/claude/nx2navi/NX2navi/build/v111/profile"))
+K_SCENE = 0x1D6189DA
+K_POS = [mm3("Player_Pos_For_Map"), 0x960AD56A, 0xC884818D, 0x8773F02D]
+K_YAW = [mm3("Player_Rot_For_Map"), 0xA4AEE8CD]
+K_CHILD = mm3("Sequence_IsChildhood")
+
+
+def die(msg):
+    sys.exit(f"warp-save: {msg}")
+
+
+def parse(args):
+    spec = {}
+    for a in args:
+        k, _, v = a.partition("=")
+        if not v: die(f"bad argument {a!r}")
+        spec[k] = v
+    for k in spec:
+        if k not in ("scene", "entrance", "pos", "yaw", "age", "slot", "time"): die(f"unknown key {k}")
+    if "time" in spec: die("time= is not supported yet")
+    if "scene" not in spec: die("scene= is required")
+    return spec
+
+
+def find_scene(scenes, want, age):
+    norm = lambda s: re.sub(r"[\s_]", "", s).lower()
+    by = {norm(n): n for n in scenes}
+    w = norm(want)
+    for w in (w, w.rstrip("s")):
+        for c in ([w + norm("_" + age)] if age else []) + [w, w + "child", w + "adult"]:
+            if c in by: return by[c]
+    die(f"no scene {want!r} (see tools/scenes.toml)")
+
+
+def edit(path, scene, pos, yaw, child):
+    b = bytearray(open(path, "rb").read())
+    if b[:4] != b"\x04\x03\x02\x01": die(f"{path}: not a progress.sav")
+    idx = {}
+    for o in range(0x28, len(b) - 8, 8):
+        h = struct.unpack_from("<I", b, o)[0]
+        idx.setdefault(h, o)
+    def slot(h):
+        if h not in idx: die(f"{path}: key {h:#x} missing")
+        return idx[h] + 4
+    o = struct.unpack_from("<I", b, slot(K_SCENE))[0]
+    b[o:o + 64] = scene.encode().ljust(64, b"\0")
+    for h in K_POS:
+        o = struct.unpack_from("<I", b, slot(h))[0]
+        struct.pack_into("<3f", b, o, *pos)
+    for h in K_YAW:
+        struct.pack_into("<f", b, slot(h), yaw)
+    if child is not None:
+        struct.pack_into("<I", b, slot(K_CHILD), int(child))
+    tmp = path + ".warp"
+    open(tmp, "wb").write(b); os.replace(tmp, path)
+
+
+def main():
+    if len(sys.argv) < 3: die(__doc__)
+    prof = os.path.realpath(sys.argv[1])
+    if prof == LIVE: die("never edits the live profile; pass a copy")
+    spec = parse(sys.argv[2:])
+    scenes = tomllib.load(open(os.path.join(HERE, "scenes.toml"), "rb"))["scene"]
+    name = find_scene(scenes, spec["scene"], spec.get("age"))
+    ents = scenes[name]["entrance"]
+    e = spec.get("entrance", "0")
+    ent = ents[int(e)] if e.isdigit() and int(e) < len(ents) else next((x for x in ents if x[0] == e), None)
+    if ent is None and "pos" not in spec: die(f"{name}: no entrance {e!r}: {[x[0] for x in ents]}")
+    pos = tuple(map(float, spec["pos"].split(","))) if "pos" in spec else tuple(ent[1:4])
+    yaw = float(spec["yaw"]) if "yaw" in spec else (ent[4] if ent else 0.0)
+    age = spec.get("age") or {"child": "child", "adult": "adult"}.get(scenes[name]["age"])
+    child = None if age is None else age == "child"
+    pat = f"slot_{int(spec['slot']):02d}" if "slot" in spec else "slot_*"
+    files = sorted(glob.glob(os.path.join(prof, "save", "*", pat, "progress.sav")))
+    if not files: die(f"no {pat}/progress.sav under {prof}/save")
+    for f in files: edit(f, name, pos, yaw, child)
+    print(f"warp-save: {name} entrance {ent[0] if ent else '-'!r} pos {pos} yaw {yaw} age {age or 'kept'}, {len(files)} slot(s)")
+
+
+main()
