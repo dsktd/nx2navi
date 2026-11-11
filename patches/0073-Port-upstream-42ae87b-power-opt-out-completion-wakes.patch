@@ -1,0 +1,433 @@
+From 2a2aed1e02fd8889ab3c1474c54d71a3b07ee7b6 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 00:47:29 -0500
+Subject: [PATCH] Port upstream 42ae87b (power opt-out, completion wakes
+ waiters before vk_mem_collect, by-region feedback barrier, small-texture
+ re-upload skip NX2NAVI_TEX_SAME default 1); its content hash renamed
+ upload_hash/uhash beside the dedupe content index, TEX_SAME and POWER_FULL in
+ the cfg tables (#132)
+
+---
+ runtime/cfg.c               |  8 +++---
+ runtime/main.c              |  9 +++++++
+ runtime/platform/linux.c    |  1 +
+ runtime/platform/platform.h |  2 ++
+ runtime/platform/win32.c    | 17 +++++++++++++
+ runtime/vk_exec.c           | 11 ++++++---
+ runtime/vk_exec.h           |  7 ++++++
+ runtime/vk_exec_draw.c      | 48 ++++++++++++++++++++++++++++++------
+ runtime/vk_sync.c           |  8 ++++--
+ runtime/vk_texture.c        | 49 +++++++++++++++++++++++++++++++++----
+ 10 files changed, 139 insertions(+), 21 deletions(-)
+
+diff --git a/runtime/cfg.c b/runtime/cfg.c
+index 624f9c0..2496378 100644
+--- a/runtime/cfg.c
++++ b/runtime/cfg.c
+@@ -49,7 +49,7 @@ static const char *const known[] = {
+     "MENU_CURSOR", "MENU_CURSOR_LOG", "MENU_TEST_DIR", "MENU_TEST_SET", "MINIMAL_LAYOUT", "MIRROR_GAP", "MODS_DIR", "MODS_DISABLED", "MODS_ORDER", "MODS_REBUILD", "MOTION", "MOTION_PAD", "MOTION_SOCK", "MOUSE_MODE", "MOUSE_DIRECT_PATCH", "MOUSE_SENS", "MOVIE_HOST", "MOVIE_PACE",
+     "MVOBJ_ALL", "MVOBJ_BANKS", "MVOBJ_EQUAL", "MVOBJ_EXACT", "MVOBJ_EXEC", "MVOBJ_NOC4", "MVOBJ_ONLY", "MVOBJ_TIMES", "MVPREV_CHECK", "MVPREV_GROW", "MVPREV_SKIP", "MVPREV_TRUST", "MV_CHECK",
+     "MV_SURVEY",
+-    "ONESHOT_WAIT_MS", "ONE_PER_CORE", "OPERATION_MODE", "OUTPUT_RES", "PAD_LAYOUT", "PACE_HZ", "PASS_CRUMBS", "PATCH_OUTPUT", "PATCH_RES_FIXED", "PATCH_SCENE", "PATCH_WIDE_ASPECT", "PATCH_WIDE_HUD", "PATCH_WIDE_MOVIE", "PATCH_WIDE_OUT", "PATCH_WIDE_SCENE", "PCSS", "PCSS_K", "PERF_OVERLAY", "PERF_SLOW_MS", "PIPELINE_CACHE", "PIPE_MEMO", "PIPE_PREBUILD", "PIPE_SKIP", "PIPE_SYNC", "PIPE_WAIT",
++    "ONESHOT_WAIT_MS", "ONE_PER_CORE", "OPERATION_MODE", "OUTPUT_RES", "PAD_LAYOUT", "PACE_HZ", "PASS_CRUMBS", "PATCH_OUTPUT", "PATCH_RES_FIXED", "PATCH_SCENE", "PATCH_WIDE_ASPECT", "PATCH_WIDE_HUD", "PATCH_WIDE_MOVIE", "PATCH_WIDE_OUT", "PATCH_WIDE_SCENE", "PCSS", "PCSS_K", "PERF_OVERLAY", "PERF_SLOW_MS", "PIPELINE_CACHE", "PIPE_MEMO", "PIPE_PREBUILD", "PIPE_SKIP", "PIPE_SYNC", "PIPE_WAIT", "POWER_FULL",
+     "PREWARM_WAIT_MS", "PREWARM_XLATE", "PROBE_MOVIE", "PROBE_MOVIE_SHOT", "PROFILE", "PROFILE_CHAINS", "PROFILE_DIR", "PROFILE_FRAMES",
+     "PROFILE_MAIN", "PROFILE_RENDER", "PROMPTS", "PUSH_SKIP", "PUSH_STAGE", "RDOC", "RDOC_DIR", "RDOC_DLL", "REALTIME", "REC_END", "REEXEC",
+     "RENDER_SCALE", "REPLAY_ASYNC", "RTSS",
+@@ -58,7 +58,7 @@ static const char *const known[] = {
+     "SHADER_MEMO", "SHADER_RELOAD", "SHADOW_COMPARE", "SHADOW_RANGE", "SHADOW_RES", "SHADOW_SCALE", "SHARED_FONTS", "SHARPNESS", "SHOTS", "SHOTS_DIR",
+     "SHOTS_FULL", "SPEED_PROBE", "SPIN", "SPIN_HANDOFF_US", "SPLIT_DRAWS", "SPLIT_US", "STICK_DEADZONE", "STICK_SENS",
+     "SWKBD_ANSWER",
+-    "SWKBD_TEST", "TAA", "TEST_PAD", "TEST_PAD_AT", "TEST_PREPARE_SHADERS", "TEX_ALIAS", "TEX_MEMO", "TEX_LIVE_EVICT", "TEX_LIVE_GUARD", "TEX_LIVE_IDLE", "TEX_STALE_GONE", "TEX_VRAM_PRESSURE", "TIMER_1MS", "TRACE", "TXD_TRANSPOSE", "UBO_SNAPSHOT", "UNJITTER", "UPSCALER", "VK_DYN_A2C", "VK_DYN_VERTEX", "VK_NOOPT", "VK_NO_FLOAT64",
++    "SWKBD_TEST", "TAA", "TEST_PAD", "TEST_PAD_AT", "TEST_PREPARE_SHADERS", "TEX_ALIAS", "TEX_MEMO", "TEX_LIVE_EVICT", "TEX_SAME", "TEX_LIVE_GUARD", "TEX_LIVE_IDLE", "TEX_STALE_GONE", "TEX_VRAM_PRESSURE", "TIMER_1MS", "TRACE", "TXD_TRANSPOSE", "UBO_SNAPSHOT", "UNJITTER", "UPSCALER", "VK_DYN_A2C", "VK_DYN_VERTEX", "VK_NOOPT", "VK_NO_FLOAT64",
+     "VK_PRESENT", "VK_RECORDER", "VK_SSBO_ALIGN", "VK_SUBGROUP", "VK_SUBGROUP_PIN", "VK_VALIDATION", "VOLUME", "VRAM_HEADROOM", "VS_OUTS",
+     "WALK_KEY", "WALK_SCALE", "WB_EXACT", "WB_FENCE_LIMIT", "WB_MERGE", "WINDOW_SIZE", "XLATE", "XLATE_ID", "XLATE_KEEP", "XLATE_PROCS",
+     "ZSTD_CHECK", "ZSTD_NATIVE",
+@@ -98,7 +98,7 @@ static const struct { const char *key, *section; } sections[] = {
+     {"LIB_PREBUILD", "performance"}, {"LIB_PREBUILD_THREADS", "performance"}, {"PIPE_PREBUILD", "performance"},
+     {"PREWARM_XLATE", "performance"}, {"GPL", "performance"}, {"ASTC", "performance"}, {"MEMORY", "performance"},
+     {"TEX_ALIAS", "performance"}, {"TEX_VRAM_PRESSURE", "performance"}, {"TEX_STALE_GONE", "performance"}, {"TEX_LIVE_EVICT", "performance"}, {"TEX_LIVE_IDLE", "performance"}, {"TEX_LIVE_GUARD", "performance"}, {"ASTC_BC", "performance"}, {"LOD_GUARD", "performance"}, {"FIX_C0", "performance"}, {"FIX_ZERO", "performance"},
+-    {"BIND_SKIP", "performance"}, {"SHADER_MEMO", "performance"}, {"PIPE_MEMO", "performance"}, {"TEX_MEMO", "performance"}, {"DESC_TEMPLATE", "performance"},
++    {"BIND_SKIP", "performance"}, {"SHADER_MEMO", "performance"}, {"PIPE_MEMO", "performance"}, {"TEX_MEMO", "performance"}, {"TEX_SAME", "performance"}, {"DESC_TEMPLATE", "performance"},
+     {"PUSH_SKIP", "performance"}, {"SPLIT_DRAWS", "performance"}, {"SPLIT_US", "performance"}, {"VK_VALIDATION", "performance"},
+     {"VK_DYN_VERTEX", "performance"}, {"VK_DYN_A2C", "performance"}, {"VK_SUBGROUP_PIN", "performance"},
+     {"TRACE", "diagnostics"}, {"FLIGHT", "diagnostics"}, {"PASS_CRUMBS", "diagnostics"}, {"FLIGHT_SPIKE_MS", "diagnostics"},
+@@ -176,7 +176,7 @@ static const CfgMeta metas[] = {
+     {"TEX_ALIAS", "1", "0|1", RESTART}, {"TEX_VRAM_PRESSURE", "90", "0..100", RESTART}, {"TEX_STALE_GONE", "0", "0|1", RESTART}, {"TEX_LIVE_EVICT", "85", "0..100", RESTART}, {"TEX_LIVE_IDLE", "3600", "1..1000000", RESTART}, {"TEX_LIVE_GUARD", "240", "0..1000000", RESTART}, {"ASTC_BC", "", "0|1", RESTART}, {"ZSTD_NATIVE", "1", "0|1", RESTART}, {"ZSTD_CHECK", "0", "0|1", RESTART},
+     // render fixes
+     {"LOD_GUARD", "1", "0|1", RESTART}, {"FIX_C0", "1", "0|1", RESTART}, {"FIX_ZERO", "1", "0|1", RESTART},
+-    {"BIND_SKIP", "1", "0|1", RESTART}, {"SHADER_MEMO", "1", "0|1", RESTART}, {"PIPE_MEMO", "1", "0|1", RESTART}, {"TEX_MEMO", "1", "0|1", RESTART},
++    {"BIND_SKIP", "1", "0|1", RESTART}, {"SHADER_MEMO", "1", "0|1", RESTART}, {"PIPE_MEMO", "1", "0|1", RESTART}, {"TEX_MEMO", "1", "0|1", RESTART}, {"TEX_SAME", "1", "0|1", RESTART},
+     {"DESC_TEMPLATE", "1", "0|1", RESTART},
+     {"PUSH_SKIP", "1", "0|1", RESTART}, {"SPLIT_DRAWS", "64", "0..1000", RESTART},
+     {"SPLIT_US", "1000", "0..20000", RESTART},
+diff --git a/runtime/main.c b/runtime/main.c
+index a76ffd6..57de055 100644
+--- a/runtime/main.c
++++ b/runtime/main.c
+@@ -529,6 +529,15 @@ int main(int argc, char **argv) {
+     // Timed guest waits (kernel.c block_inner) sleep in whole milliseconds; at the default 15.6 ms tick a 1 ms wait
+     // costs a full tick. NX2NAVI_TIMER_1MS=0 keeps the default for comparison.
+     if (cfg_bool("NX2NAVI_TIMER_1MS")) plat_timer_1ms();
++    {   // NX2NAVI_POWER_FULL=0 leaves Windows' power throttling of an unfocused window in place (A/B runs)
++        const char *pf = cfg_get("NX2NAVI_POWER_FULL");
++        if (!(pf && !strcmp(pf, "0"))) {
++            int got = plat_power_full();
++            rt_log("power: %s", got == 2 ? "full speed and the 1 ms timer kept when the window is not in front"
++                               : got == 1 ? "full speed kept when the window is not in front (no timer control here)"
++                                          : "the OS throttling of an unfocused window stays as it is");
++        }
++    }
+     cfg = (RtConfig){.exefs = rt_default_exefs, .romfs = rt_default_romfs, .profile = rt_default_profile,
+                      .gpu = cfg_get("NX2NAVI_GPU")};
+     portable_paths(&cfg);   // command-line paths below still win
+diff --git a/runtime/platform/linux.c b/runtime/platform/linux.c
+index 3bbe8bd..37fa233 100644
+--- a/runtime/platform/linux.c
++++ b/runtime/platform/linux.c
+@@ -474,6 +474,7 @@ uint64_t plat_counter_hz(void) { return 1000000000u; }
+ // The timer slack (50 us by default) is how late the kernel may wake a sleeping thread to batch wakeups. New threads
+ // inherit it from the thread that creates them.
+ void plat_timer_1ms(void) { prctl(PR_SET_TIMERSLACK, 1000ul, 0, 0, 0); }
++int plat_power_full(void) { return 0; }   // no per-process power throttling to opt out of
+ 
+ // clock_nanosleep wakes within the timer slack (50 us by default) of its deadline; the last PLAT_SPIN_NS are spent
+ // yielding so the deadline is met closely, as on Windows.
+diff --git a/runtime/platform/platform.h b/runtime/platform/platform.h
+index e987594..ac82138 100644
+--- a/runtime/platform/platform.h
++++ b/runtime/platform/platform.h
+@@ -104,6 +104,8 @@ uint64_t plat_now_ns(void);               // monotonic, high resolution, arbitra
+ uint64_t plat_counter(void);              // the OS's raw monotonic counter (QPC on Windows), plat_counter_hz per second
+ uint64_t plat_counter_hz(void);
+ void plat_timer_1ms(void);                // asks the OS for timed waits accurate to 1 ms or better (call before threads)
++int plat_power_full(void);                // opts out of the OS's power throttling of an unfocused process: 2 speed and timer,
++                                          // 1 speed only (Windows 10), 0 not done or nothing to do
+ // t * num / den for a fixed num / den without a 128-bit division per call (__udivti3 took 5% of the game's running
+ // samples through plat_now_ns and rt_ticks): t * q + (t * f >> 64) with q = num / den and f = (num % den) * 2^64 / den.
+ // Monotonic in t and at most one below the exact quotient while t * (num % den) / den fits 64 bits.
+diff --git a/runtime/platform/win32.c b/runtime/platform/win32.c
+index c498fa8..de5a379 100644
+--- a/runtime/platform/win32.c
++++ b/runtime/platform/win32.c
+@@ -347,6 +347,23 @@ uint64_t plat_counter_hz(void) { return qpc_freq(); }
+ // The default timer tick is 15.6 ms; a 1 ms wait would cost a full tick.
+ void plat_timer_1ms(void) { timeBeginPeriod(1); }
+ 
++// Windows 11 runs a process whose window is not in front (another window focused, a second monitor's overlay) at
++// efficiency speed (EcoQoS, the E-cores of a hybrid CPU) and may ignore its timer resolution request, which turns the
++// 1 ms waits the pacing and short sleeps rely on into 15.6 ms ones. Opting out keeps full speed and the 1 ms timer.
++// The ignore-timer-resolution control needs Windows 11; on Windows 10 the call fails and execution speed alone is asked.
++#ifndef PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION
++#define PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION 0x4
++#endif
++int plat_power_full(void) {
++    PROCESS_POWER_THROTTLING_STATE st = {.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION,
++                                         .ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED |
++                                                        PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION,
++                                         .StateMask = 0};
++    if (SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &st, sizeof st)) return 2;
++    st.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
++    return SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &st, sizeof st) ? 1 : 0;
++}
++
+ static PlatScale qpc_ns;   // set before main, so no thread reads it half written
+ 
+ __attribute__((constructor)) static void qpc_ns_init(void) { qpc_ns = plat_scale(1000000000u, qpc_freq()); }
+diff --git a/runtime/vk_exec.c b/runtime/vk_exec.c
+index 48081cf..3cc1fc7 100644
+--- a/runtime/vk_exec.c
++++ b/runtime/vk_exec.c
+@@ -72,13 +72,15 @@ void vk_exec_frame_log(const tex_t *p, uint64_t frame) {
+                                   fw[i].h, fw[i].fmt, fw[i].n);
+     }
+     rt_log("frame %llu: submits %llu passes %llu draws %llu/%llu clears %llu copies %llu dispatches %llu; present %p "
+-           "%ux%u/%#x written %d; feedback draws %llu barriers %llu restarts %llu layouts %llu; targets%s",
++           "%ux%u/%#x written %d; feedback draws %llu barriers %llu restarts %llu layouts %llu read-before-write %llu; "
++           "uniform updates %llu (%llu ended a pass); targets%s",
+            (unsigned long long)frame, (unsigned long long)f->submits,
+            (unsigned long long)f->passes, (unsigned long long)f->draws, (unsigned long long)f->draws_seen,
+            (unsigned long long)f->clears, (unsigned long long)f->copies, (unsigned long long)f->dispatches,
+            p ? (const void *)p->mem : NULL, p ? p->d.width : 0, p ? p->d.height : 0, p ? (uint32_t)p->d.format : 0,
+            hit, (unsigned long long)f->fb_draws, (unsigned long long)f->fb_barriers, (unsigned long long)f->fb_restarts,
+-           (unsigned long long)f->fb_layouts, list);
++           (unsigned long long)f->fb_layouts, (unsigned long long)f->fb_war_barriers, (unsigned long long)f->ub_updates,
++           (unsigned long long)f->ub_pass_breaks, list);
+     memset(f, 0, sizeof *f);
+     nfw = 0;
+ }
+@@ -600,6 +602,7 @@ void vk_exec_pass_begin(VkExec *ex) {
+     barrier_to(ex, want, wasp, nwant);   // passes, clears, copies and dispatches see each other's results
+     ex->fbl_mask = fbl;
+     ex->fb_dirty = 0;
++    ex->fb_read = 0;
+     ex->pass_serial++;
+     VkRenderingAttachmentInfo ca[8], da = {0}, sa = {0};
+     for (uint32_t i = 0; i < ex->pass_ncolor; i++) {
+@@ -733,9 +736,11 @@ static void clear_attachment(VkExec *ex, const VkClearAttachment *a) {
+     vk_exec_pass_begin(ex);
+     VkClearRect cr = {vk_exec_scissor(ex), 0, ex->pass_layers};
+     if (!cr.rect.extent.width || !cr.rect.extent.height) return;
++    uint32_t bit = a->aspectMask & VK_IMAGE_ASPECT_COLOR_BIT ? 1u << a->colorAttachment : 0x100u;
++    vk_exec_feedback_war(ex, bit);   // a draw of this pass sampled it: its reads finish before the clear writes
+     vkCmdClearAttachments(ex->cb, 1, a, 1, &cr);
+     ex->recorded++;
+-    ex->fb_dirty |= a->aspectMask & VK_IMAGE_ASPECT_COLOR_BIT ? 1u << a->colorAttachment : 0x100u;
++    ex->fb_dirty |= bit;
+ }
+ 
+ // NX2NAVI_LOG_RCOND=1: clears issued under a render condition (the first 400), run or skipped, with their target.
+diff --git a/runtime/vk_exec.h b/runtime/vk_exec.h
+index a57b80e..dda261d 100644
+--- a/runtime/vk_exec.h
++++ b/runtime/vk_exec.h
+@@ -113,6 +113,8 @@ typedef struct VkExec {
+     uint32_t fbl_mask;                   // attachments of the open pass in that layout: bit i colour i, bit 8 depth
+     uint32_t fb_dirty;                   // attachments of the open pass written by a draw or clear since the pass began
+                                          // or the last in-pass barrier
++    uint32_t fb_read;                    // attachments of the open pass a draw sampled (feedback layout) since the pass
++                                         // began or the last in-pass read-to-write barrier (feedback_war)
+     const void *fb_fs;                   // feedback_scan's memo: fragment shader, texture bind serial, pass serial
+     uint32_t fb_serial, fb_pass, fb_sampled;
+     uint32_t tex_serial, pass_serial;    // bumped by every texture or image bind and pass begin
+@@ -145,6 +147,9 @@ extern int vk_hdr_track;
+ void vk_hdr_draw(VkExec *ex, const VkPipeInfo *info);
+ // Scissor 0 clipped to the render area of the open pass; extent 0: nothing to draw.
+ VkRect2D vk_exec_scissor(const VkExec *ex);
++// vk_exec_draw.c: orders the open pass's earlier sampled reads of the attachments in written (bit i colour i, bit 8
++// depth) before a draw or clear writes them; nothing when none of them was sampled since the last such barrier.
++void vk_exec_feedback_war(VkExec *ex, uint32_t written);
+ void vk_exec_noatt_dims(const VkExec *ex, uint32_t *w, uint32_t *h);   // pass size when no attachment is set
+ // 1: every target of the current pass (any 1: at least one, and not only the depth target while a colour target is
+ // rendered for the first time) was rendered in the previous presented frame (per-frame targets); 0 otherwise, or when
+@@ -159,6 +164,8 @@ typedef struct {
+     uint64_t fb_draws, fb_barriers, fb_restarts, fb_layouts;   // feedback loops: draws sampling a written target of
+                                                                // their pass, in-pass barriers, pass restarts, layout
+                                                                // transitions
++    uint64_t fb_war_barriers;            // in-pass barriers before a write to a target an earlier draw sampled
++    uint64_t ub_updates, ub_pass_breaks; // inline uniform updates, and those that ended an open pass
+ } VkExecFrame;
+ extern VkExecFrame vk_exec_frame;
+ void vk_exec_frame_written(const tex_t *t);                    // vk_texture_gpu_written: t rendered or copied into
+diff --git a/runtime/vk_exec_draw.c b/runtime/vk_exec_draw.c
+index 4f5bf4a..ed040f2 100644
+--- a/runtime/vk_exec_draw.c
++++ b/runtime/vk_exec_draw.c
+@@ -1499,13 +1499,45 @@ static void feedback_barrier(VkExec *ex) {
+     vk_exec_frame.fb_barriers++;
+ }
+ 
+-// Marks the attachments the draw with state s writes: colour targets with a nonzero effective write mask, depth with
+-// depth writes or the stencil test on.
+-static void feedback_written(VkExec *ex, const VkPipeState *s) {
+-    if (vk_ctx()->feedback == VK_FEEDBACK_OFF) return;
+-    if (ex->depth.image && !(ex->fb_dirty & 0x100) && ((s->ds.dt && s->ds.dw) || s->ds.st)) ex->fb_dirty |= 0x100;
++// Write after read inside the open pass: the GPU orders attachment writes after earlier attachment writes, not after
++// earlier draws' texture reads of the same image (feedback layout), so a draw or clear writing a target an earlier
++// draw of the pass sampled could land before those reads finish and they read the new value (a band of the picture
++// a frame out: the fog's flat colour, a dark shadow band). A by-region barrier from fragment shader reads to
++// attachment writes orders them; written: the attachments about to be written (bit i colour i, bit 8 depth).
++void vk_exec_feedback_war(VkExec *ex, uint32_t written) {
++    if (!(written & ex->fb_read)) return;
++    VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
++                           .srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
++                           .srcAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
++                           .dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT |
++                                           VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
++                           .dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT};
++    VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT,
++                           .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
++    vkCmdPipelineBarrier2(ex->cb, &di);
++    ex->recorded++;
++    ex->fb_read = 0;
++    vk_exec_frame.fb_war_barriers++;
++}
++
++// The attachments the draw with state s writes: colour targets with a nonzero effective write mask, depth with depth
++// writes or the stencil test on.
++static uint32_t feedback_writes(const VkExec *ex, const VkPipeState *s) {
++    uint32_t w = ex->depth.image && ((s->ds.dt && s->ds.dw) || s->ds.st) ? 0x100u : 0;
+     for (uint32_t i = 0; i < ex->pass_ncolor; i++)
+-        if (ex->color[i].image && !(ex->fb_dirty >> i & 1) && vk_pipeline_target_wmask(s, (int)i)) ex->fb_dirty |= 1u << i;
++        if (ex->color[i].image && vk_pipeline_target_wmask(s, (int)i)) w |= 1u << i;
++    return w;
++}
++
++// Marks the attachments the draw with state s writes, after ordering them behind earlier draws' reads of them
++// (vk_exec_feedback_war); sampled: what this draw itself samples in the feedback layout, which a later write must wait
++// for in turn (a draw reading and writing one target is the game's own feedback loop, ordered by region as it is).
++static void feedback_written(VkExec *ex, const VkPipeState *s, uint32_t sampled) {
++    if (vk_ctx()->feedback == VK_FEEDBACK_OFF) return;
++    uint32_t w = feedback_writes(ex, s);
++    vk_exec_feedback_war(ex, w);
++    ex->fb_dirty |= w;
++    ex->fb_read |= sampled;
+ }
+ 
+ static void tex_info_full(VkExec *ex, const GfxShaderRes *r, uint64_t h, int storage, int separate,
+@@ -3172,7 +3204,7 @@ static int prepare_draw_ex(VkExec *ex, int prim, int32_t count, int restart, int
+     repeat_stats(ex, info);
+     bind_resources(ex, info);
+     if (fbl & ex->fb_dirty) feedback_barrier(ex);
+-    feedback_written(ex, &s);
++    feedback_written(ex, &s, fbl);
+     if (!mesh) bind_vertex_buffers(ex);
+     if (vk_dump_armed && (!mesh || vk_dump_mesh)) vk_dump_draw(ex, &s, p, info);
+     if (__atomic_load_n(&vk_pick_armed, __ATOMIC_RELAXED)) vk_pick_note(&s, info);
+@@ -4513,6 +4545,8 @@ static void op_update_ub(VkExec *ex, const p_update_ub *u) {
+     VkMemSpan sp;
+     if (!vk_mem_resolve(u->dst, u->size, &sp)) return warn_once(W_UB, "UpdateUniformBuffer to %#llx is not backed: dropped", (unsigned long long)u->dst);
+     cb_res(ex);
++    vk_exec_frame.ub_updates++;
++    if (ex->in_pass) vk_exec_frame.ub_pass_breaks++;
+     vk_exec_barrier(ex);   // earlier draws finished with the old contents
+     VkBuffer b;
+     VkDeviceSize o;
+diff --git a/runtime/vk_sync.c b/runtime/vk_sync.c
+index 01a97f1..8e8eaf4 100644
+--- a/runtime/vk_sync.c
++++ b/runtime/vk_sync.c
+@@ -282,11 +282,15 @@ static void completion_main(void *arg) {
+             plat_mutex_lock(&st_lock);
+         }
+         if (reached > done) {
++            // The waiters go first (a fence wait, the frame's first submission, the acquire): freeing what the
++            // finished submissions held (vk_mem_collect: upload batches, destroyed images, views and buffers, each
++            // checked against the timeline itself) is nothing they read, and it takes cmd_lock, which the upload
++            // path holds, so done waited behind uploads.
++            __atomic_store_n(&done, reached, __ATOMIC_RELEASE);
++            plat_cond_broadcast(&cv_done);
+             plat_mutex_unlock(&st_lock);
+             vk_mem_collect();
+             plat_mutex_lock(&st_lock);
+-            __atomic_store_n(&done, reached, __ATOMIC_RELEASE);
+-            plat_cond_broadcast(&cv_done);
+         }
+     }
+     plat_mutex_unlock(&st_lock);
+diff --git a/runtime/vk_texture.c b/runtime/vk_texture.c
+index 7b4031c..825f4fa 100644
+--- a/runtime/vk_texture.c
++++ b/runtime/vk_texture.c
+@@ -68,6 +68,8 @@ typedef struct Tex {
+     struct TexShare *share;       // the image is shared with other entries of the same content (NX2NAVI_TEX_DEDUPE); NULL: own
+     uint64_t st_id, st_c;         // address state (tex_gen_bump): the entry's identity, and what it adds to its bucket's sum
+     uint8_t from_gone;            // made by a slot lookup for a key the game finalized or whose storage went (gone_serial)
++    uint64_t uhash;               // upload_hash of the storage at its last upload (small textures, UHASH_MAX)
++    uint8_t uhash_ok;             // uhash holds it
+ } Tex;
+ 
+ // A slot keeps what vk_texture_by_id resolved for it, so a draw binding skips the key lookup and the address chain: the
+@@ -109,6 +111,7 @@ static int64_t rel_cap = -1;
+ static uint64_t n_uploads, n_reuploads;
+ // Re-uploads since the last perf line (tex_lock): all, and those of textures a WriteTexels wrote since their last upload.
+ static uint64_t ru_n, ru_bytes, ru_ns, ru_wt_n, ru_wt_bytes, ru_wt_ns;
++static uint64_t ru_same_n, ru_same_bytes;   // re-uploads skipped: the pages were written, the texture's bytes were not
+ // NX2NAVI_TEX_ALIAS (default on; =0: a new image over live storage starts empty): a new descriptor over the storage of a
+ // live image that the GPU wrote gets that image's content (alias_copy). Counts since the last log line.
+ static int tex_alias = -1;
+@@ -1272,6 +1275,25 @@ static void astc_check(const Tex *e, const uint8_t *raw, const VkAstcRegion *ar,
+ // 8 GB of shared memory and the game closed before the title screen.
+ #define UPLOAD_PART (32ull << 20)   // fits the staging pool (vk_staging takes up to half of its 64 MiB block)
+ 
++// A texture of at most UHASH_MAX bytes keeps a hash of its storage as it was uploaded. A write to its pages then
++// re-uploads it only when its own bytes changed: Ocarina's frames rewrite hundreds of small textures' pages (shared
++// with data the CPU writes, or written with the same bytes), about 420 re-uploads a frame of 1.5 KiB each, and one
++// costs a staging buffer, a copy and a barrier, several microseconds, where hashing 1.5 KiB takes a fraction of one.
++// A CPU write during the hash sets the pages' write bits again, so the next check sees it.
++enum { UHASH_MAX = 64 << 10 };
++static uint64_t upload_hash(const void *p, uint64_t n) {
++    const uint8_t *b = p;
++    uint64_t h = 0x9e3779b97f4a7c15ull ^ n, i = 0;
++    for (; i + 8 <= n; i += 8) {
++        uint64_t w;
++        memcpy(&w, b + i, 8);
++        h = (h ^ w) * 0xbf58476d1ce4e5b9ull;
++        h ^= h >> 29;
++    }
++    for (; i < n; i++) h = (h ^ b[i]) * 0x94d049bb133111ebull;
++    return h ^ (h >> 31);
++}
++
+ // Copies the whole storage into the image (every level and layer the image has).
+ static void upload_body(Tex *e);
+ static void unshare(Tex *e, int keep, int why);
+@@ -1312,6 +1334,8 @@ static void upload_body(Tex *e) {
+         e->uploaded = 1;
+         return;
+     }
++    e->uhash_ok = e->t.L.size <= UHASH_MAX;   // the hash of what this upload copies (make_fresh_snap compares it)
++    if (e->uhash_ok) e->uhash = upload_hash((const void *)(uintptr_t)e->pub.addr, e->t.L.size);
+     static __thread char ctx[160];   // what this thread copies, for a crash report
+     snprintf(ctx, sizeof ctx, "texture upload %#llx (%llu bytes, fmt %#x %ux%u)", (unsigned long long)e->pub.addr,
+              (unsigned long long)e->t.L.size, d->format, d->width, d->height);
+@@ -1605,6 +1629,17 @@ static void unshare(Tex *e, int keep, int why) {
+     tex_gen_bump(e, ST_NEW);
+ }
+ 
++// The pages of an uploaded texture show a write (or are not tracked): whether its own bytes are still those it was
++// uploaded with (upload, upload_hash). WriteTexels since the upload always counts as a change.
++static int same_content(const Tex *e) {
++    static int on = -1;   // NX2NAVI_TEX_SAME=0: every write to the pages uploads again (diagnosis)
++    if (on < 0) { const char *v = cfg_get("NX2NAVI_TEX_SAME"); on = !(v && !strcmp(v, "0")); }
++    if (!on || !e->uhash_ok || e->wt_n || e->t.L.size > UHASH_MAX) return 0;
++    if (upload_hash((const void *)(uintptr_t)e->pub.addr, e->t.L.size) != e->uhash) return 0;
++    ru_same_n++, ru_same_bytes += e->t.L.size;
++    return 1;
++}
++
+ // A mirrored texture is uploaded on first use and again when its storage pages carry a newer write generation.
+ static void make_fresh(Tex *e) {
+     if (!e->pub.mirrored || e->pub.gpu_owned) return;
+@@ -1618,7 +1653,7 @@ static void make_fresh(Tex *e) {
+     int ch = vk_mem_changed(e->pub.addr, size, e->wgen, &now);
+     e->wgen = now;
+     e->last_ch = ch;
+-    if (ch) upload(e);   // 1 written, -1 not tracked: both upload again
++    if (ch && !same_content(e)) upload(e);   // 1 written, -1 not tracked: both upload again, unless the bytes match
+ }
+ 
+ // make_fresh for draw bindings: the page check answers from this submission's write-watch snapshot (vk_memory.c
+@@ -1632,7 +1667,7 @@ static void make_fresh_snap(Tex *e) {
+     e->wgen = now;
+     if (!e->uploaded) { if (!content_first(e)) upload(e); return; }
+     e->last_ch = ch;
+-    if (ch) upload(e);
++    if (ch && !same_content(e)) upload(e);
+ }
+ 
+ // ---------------------------------------------------------------- aliases (NX2NAVI_TEX_ALIAS)
+@@ -1770,6 +1805,7 @@ static Tex *entry_of(const tex_t *t) {
+                     e->uploaded = 1;
+                     e->pub.gpu_owned = 1;
+                 }
++                e->uhash_ok = 0;
+             } else {
+                 init_image(e, vk_upload_begin());
+                 vk_upload_end();
+@@ -1848,6 +1884,7 @@ void vk_texture_gpu_written(const tex_t *t) {
+         make_fresh(e);   // a partial render keeps what the storage held before
+         unshare(e, 1, 1);   // the render must not land in an image other entries share
+         e->pub.gpu_owned = 1;
++        e->uhash_ok = 0;   // the image now holds the GPU's content: matching storage bytes no longer mean "unchanged"
+         uint64_t f = vk_exec_recording_fence();
+         if (f > e->wr_fence) e->wr_fence = f;
+         if (e->pub.mirrored) {
+@@ -2200,10 +2237,12 @@ void vk_texture_new_submit(void) {
+                (unsigned long long)f * 60, (unsigned long long)n_alias_copied, (unsigned long long)n_alias_upload,
+                (unsigned long long)n_alias_uninit);
+         n_alias_copied = n_alias_upload = n_alias_uninit = 0;
+-        rt_log("perf: frame %llu: texture re-uploads %llu (%.1f MiB, %.2f ms), after WriteTexels %llu (%.1f MiB, %.2f ms)",
++        rt_log("perf: frame %llu: texture re-uploads %llu (%.1f MiB, %.2f ms), after WriteTexels %llu (%.1f MiB, %.2f ms); "
++               "skipped with unchanged bytes %llu (%.1f MiB)",
+                (unsigned long long)f * 60, (unsigned long long)ru_n, ru_bytes / 1048576.0, ru_ns / 1e6,
+-               (unsigned long long)ru_wt_n, ru_wt_bytes / 1048576.0, ru_wt_ns / 1e6);
+-        ru_n = ru_bytes = ru_ns = ru_wt_n = ru_wt_bytes = ru_wt_ns = 0;
++               (unsigned long long)ru_wt_n, ru_wt_bytes / 1048576.0, ru_wt_ns / 1e6, (unsigned long long)ru_same_n,
++               ru_same_bytes / 1048576.0);
++        ru_n = ru_bytes = ru_ns = ru_wt_n = ru_wt_bytes = ru_wt_ns = ru_same_n = ru_same_bytes = 0;
+         uint64_t ck, calls, untr;
+         vk_mem_snap_stats(&ck, &calls, &untr);
+         rt_log("perf: frame %llu: binding storage checks %llu (texture %llu), write-watch snapshot queries %llu, untracked %llu",
+-- 
+2.56.0
+
