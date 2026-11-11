@@ -536,6 +536,15 @@ RE: `tools/strxref.py` (`.venv/bin/python`) maps strings to the lifted functions
 (`build/v111/re/strxref.tsv`); `tools/redb.py add|show|strings|header` keeps `build/v111/re/symbols.json`
 (`build/v111/re/seed.sh` recreates the seed). Both outputs are game-derived and stay under build/.
 
+## Model export to Blender (tools/modelx.py)
+
+`tools/modelx.py <out> <Model/x.bfres.zs>` writes a .glb (LOD 0, normals, tangents, UVs, PBR maps from the
+`_Alb/_Nrm/_Rgh/_Mtl/_AO` textures) plus decoded PNGs; `blender -b --python tools/modelx-blend.py -- <glb> <blend> <png>`
+adds a studio scene and a Cycles CPU render. Output stays under `NX2navi/build/v111/export/` (never committed).
+Needs Python 3.14 with numpy, pillow, texture2ddecoder (a uv venv; numpy needs libstdc++ and zlib on `LD_LIBRARY_PATH`).
+Switch 2 BNTX: the BRTI field at +0x34 is log2 of GOB rows per block (0 means 1), and inside a GOB the 16-byte
+units are ordered x/32, y/4, x/16, y/2, y (msb to lsb), unlike Switch 1.
+
 ## Profiling with Tracy
 
 Opt-in, patch 0023. `just game tracy=1` builds `build/v111/nx2navi.tracy` (`build-linux.py --tracy --exe nx2navi.tracy`:
