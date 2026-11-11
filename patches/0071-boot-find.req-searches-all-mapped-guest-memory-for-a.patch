@@ -1,0 +1,295 @@
+From 7826868f694a84a3514b4ed536d9a7bb52c9dffe Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 22:58:25 -0500
+Subject: [PATCH] boot: find.req searches all mapped guest memory for a string
+ (UTF-8/UTF-16LE) on a detached thread into logs/find-<present>.txt; poke.req
+ writes bytes at a guest address only into read-write pages that start with
+ the expect= bytes, keep=1 writes them again each present until clear
+ (NX2NAVI_WATCH_REQ=1)
+
+---
+ runtime/boot.c | 245 ++++++++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 243 insertions(+), 2 deletions(-)
+
+diff --git a/runtime/boot.c b/runtime/boot.c
+index bda6271..ed52d08 100644
+--- a/runtime/boot.c
++++ b/runtime/boot.c
+@@ -9,6 +9,7 @@
+ //   nvnBootstrapLoader     main+0xebcdec (1.2.1: +0xe7eb2c, 1.4.3: +0xbe0360) in the graphics bring-up; logs the
+ //                          run statistics, exits 0
+ // With --seconds S the run continues past that call; rt_frame_presented ends it once the world clock passed S.
++#include <ctype.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+@@ -430,24 +431,264 @@ static void peek_log(uint64_t n) {
+     }
+ }
+ 
++// find.req and poke.req (with NX2NAVI_WATCH_REQ=1, debug): search and patch guest memory live, for strings the
++// game shows (the player name). find.req holds the text (UTF-8), optionally after "enc=utf8 ", "enc=utf16 " or
++// "enc=both " (the default: UTF-8 and UTF-16LE). A detached thread walks every guest region mem_query reports as
++// mapped and accessible, reads only committed readable pages, one MiB at a time under mem_read_hold (so the game
++// may not unmap a chunk while it is read, and waits at most that chunk), and writes every hit (at most 4096) with
++// its region and 64 bytes around it as hex and text to logs/find-<present>.txt. One search at a time.
++// poke.req holds lines `addr=0x<a> utf16="<s>"|utf8="<s>"|hex=<bytes> expect=<hex>|expect="<s>" [z=1] [keep=1]`:
++// expect is required (a quoted one in the value's encoding, any length) and the bytes at addr must start with it; z=1 appends a NUL
++// (two bytes for utf16). Only read-write committed guest pages are written (frozen ones are thawed first; module
++// code and read-only data are refused). keep=1 writes the value again every present it differs, until a poke.req
++// holding "clear". Each poke logs its bytes before and after.
++enum { FIND_MAX = 4096, FIND_PAT = 256, FIND_CHUNK = 1 << 20, POKE_MAX = 512, KEEP_N = 8 };
++typedef struct { uint8_t p[2][FIND_PAT]; int n[2]; uint64_t present; } FindJob;
++static int find_busy;
++
++static int utf8_to_16(const char *s, size_t n, uint8_t *out, int cap) {
++    int m = 0;
++    for (size_t i = 0; i < n;) {
++        uint32_t c = (uint8_t)s[i], k = c < 0x80 ? 0 : c < 0xe0 ? 1 : c < 0xf0 ? 2 : 3;
++        c &= k ? 0x3f >> k : 0x7f;
++        for (i++; k && i < n; k--, i++) c = c << 6 | ((uint8_t)s[i] & 0x3f);
++        uint16_t u[2] = {(uint16_t)c};
++        int w = 1;
++        if (c >= 0x10000) c -= 0x10000, u[0] = (uint16_t)(0xd800 | c >> 10), u[1] = (uint16_t)(0xdc00 | (c & 0x3ff)), w = 2;
++        for (int j = 0; j < w; j++) {
++            if (m + 2 > cap) return -1;
++            out[m++] = (uint8_t)u[j], out[m++] = (uint8_t)(u[j] >> 8);
++        }
++    }
++    return m;
++}
++
++static void find_hit(FILE *f, int *hits, uint64_t a, int enc, const RtMemoryInfo *r, uint64_t lo, uint64_t hi) {
++    if (++*hits > FIND_MAX) return;
++    uint64_t s = a - 16 < lo || a < 16 ? lo : a - 16, e = s + 64 > hi ? hi : s + 64;
++    fprintf(f, "%#llx %s region %#llx+%#llx state %#x perm %u at %#llx:", (unsigned long long)a, enc ? "utf16" : "utf8",
++            (unsigned long long)r->base, (unsigned long long)r->size, r->state, r->perm, (unsigned long long)s);
++    for (uint64_t x = s; x < e; x++) fprintf(f, " %02x", *(const uint8_t *)(uintptr_t)x);
++    fputs("  |", f);
++    for (uint64_t x = s; x < e; x++) {
++        uint8_t c = *(const uint8_t *)(uintptr_t)x;
++        fputc(c >= 0x20 && c < 0x7f ? c : '.', f);
++    }
++    fputs("|\n", f);
++}
++
++static void find_main(void *arg) {
++    FindJob *j = arg;
++    uint64_t t0 = plat_now_ns(), bytes = 0, chunks = 0, hold_max = 0;
++    char name[64];
++    snprintf(name, sizeof name, "logs/find-%05llu.txt", (unsigned long long)j->present);
++    FILE *f = fopen(name, "w");
++    int hits = 0, pmax = j->n[0] > j->n[1] ? j->n[0] : j->n[1];
++    if (f) {
++        for (uint64_t a = 0; a < RT_ADDRESS_LIMIT;) {
++            RtMemoryInfo r;
++            mem_query(a, &r);
++            if (!r.size || r.base + r.size <= a) break;
++            a = r.base + r.size;
++            if (r.state == 0 || r.state == 0x10 || !(r.perm & 1)) continue;   // free, inaccessible, no read access
++            for (uint64_t p = r.base, end; p < r.base + r.size; p = end) {
++                int st = plat_mem_state(p, r.base + r.size, &end);
++                if (st != PLAT_PROT_READ && st != PLAT_PROT_RW) continue;
++                for (uint64_t c = p; c < end; c += FIND_CHUNK) {
++                    uint64_t ce = c + FIND_CHUNK + (uint64_t)pmax - 1 < end ? c + FIND_CHUNK + (uint64_t)pmax - 1 : end;
++                    uint64_t h0 = plat_now_ns();
++                    if (!mem_read_hold(c, ce - c)) continue;
++                    const uint8_t *b = (const uint8_t *)(uintptr_t)c;
++                    uint64_t lim = ce - c, starts = lim < FIND_CHUNK ? lim : FIND_CHUNK;
++                    for (int e = 0; e < 2; e++) {
++                        int n = j->n[e];
++                        if (!n) continue;
++                        for (uint64_t i = 0; i < starts && i + (uint64_t)n <= lim; i++) {
++                            const uint8_t *q = memchr(b + i, j->p[e][0], starts - i);
++                            if (!q) break;
++                            i = (uint64_t)(q - b);
++                            if (i + (uint64_t)n <= lim && !memcmp(q, j->p[e], (size_t)n)) find_hit(f, &hits, c + i, e, &r, c, ce);
++                        }
++                    }
++                    mem_read_release();
++                    uint64_t h = plat_now_ns() - h0;
++                    if (h > hold_max) hold_max = h;
++                    bytes += starts, chunks++;
++                }
++            }
++        }
++        if (hits > FIND_MAX) fprintf(f, "%d more hits not listed\n", hits - FIND_MAX);
++        fclose(f);
++    }
++    rt_log("find: %d hits in %llu MiB of guest memory (%llu chunks, longest hold %.2f ms) in %.1f ms to %s (find.req, "
++           "present %llu)", hits, (unsigned long long)(bytes >> 20), (unsigned long long)chunks, hold_max / 1e6,
++           (plat_now_ns() - t0) / 1e6, f ? name : "(cannot write)", (unsigned long long)j->present);
++    free(j);
++    __atomic_store_n(&find_busy, 0, __ATOMIC_RELEASE);
++}
++
++static void find_request(char *t, uint64_t present) {
++    size_t n = strlen(t);
++    while (n && (t[n - 1] == '\n' || t[n - 1] == '\r')) t[--n] = 0;
++    int enc = 3;
++    if (!strncmp(t, "enc=utf8 ", 9)) enc = 1, t += 9;
++    else if (!strncmp(t, "enc=utf16 ", 10)) enc = 2, t += 10;
++    else if (!strncmp(t, "enc=both ", 9)) t += 9;
++    n = strlen(t);
++    if (!n || n > FIND_PAT / 2) {
++        rt_log("find: the text must hold 1 to %d bytes: ignored (find.req)", FIND_PAT / 2);
++        return;
++    }
++    if (__atomic_exchange_n(&find_busy, 1, __ATOMIC_ACQ_REL)) {
++        rt_log("find: a search still runs: ignored (find.req)");
++        return;
++    }
++    FindJob *j = calloc(1, sizeof *j);
++    if (!j) {
++        __atomic_store_n(&find_busy, 0, __ATOMIC_RELEASE);
++        return;
++    }
++    j->present = present;
++    if (enc & 1) memcpy(j->p[0], t, n), j->n[0] = (int)n;
++    if (enc & 2) j->n[1] = utf8_to_16(t, n, j->p[1], FIND_PAT);
++    if (j->n[1] < 0) j->n[1] = 0;
++    rt_log("find: searching guest memory for '%s' (%s%s, present %llu, find.req)", t, enc & 1 ? "utf8 " : "",
++           enc & 2 ? "utf16" : "", (unsigned long long)present);
++    if (!plat_thread_spawn(find_main, j, "find", 0)) find_main(j);
++}
++
++typedef struct { uint64_t a; int n, applied; uint8_t v[POKE_MAX]; } Keep;
++static Keep keeps[KEEP_N];
++
++static int hex_bytes(const char *s, uint8_t *out, int cap) {
++    int m = 0;
++    for (;;) {
++        while (*s == ' ' || *s == ',') s++;
++        if (!isxdigit((unsigned char)s[0]) || !isxdigit((unsigned char)s[1])) return m;
++        if (m == cap) return -1;
++        char h[3] = {s[0], s[1], 0};
++        out[m++] = (uint8_t)strtoul(h, NULL, 16), s += 2;
++    }
++}
++
++// The bytes of a value: "..." quoted text (utf16: UTF-16LE) or hex pairs; -1 malformed or too long.
++static int poke_value(const char *s, int utf16, uint8_t *out, int cap) {
++    if (*s != '"') return hex_bytes(s, out, cap);
++    const char *e = strchr(s + 1, '"');
++    if (!e) return -1;
++    if (utf16) return utf8_to_16(s + 1, (size_t)(e - s - 1), out, cap);
++    if (e - s - 1 > cap) return -1;
++    memcpy(out, s + 1, (size_t)(e - s - 1));
++    return (int)(e - s - 1);
++}
++
++static void hex_line(char *out, size_t cap, const uint8_t *b, int n) {
++    size_t m = 0;
++    out[0] = 0;
++    for (int i = 0; i < n && m + 4 < cap; i++) m += (size_t)snprintf(out + m, cap - m, "%02x", b[i]);
++}
++
++// Writes v at a when every page is committed read-write (thawing frozen ones) and, with expect, the en bytes at a
++// equal it (en may differ from n): 1 written, 0 refused (why logged unless quiet), 2 unchanged (already the value).
++static int poke_write(uint64_t a, const uint8_t *v, int n, const uint8_t *expect, int en, int quiet) {
++    uint64_t span = (uint64_t)(expect && en > n ? en : n);
++    if (!mem_readable(a, span)) return quiet ? 0 : (rt_log("poke: %#llx+%llu is not mapped guest memory: refused", (unsigned long long)a, (unsigned long long)span), 0);
++    mem_thaw(a, (uint64_t)n);
++    if (!mem_read_hold(a, span)) return 0;
++    int ok = 1;
++    for (uint64_t p = a & ~0xfffull, end; p < a + (uint64_t)n; p = end)
++        if (plat_mem_state(p, a + (uint64_t)n, &end) != PLAT_PROT_RW) ok = 0;
++    uint8_t *g = (uint8_t *)(uintptr_t)a;
++    int r = !ok ? 0 : !memcmp(g, v, (size_t)n) ? 2 : expect && memcmp(g, expect, (size_t)en) ? -1 : 1;
++    char before[POKE_MAX * 2 + 1], after[POKE_MAX * 2 + 1];
++    if (!quiet) hex_line(before, sizeof before, g, n);
++    if (r == 1) memcpy(g, v, (size_t)n);
++    if (!quiet) hex_line(after, sizeof after, g, n);
++    mem_read_release();
++    if (!quiet) {
++        if (!ok) rt_log("poke: %#llx+%d is not read-write (code, read-only data or a traced page): refused", (unsigned long long)a, n);
++        else if (r < 0) rt_log("poke: %#llx holds %s, not the expected bytes: refused", (unsigned long long)a, before);
++        else rt_log("poke: %#llx before %s after %s%s", (unsigned long long)a, before, after, r == 2 ? " (already)" : "");
++    }
++    return r < 0 ? 0 : r;
++}
++
++static void poke_line(char *l, uint64_t present) {
++    char *at = strstr(l, "addr="), *u16 = strstr(l, "utf16="), *u8 = strstr(l, "utf8="), *hx = strstr(l, "hex="),
++         *ex = strstr(l, "expect=");
++    int keep = strstr(l, "keep=1") != NULL, z = strstr(l, "z=1") != NULL;
++    static uint8_t v[POKE_MAX], e[POKE_MAX];
++    int n = u16 ? poke_value(u16 + 6, 1, v, POKE_MAX - 2) : u8 ? poke_value(u8 + 5, 0, v, POKE_MAX - 2)
++                : hx ? hex_bytes(hx + 4, v, POKE_MAX - 2) : -1;
++    int en = ex ? poke_value(ex + 7, u16 != NULL, e, POKE_MAX) : -1;
++    if (!at || n <= 0 || en <= 0) {
++        rt_log("poke: '%s' needs addr=, one of utf16= utf8= hex= and expect=: ignored (poke.req)", l);
++        return;
++    }
++    if (z) { v[n++] = 0; if (u16) v[n++] = 0; }
++    uint64_t a = strtoull(at + 5, NULL, 16);
++    rt_log("poke: %#llx+%d%s (poke.req, present %llu)", (unsigned long long)a, n, keep ? " keep" : "", (unsigned long long)present);
++    if (!poke_write(a, v, n, e, en, 0) || !keep) return;
++    for (int i = 0; i < KEEP_N; i++)
++        if (!keeps[i].n || keeps[i].a == a) {
++            keeps[i] = (Keep){a, n, 0}, memcpy(keeps[i].v, v, (size_t)n);
++            return;
++        }
++    rt_log("poke: all %d keep slots are taken: %#llx is written once only", KEEP_N, (unsigned long long)a);
++}
++
++static void poke_request(char *t, uint64_t present) {
++    if (!strncmp(t, "clear", 5)) {
++        for (int i = 0; i < KEEP_N; i++)
++            if (keeps[i].n) rt_log("poke: keep %#llx cleared after %d writes again", (unsigned long long)keeps[i].a, keeps[i].applied);
++        memset(keeps, 0, sizeof keeps);
++        return;
++    }
++    for (char *l = strtok(t, "\n"); l; l = strtok(NULL, "\n")) poke_line(l, present);
++}
++
++static void keep_apply(void) {
++    for (int i = 0; i < KEEP_N; i++) {
++        Keep *k = &keeps[i];
++        if (k->n && poke_write(k->a, k->v, k->n, NULL, 0, 1) == 1 && !k->applied++)
++            rt_log("poke: the game rewrote %#llx: keep writes it again", (unsigned long long)k->a);
++    }
++}
++
+ static void watch_req_poll(uint64_t n) {
+     static int init;
+-    static char wreq[PLAT_PATH_MAX], preq[PLAT_PATH_MAX], breq[PLAT_PATH_MAX], kreq[PLAT_PATH_MAX];
++    static char wreq[PLAT_PATH_MAX], preq[PLAT_PATH_MAX], breq[PLAT_PATH_MAX], kreq[PLAT_PATH_MAX], freq[PLAT_PATH_MAX],
++        oreq[PLAT_PATH_MAX];
+     if (!init) {
+         init = 1;
+         const char *v = cfg_get("NX2NAVI_WATCH_REQ");
+         if (!v || atoi(v) != 1 || !gfx_shader_beside_cache("watch.req", wreq, sizeof wreq) ||
+             !gfx_shader_beside_cache("peek.req", preq, sizeof preq) || !gfx_shader_beside_cache("buf.req", breq, sizeof breq) ||
+-            !gfx_shader_beside_cache("pick.req", kreq, sizeof kreq))
++            !gfx_shader_beside_cache("pick.req", kreq, sizeof kreq) || !gfx_shader_beside_cache("find.req", freq, sizeof freq) ||
++            !gfx_shader_beside_cache("poke.req", oreq, sizeof oreq))
+             wreq[0] = 0;
+         else
+             rt_log("watch-req: polling %s, %s and %s (NX2NAVI_WATCH_REQ)", wreq, preq, breq);
+     }
+     if (!wreq[0]) return;
+     peek_log(n);
++    keep_apply();
+     if (n % 4) return;
+     uint64_t sz;
+     uint8_t *b;
++    for (int r = 0; r < 2; r++) {
++        const char *path = r ? oreq : freq;
++        if (!plat_file_exists(path) || !(b = plat_file_read(path, &sz))) continue;
++        plat_file_delete(path);
++        char *t = malloc(sz + 1);
++        if (t) {
++            memcpy(t, b, sz), t[sz] = 0;
++            if (r) poke_request(t, n);
++            else find_request(t, n);
++            free(t);
++        }
++        free(b);
++    }
+     if (plat_file_exists(wreq) && (b = plat_file_read(wreq, &sz))) {
+         plat_file_delete(wreq);
+         char t[128];
+-- 
+2.56.0
+
