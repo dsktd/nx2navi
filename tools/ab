@@ -1,0 +1,657 @@
+#!/usr/bin/env python3
+"""ab: automatic shader A/B for a screen region (hot-reload loop, hands-free).
+
+  tools/ab --region X,Y,W,H [--dump DIR] [--pick] [--fs h,h] [options]      against a running reload-enabled game
+  tools/ab --soft RECORDING FRAME [--label L] [KEY=VALUE...] --region ...   own LAB_SOFT replay (lavapipe), dump at FRAME
+  tools/ab --restore BAKDIR                                                 put back what a killed run left swapped
+  tools/ab --variants-only SPV [kill|zero]                                  write/validate a variant (stdout: path)
+
+What it does (README "Automatic A/B", ARCHITECTURE section 11):
+ 1. candidates = fragment shaders (cache <key16>) from a dump's passes.txt (full-size passes, newest pass first), a
+    live surface pick (pick.req, centre pixel, NX2NAVI_WATCH_REQ=1) and/or --fs;
+ 2. per candidate and variant (kill = OpKill at the top, zero = every colour output stored as null): back up the
+    original, write the variant by temp + rename, wait for "reload <key16> ok" in the game log, touch shot.req, wait
+    for the shot, put the original back (cmp-verified) and shoot again;
+ 3. diff the region of each variant shot against the base shot before it; the two base shots around it give the noise
+    floor (animation, drift). Ranked table, side-by-side image (published to ~/claude/.services/view), feed lines.
+Safety: refuses unless the game log says the reload watch is on; never touches a folder named shader-cache (the plain
+cache); backups + ACTIVE marker + journal in <control dir>/reload-bak/ab-<ts>/; try/finally + signal handlers restore;
+a SIGKILLed run is repaired with --restore. Standing still matters: a moving scene voids the numbers (the noise
+column says how much). Software replay (lavapipe) is slow: use --settle 3 --wait 120.
+"""
+import argparse, atexit, glob, hashlib, json, os, re, shutil, signal, subprocess, sys, time
+
+HOME = os.path.expanduser('~')
+ROOT = os.path.join(HOME, 'claude', 'nx2navi')
+GAME = os.path.join(ROOT, 'NX2navi', 'build', 'v111')
+FEED = os.path.join(HOME, 'claude', '.services', 'screensavers', 'feeds', 'nx2navi-lab.log')
+VIEW = os.path.join(HOME, 'claude', '.services', 'view')
+SELF = os.path.abspath(__file__)
+
+
+def need_tools():
+    """Re-exec inside nix shell when spirv-tools / imagemagick are not on PATH."""
+    if all(shutil.which(t) for t in ('spirv-as', 'spirv-val', 'spirv-dis', 'magick')):
+        return
+    if os.environ.get('AB_NIX'):
+        sys.exit('ab: spirv-tools and imagemagick are missing even inside nix shell')
+    os.environ['AB_NIX'] = '1'
+    os.execvp('nix', ['nix', 'shell', 'nixpkgs#spirv-tools', 'nixpkgs#imagemagick', '-c', sys.executable, SELF] + sys.argv[1:])
+
+
+def log(msg):
+    print('ab: ' + msg, flush=True)
+
+
+def feed(line):
+    try:
+        with open(FEED, 'a') as f:
+            f.write(line + '\n')
+    except OSError:
+        pass
+
+
+def run(cmd, **kw):
+    return subprocess.run(cmd, capture_output=True, text=True, **kw)
+
+
+# ---------------------------------------------------------------- SPIR-V variants
+
+def disassemble(path):
+    r = run(['spirv-dis', '--raw-id', path])
+    if r.returncode:
+        raise RuntimeError('spirv-dis: ' + r.stderr.strip())
+    return r.stdout.split('\n')
+
+
+def variant_lines(lines, kind):
+    """kill: OpKill after the entry function's leading OpVariables (the rest becomes an unreachable block).
+    zero: every Output (non-BuiltIn) store writes OpConstantNull of the pointee type."""
+    text = '\n'.join(lines)
+    m = re.search(r'OpEntryPoint Fragment %(\d+) ', text)
+    if not m:
+        raise ValueError('not a fragment shader')
+    entry = m.group(1)
+    bound = int(re.search(r'; Bound: (\d+)', text).group(1))
+    out = list(lines)
+    if kind == 'kill':
+        i = next(k for k, l in enumerate(out) if re.match(r'\s*%%%s = OpFunction ' % entry, l))
+        i = next(k for k in range(i, len(out)) if re.match(r'\s*%\d+ = OpLabel', out[k]))
+        k = i + 1
+        while re.match(r'\s*(%\d+ = )?OpVariable ', out[k]):
+            k += 1
+        out[k:k] = ['OpKill', '%%%d = OpLabel' % bound]
+        return out
+    if kind == 'zero':
+        builtin = set(re.findall(r'OpDecorate %(\d+) BuiltIn', text))
+        ptype = dict((a, b) for a, b in re.findall(r'%(\d+) = OpTypePointer Output %(\d+)', text))
+        target = {}   # pointer value id -> pointee type id
+        for res, ty, var in re.findall(r'%(\d+) = OpVariable %(\d+) Output', text):
+            if res not in builtin and ty in ptype:
+                target[res] = ptype[ty]
+        for res, ty, base in re.findall(r'%(\d+) = OpAccessChain %(\d+) %(\d+)', text):
+            if base in target and ty in ptype:
+                target[res] = ptype[ty]
+        if not target:
+            raise ValueError('no colour outputs')
+        nulls, nxt = {}, bound
+        first_fn = next(k for k, l in enumerate(out) if re.search(r'= OpFunction ', l))
+        for k, l in enumerate(out):
+            m = re.match(r'(\s*)OpStore %(\d+) %(\d+)(.*)', l)
+            if k > first_fn and m and m.group(2) in target:
+                t = target[m.group(2)]
+                if t not in nulls:
+                    nulls[t] = nxt
+                    nxt += 1
+                out[k] = '%sOpStore %%%s %%%d%s' % (m.group(1), m.group(2), nulls[t], m.group(4))
+        if not nulls:
+            raise ValueError('no stores to colour outputs')
+        out[first_fn:first_fn] = ['%%%d = OpConstantNull %%%s' % (v, t) for t, v in nulls.items()]
+        return out
+    raise ValueError('unknown variant ' + kind)
+
+
+def make_variant(src, kind, dst):
+    """Write variant of SPIR-V file src to dst; return None or the reason it was refused."""
+    try:
+        lines = variant_lines(disassemble(src), kind)
+    except (ValueError, StopIteration, RuntimeError, AttributeError) as e:
+        return 'no %s variant: %s' % (kind, e)
+    asm = dst + '.s'
+    with open(asm, 'w') as f:
+        f.write('\n'.join(lines) + '\n')
+    tv = ''
+    for l in lines[:3]:
+        if 'Version:' in l:
+            tv = l.split('Version:')[1].strip()
+    r = run(['spirv-as', '--preserve-numeric-ids'] + (['--target-env', 'spv' + tv] if tv else []) + [asm, '-o', dst])
+    os.unlink(asm)
+    if r.returncode:
+        return 'spirv-as failed: ' + r.stderr.strip().split('\n')[0]
+    r = run(['spirv-val', dst])
+    if r.returncode:
+        os.unlink(dst)
+        return 'spirv-val failed: ' + r.stderr.strip().split('\n')[0]
+    return None
+
+
+# ---------------------------------------------------------------- safe swapping
+
+class Swapper:
+    """Backs files up, swaps them by temp + rename, and puts every original back (cmp-verified) on any exit."""
+
+    def __init__(self, cache, bakroot):
+        self.cache = cache
+        self.dir = os.path.join(bakroot, 'ab-' + time.strftime('%Y%m%d-%H%M%S'))
+        os.makedirs(self.dir)
+        self.saved = {}   # name -> backup path
+        self.swapped = set()
+        self.marker = os.path.join(self.dir, 'ACTIVE')
+        self.journal = os.path.join(self.dir, 'journal.json')
+        self.write_marker()
+        atexit.register(self.restore_all)
+        for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+            signal.signal(s, lambda n, f: sys.exit(128 + n))
+
+    def write_marker(self):
+        with open(self.marker + '.tmp', 'w') as f:
+            json.dump({'pid': os.getpid(), 'cache': self.cache, 'saved': sorted(self.saved), 'swapped': sorted(self.swapped)}, f)
+        os.replace(self.marker + '.tmp', self.marker)
+
+    def backup(self, name):
+        if name not in self.saved:
+            b = os.path.join(self.dir, name)
+            shutil.copy2(os.path.join(self.cache, name), b)
+            self.saved[name] = b
+            self.write_marker()
+        return self.saved[name]
+
+    def put(self, name, src):
+        self.backup(name)
+        dst = os.path.join(self.cache, name)
+        tmp = os.path.join(self.cache, '.ab-tmp-' + name)   # not a <64 hex>.spv name: the watcher ignores it
+        shutil.copyfile(src, tmp)
+        self.swapped.add(name)
+        self.write_marker()
+        os.replace(tmp, dst)
+
+    def restore(self, name):
+        import filecmp
+        dst = os.path.join(self.cache, name)
+        tmp = os.path.join(self.cache, '.ab-tmp-' + name)
+        shutil.copyfile(self.saved[name], tmp)
+        os.replace(tmp, dst)
+        if not filecmp.cmp(self.saved[name], dst, shallow=False):
+            raise RuntimeError('restore of %s differs after copy' % name)
+        self.swapped.discard(name)
+        self.write_marker()
+
+    def restore_all(self):
+        bad = []
+        for name in sorted(self.swapped):
+            try:
+                self.restore(name)
+            except Exception as e:   # keep going: restore the rest
+                bad.append('%s: %s' % (name, e))
+        for name in os.listdir(self.cache) if os.path.isdir(self.cache) else []:
+            if name.startswith('.ab-tmp-'):
+                try:
+                    os.unlink(os.path.join(self.cache, name))
+                except OSError:
+                    pass
+        if bad:
+            print('ab: RESTORE FAILED for: ' + '; '.join(bad) + '\nab: run: tools/ab --restore ' + self.dir, file=sys.stderr)
+        elif os.path.exists(self.marker):
+            os.unlink(self.marker)
+        atexit.unregister(self.restore_all)
+
+
+def restore_dir(bakdir):
+    import filecmp
+    m = json.load(open(os.path.join(bakdir, 'ACTIVE')))
+    n = 0
+    for name in m['saved']:
+        dst = os.path.join(m['cache'], name)
+        if not os.path.exists(dst) or not filecmp.cmp(os.path.join(bakdir, name), dst, shallow=False):
+            tmp = os.path.join(m['cache'], '.ab-tmp-' + name)
+            shutil.copyfile(os.path.join(bakdir, name), tmp)
+            os.replace(tmp, dst)
+            n += 1
+    for f in glob.glob(os.path.join(m['cache'], '.ab-tmp-*')):
+        os.unlink(f)
+    os.unlink(os.path.join(bakdir, 'ACTIVE'))
+    log('restored %d of %d files from %s' % (n, len(m['saved']), bakdir))
+
+
+def stale_markers(bakroot):
+    for mk in glob.glob(os.path.join(bakroot, 'ab-*', 'ACTIVE')):
+        try:
+            pid = json.load(open(mk))['pid']
+            os.kill(pid, 0)
+            sys.exit('ab: another ab (pid %d) is swapping: %s' % (pid, mk))
+        except ProcessLookupError:
+            sys.exit('ab: a killed run left shaders swapped: tools/ab --restore %s' % os.path.dirname(mk))
+        except (OSError, ValueError, KeyError):
+            pass
+
+
+# ---------------------------------------------------------------- game log / control files
+
+class Game:
+    def __init__(self, logpath, cache, ctl):
+        self.log, self.cache, self.ctl = logpath, cache, ctl
+
+    def mark(self):
+        return os.path.getsize(self.log)
+
+    def tail(self, off):
+        with open(self.log, 'rb') as f:
+            f.seek(off)
+            return f.read().decode('utf8', 'replace')
+
+    def wait(self, off, rx, timeout):
+        """Wait for regex rx in the log text after offset off; returns the match or None."""
+        end = time.time() + timeout
+        while time.time() < end:
+            m = re.search(rx, self.tail(off))
+            if m:
+                return m
+            time.sleep(0.25)
+        return None
+
+    def touch(self, name, text=''):
+        p = os.path.join(self.ctl, name)
+        with open(p + '.tmp', 'w') as f:
+            f.write(text)
+        os.replace(p + '.tmp', p)
+
+    def shot(self, wait):
+        off = self.mark()
+        self.touch('shot.req')
+        m = self.wait(off, r'boot: shot: present (\d+) written to (\S+)', wait)
+        return m.group(2) if m else None
+
+
+def check_reload_on(g):
+    txt = open(g.log, 'rb').read().decode('utf8', 'replace')
+    m = None
+    for m in re.finditer(r'gfx_shader: reload: watching (\S+) for changed', txt):
+        pass
+    if not m:
+        sys.exit('ab: refusing: %s has no "gfx_shader: reload: watching" line: the game was not started with '
+                 'NX2NAVI_SHADER_RELOAD=1 (or the log is another run\'s)' % g.log)
+    watched = os.path.realpath(m.group(1))
+    if watched != os.path.realpath(g.cache):
+        sys.exit('ab: refusing: the game watches %s, not %s' % (watched, g.cache))
+
+
+def plain_cache(cache, game):
+    return os.path.basename(os.path.realpath(cache)) == 'shader-cache' and \
+        os.path.realpath(os.path.dirname(cache)) == os.path.realpath(game)
+
+
+# ---------------------------------------------------------------- candidates
+
+def parse_range(s):
+    out = set()
+    for part in s.split(','):
+        a, _, b = part.partition('-')
+        out.update(range(int(a), int(b or a) + 1))
+    return out
+
+
+def dump_candidates(dump, passes, minfrac):
+    """Fragment shaders of full-size render passes of a dump (passes.txt), newest pass first: {fs: [pass,...]}."""
+    txt = open(os.path.join(dump, 'passes.txt'), errors='replace').read()
+    blocks = re.split(r'^(?=pass \d+: )', txt, flags=re.M)
+    rp = []
+    for b in blocks:
+        m = re.match(r'pass (\d+): render pass, draws (\d+), area (\d+)x(\d+)', b)
+        if m:
+            rp.append((int(m.group(1)), int(m.group(3)) * int(m.group(4)), b))
+    if not rp:
+        return {}
+    big = max(a for _, a, _ in rp)
+    cand = {}
+    for n, area, b in sorted(rp, reverse=True):
+        if (passes and n not in passes) or (not passes and area < minfrac * big):
+            continue
+        for fs in re.findall(r'\bfs ([0-9a-f]{16})\b', b):
+            cand.setdefault(fs, [])
+            if n not in cand[fs]:
+                cand[fs].append(n)
+    return cand
+
+
+def pick_candidates(g, wait):
+    off = g.mark()
+    g.touch('pick.req')
+    m = g.wait(off, r'pick: frame (\d+): \d+ of \d+ draws hit', wait)
+    if not m:
+        log('no pick result within %ds (NX2NAVI_WATCH_REQ=1 needed)' % wait)
+        return {}
+    path = os.path.join(g.ctl, 'logs', 'pick-%05d.txt' % int(m.group(1)))
+    txt = open(path, errors='replace').read()
+    cand = {}
+    for p, body in re.findall(r'^pass (\d+) draw \d+:.*\n((?:  .*\n)*)', txt, flags=re.M):
+        for fs in re.findall(r'^  fs ([0-9a-f]{16}) ', body, flags=re.M):
+            cand.setdefault(fs, []).append(int(p))
+    return cand
+
+
+# ---------------------------------------------------------------- images
+
+def img_size(p):
+    r = run(['magick', 'identify', '-format', '%w %h', p + '[0]'])
+    w, h = r.stdout.split()
+    return int(w), int(h)
+
+
+def region_px(spec, size, radius):
+    v = [float(x) for x in spec.split(',')]
+    W, H = size
+    if len(v) == 2:   # pixel: a box around it
+        x, y = v
+        if x <= 1 and y <= 1:
+            x, y = x * W, y * H
+        v = [x - radius, y - radius, 2 * radius + 1, 2 * radius + 1]
+    elif max(v) <= 1:
+        v = [v[0] * W, v[1] * H, v[2] * W, v[3] * H]
+    x, y, w, h = [int(round(a)) for a in v]
+    x, y = max(0, min(x, W - 1)), max(0, min(y, H - 1))
+    return x, y, max(1, min(w, W - x)), max(1, min(h, H - y))
+
+
+def crop(src, reg, dst):
+    x, y, w, h = reg
+    run(['magick', src, '-crop', '%dx%d+%d+%d' % (w, h, x, y), '+repage', dst])
+
+
+def rmse(a, b):
+    """(normalised RMSE 0..1, share of pixels differing by more than 2 %) between two same-size images."""
+    r = run(['magick', 'compare', '-metric', 'RMSE', a, b, 'null:'])
+    m = re.search(r'\(([0-9.e+-]+)\)', r.stderr)
+    e = float(m.group(1)) if m else 1.0
+    r = run(['magick', 'compare', '-fuzz', '2%', '-metric', 'AE', a, b, 'null:'])
+    try:
+        ae = float(r.stderr.split()[0])
+    except (ValueError, IndexError):
+        ae = 0.0
+    w, h = img_size(a)
+    return e, ae / (w * h)
+
+
+# ---------------------------------------------------------------- the A/B
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split('\n')[0], formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('--region', help='X,Y,W,H or X,Y (a box of --radius) in shot pixels; all values <= 1: fractions of the shot')
+    ap.add_argument('--radius', type=int, default=8)
+    ap.add_argument('--game', default=GAME)
+    ap.add_argument('--cache', help='shader cache folder the game watches (default: from the log)')
+    ap.add_argument('--log', help='game log (default: newest logs/play-*.log of --game)')
+    ap.add_argument('--dump', help='dump folder with passes.txt (default: $LAB_OUT/dump inside a --soft hook)')
+    ap.add_argument('--passes', help='restrict dump candidates to these passes, e.g. 150-200,212')
+    ap.add_argument('--minfrac', type=float, default=0.5, help='dump candidates: passes with this share of the biggest area')
+    ap.add_argument('--pick', action='store_true', help='also ask for a surface pick (pick.req, centre pixel)')
+    ap.add_argument('--fs', help='candidate fragment shaders, <key16>,...')
+    ap.add_argument('--variants', default='kill,zero')
+    ap.add_argument('--max', type=int, default=30, help='most candidates tried (pick first, then newest pass first)')
+    ap.add_argument('--settle', type=float, default=1.5, help='s between "reload ok" and the shot')
+    ap.add_argument('--wait', type=int, default=60, help='s to wait for a reload log line or a shot')
+    ap.add_argument('--top', type=int, default=4, help='variants in the side-by-side image')
+    ap.add_argument('--out', help='result folder (default .lab/ab/<ts>)')
+    ap.add_argument('--title', default='A/B')
+    ap.add_argument('--no-publish', action='store_true')
+    ap.add_argument('--dry', action='store_true', help='list candidates, build and validate the variants, swap nothing')
+    ap.add_argument('--live', action='store_true', help='allow Cal\'s running game (default: only a --soft replay or a log of a lab run)')
+    ap.add_argument('--soft', nargs=2, metavar=('RECORDING', 'FRAME'), help='run own LAB_SOFT replay and A/B at FRAME')
+    ap.add_argument('--label', default='ab')
+    ap.add_argument('--restore', metavar='BAKDIR')
+    ap.add_argument('--variants-only', nargs='+', metavar=('SPV', 'KIND'))
+    ap.add_argument('kv', nargs='*', help='KEY=VALUE for the game (with --soft)')
+    a = ap.parse_args()
+
+    need_tools()
+    if a.restore:
+        return restore_dir(a.restore)
+    if a.variants_only:
+        dst = '/tmp/ab-variant-%s.spv' % os.path.basename(a.variants_only[0])[:16]
+        err = make_variant(a.variants_only[0], (a.variants_only + ['kill'])[1], dst)
+        print(err or dst)
+        return 1 if err else 0
+
+    if a.soft:   # outer: lab-run with a hook that calls this script again once the dump frame is reached
+        inner = [x for x in sys.argv[1:]]
+        i = inner.index('--soft')
+        del inner[i:i + 3]
+        for kv in a.kv:
+            inner.remove(kv)
+        env = dict(os.environ, LAB_SOFT='1', LAB_HOOK=' '.join(shlex_quote(x) for x in [sys.executable, SELF] + inner),
+                   LAB_TIMEOUT=os.environ.get('LAB_TIMEOUT', '900'))
+        cmd = [os.path.join(os.path.dirname(SELF), 'lab-run'), a.soft[0], a.soft[1], a.label,
+               'NX2NAVI_SHADER_RELOAD=1', 'NX2NAVI_WATCH_REQ=1'] + a.kv
+        return subprocess.call(cmd, env=env)
+
+    if not a.region:
+        ap.error('--region is required')
+    labout = os.environ.get('LAB_OUT')
+    if labout:   # inside the lab-run hook
+        a.log = a.log or os.environ['LAB_LOG']
+        a.cache = a.cache or os.path.join(labout, 'shader-cache')
+        a.dump = a.dump or os.path.join(labout, 'dump')
+    elif not a.live and not a.dry:
+        sys.exit('ab: pass --soft RECORDING FRAME (own lavapipe replay) or --live (an already running game, e.g. a reload-enabled '
+                 'lab run); Cal\'s game only by his say-so')
+    logs = sorted(glob.glob(os.path.join(a.game, 'logs', 'play-*.log')), key=os.path.getmtime)
+    a.log = a.log or (logs[-1] if logs else None)
+    if not a.log:
+        sys.exit('ab: no game log')
+    if not a.cache:
+        m = None
+        for m in re.finditer(r'gfx_shader: reload: watching (\S+) for changed', open(a.log, 'rb').read().decode('utf8', 'replace')):
+            pass
+        if not m:
+            sys.exit('ab: refusing: no reload watch line in %s (NX2NAVI_SHADER_RELOAD=1 not set)' % a.log)
+        a.cache = m.group(1)
+    a.cache = os.path.realpath(a.cache)
+    if plain_cache(a.cache, a.game):
+        sys.exit('ab: refusing: %s is the plain shader-cache; use a lab copy or shader-cache-i2f' % a.cache)
+    ctl = os.path.dirname(a.cache)
+    g = Game(a.log, a.cache, ctl)
+    check_reload_on(g)
+
+    out = a.out or os.path.join(ROOT, '.lab', 'ab', time.strftime('%Y%m%d-%H%M%S') + '-' + a.label)
+    os.makedirs(out, exist_ok=True)
+
+    # candidates
+    cand = {}
+    if a.pick:
+        for fs, ps in pick_candidates(g, a.wait).items():
+            cand.setdefault(fs, []).extend(ps)
+        log('pick: %d shaders' % len(cand))
+    if a.fs:
+        for fs in a.fs.split(','):
+            cand.setdefault(fs[:16], [])
+    if a.dump:
+        for _ in range(60):   # the hook can run while passes.txt is still being written
+            p = os.path.join(a.dump, 'passes.txt')
+            if os.path.exists(p) and os.path.getsize(p):
+                s0 = os.path.getsize(p)
+                time.sleep(1)
+                if os.path.getsize(p) == s0:
+                    break
+            time.sleep(1)
+        for fs, ps in dump_candidates(a.dump, parse_range(a.passes) if a.passes else None, a.minfrac).items():
+            cand.setdefault(fs, []).extend(ps)
+    files = {}
+    for fs in list(cand):
+        f = sorted(glob.glob(os.path.join(a.cache, fs + '*.spv')))
+        if f:
+            files[fs] = os.path.basename(f[0])
+        else:
+            log('no cache file for fs %s: skipped' % fs)
+    order = list(files)[:a.max]
+    if not order:
+        sys.exit('ab: no candidate fragment shaders (give --dump, --pick or --fs)')
+    variants = a.variants.split(',')
+    log('%d candidates x %s' % (len(order), '+'.join(variants)))
+
+    # variants first (pure file work), so --dry shows everything and a bad shader costs no game time
+    vdir = os.path.join(out, 'variants')
+    os.makedirs(vdir, exist_ok=True)
+    jobs, refused = [], []
+    for fs in order:
+        for v in variants:
+            dst = os.path.join(vdir, '%s.%s.spv' % (fs, v))
+            err = make_variant(os.path.join(a.cache, files[fs]), v, dst)
+            (refused.append((fs, v, err)) if err else jobs.append((fs, v, dst)))
+    for fs, v, err in refused:
+        log('%s %s: %s' % (fs, v, err))
+    if a.dry:
+        for fs, v, dst in jobs:
+            print('%s %-4s passes %s  %s' % (fs, v, cand[fs][:6], dst))
+        return 0
+    stale_markers(os.path.join(ctl, 'reload-bak'))
+    feed('%s step: ab %s: %d candidate shaders, %d variants, region %s' % (time.strftime('%H:%M'), a.label, len(order), len(jobs), a.region))
+
+    sw = Swapper(a.cache, os.path.join(ctl, 'reload-bak'))
+    log('backups in %s' % sw.dir)
+    shots = os.path.join(out, 'shots')
+    os.makedirs(shots, exist_ok=True)
+
+    def take(tag):
+        p = g.shot(a.wait)
+        if not p:
+            return None
+        d = os.path.join(shots, tag + '.png')
+        shutil.copyfile(p, d)
+        return d
+
+    def swap_and_wait(name, src):
+        off = g.mark()
+        sw.put(name, src)
+        m = g.wait(off, r'reload %s (ok|failed)[^\n]*' % name[:16], a.wait)
+        return m.group(0) if m else 'no reload line within %ds' % a.wait
+
+    def back_and_wait(name):
+        off = g.mark()
+        sw.restore(name)
+        g.wait(off, r'reload %s (ok|failed)' % name[:16], a.wait)
+
+    results = []
+    base = take('base-000')
+    if not base:
+        sys.exit('ab: no shot of the unmodified game (is the replay running and shot.req handled?)')
+    size = img_size(base)
+    reg = region_px(a.region, size, a.radius)
+    log('shot %dx%d, region %s' % (size[0], size[1], reg))
+    prev = base
+    for n, (fs, v, spv) in enumerate(jobs, 1):
+        name = files[fs]
+        status = swap_and_wait(name, spv)
+        row = {'fs': fs, 'variant': v, 'passes': cand[fs][:4], 'note': ''}
+        if ' ok' not in status:
+            row['note'] = status.split(' ', 2)[-1][:60]
+        elif 'not in use' in status:
+            row['note'] = 'not drawn'
+        else:
+            time.sleep(a.settle)
+            vs = take('%03d-%s-%s' % (n, fs, v))
+            back_and_wait(name)
+            time.sleep(a.settle)
+            nb = take('base-%03d' % n)
+            if not (vs and nb):
+                row['note'] = 'no shot'
+            else:
+                for k, im in (('p', prev), ('v', vs), ('n', nb)):
+                    crop(im, reg, os.path.join(shots, 'c-%s-%d.png' % (k, n)))
+                cp, cv, cn = [os.path.join(shots, 'c-%s-%d.png' % (k, n)) for k in 'pvn']
+                e, share = rmse(cp, cv)
+                noise, _ = rmse(cp, cn)
+                row.update(rmse=e, changed=share, noise=noise, delta=e - noise, shot=vs, before=prev, after=nb)
+                prev = nb
+        if sw.swapped:   # reload failed or skipped the shot: the original goes back now
+            back_and_wait(name)
+        results.append(row)
+        log('%3d/%d %s %-4s %s' % (n, len(jobs), fs, v, ('rmse %.4f noise %.4f changed %.1f%%' % (row['rmse'], row['noise'], 100 * row['changed'])) if 'rmse' in row else row['note']))
+    sw.restore_all()
+    log('all originals restored (cmp-verified)')
+
+    # report
+    ranked = sorted([r for r in results if 'rmse' in r], key=lambda r: -r['delta'])
+    rest = [r for r in results if 'rmse' not in r]
+    lines = ['| rank | fs | variant | passes | region RMSE | noise | delta | changed |', '|---|---|---|---|---|---|---|---|']
+    for i, r in enumerate(ranked, 1):
+        lines.append('| %d | %s | %s | %s | %.4f | %.4f | %+.4f | %.1f%% |' % (i, r['fs'], r['variant'], ','.join(map(str, r['passes'])), r['rmse'], r['noise'], r['delta'], 100 * r['changed']))
+    for r in rest:
+        lines.append('| - | %s | %s | %s | %s | | | |' % (r['fs'], r['variant'], ','.join(map(str, r['passes'])), r['note']))
+    for fs, v, err in refused:
+        lines.append('| - | %s | %s | | %s | | | |' % (fs, v, err))
+    report = '\n'.join(lines)
+    open(os.path.join(out, 'report.md'), 'w').write('region %s of %dx%d, game log %s\n\n%s\n' % (reg, size[0], size[1], a.log, report))
+    json.dump({'region': reg, 'size': size, 'results': results}, open(os.path.join(out, 'results.json'), 'w'), indent=1)
+    print(report)
+
+    pub = None
+    if ranked:
+        pub = montage(ranked[:a.top], reg, size, os.path.join(out, 'ab.png'))
+        log('side-by-side: %s' % pub)
+        if pub and not a.no_publish:
+            publish(pub, '%s: %s (region %d,%d %dx%d)' % (a.title, ', '.join('%s %s' % (r['fs'][:8], r['variant']) for r in ranked[:a.top]), *reg))
+        t = ranked[0]
+        feed('%s result: ab %s: biggest change in region %s from fs %s %s (rmse %.4f over noise %.4f); %d tried, report %s' %
+             (time.strftime('%H:%M'), a.label, reg, t['fs'], t['variant'], t['rmse'], t['noise'], len(results), out))
+    return 0
+
+
+def shlex_quote(s):
+    import shlex
+    return shlex.quote(s)
+
+
+def montage(rows, reg, size, dst):
+    """One row per variant: base | variant | difference x4, region plus 48 px of context, region outlined."""
+    x, y, w, h = reg
+    m = 48
+    cx, cy = max(0, x - m), max(0, y - m)
+    cw, ch = min(size[0] - cx, w + 2 * m + (x - cx)), min(size[1] - cy, h + 2 * m + (y - cy))
+    scale = max(1, 320 // max(cw, 1))
+    tmp = os.path.dirname(dst)
+    parts = []
+    for i, r in enumerate(rows):
+        cell = []
+        for k, im in (('b', r['before']), ('v', r['shot'])):
+            f = os.path.join(tmp, 'm-%d%s.png' % (i, k))
+            run(['magick', im, '-crop', '%dx%d+%d+%d' % (cw, ch, cx, cy), '+repage', '-fill', 'none', '-stroke', 'red',
+                 '-draw', 'rectangle %d,%d %d,%d' % (x - cx, y - cy, x - cx + w - 1, y - cy + h - 1),
+                 '-filter', 'point', '-resize', '%d%%' % (100 * scale), f])
+            cell.append(f)
+        d = os.path.join(tmp, 'm-%d-diff.png' % i)
+        run(['magick', cell[0], cell[1], '-compose', 'difference', '-composite', '-evaluate', 'multiply', '4', d])
+        label = '%s %s  rmse %.4f' % (r['fs'], r['variant'], r['rmse'])
+        row = os.path.join(tmp, 'm-%d.png' % i)
+        run(['magick', cell[0], cell[1], d, '+append', '-gravity', 'north', '-background', 'black', '-fill', 'white',
+             '-splice', '0x18', '-annotate', '+0+2', label, row])
+        if not os.path.exists(row):   # no font in this ImageMagick: unlabeled
+            run(['magick', cell[0], cell[1], d, '+append', row])
+        parts.append(row)
+    r = run(['magick'] + parts + ['-append', dst])
+    for f in glob.glob(os.path.join(tmp, 'm-*.png')):
+        os.unlink(f)
+    return dst if r.returncode == 0 and os.path.exists(dst) else None
+
+
+def publish(png, title):
+    try:
+        name = time.strftime('%Y%m%d-%H%M%S') + '-ab.png'
+        shutil.copyfile(png, os.path.join(VIEW, 'images', name))
+        with open(os.path.join(VIEW, 'index.jsonl'), 'a') as f:
+            f.write(json.dumps({'ts': int(time.time()), 'title': title, 'file': name, 'bytes': os.path.getsize(png)}) + '\n')
+        log('published %s' % name)
+    except OSError as e:
+        log('publish failed: %s' % e)
+
+
+if __name__ == '__main__':
+    sys.exit(main())
