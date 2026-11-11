@@ -18,6 +18,7 @@ Read `README.md` first: build steps, workarounds, private patches. The investiga
 - **License.** Upstream's additions forbid redistribution. Changes to upstream code are private commits on `build`, copied to `patches/`. This repo's remote is the **private** `dsktd/nx2navi`. Never make it public, and never push `build`.
 - **Cal's game runs on the host,** so container `/proc` can't see it. Treat it as running while the newest `build/v111/logs/play-*.log` was written less than 2 minutes ago.
   - **One GPU job at a time.** Every GPU use (replays, RenderDoc replays, captures) takes the lab lock `/tmp/nx2navi-lab.lock`; two at once exhausted VRAM and lost the device (2026-11-09). `lab-run` also waits for 10 GiB free VRAM.
+  - **Software runs may overlap Cal's play; GPU runs may not.** `LAB_SOFT=1 tools/lab-run ...` renders on Mesa lavapipe (llvmpipe), only lavapipe's ICD visible, pinned to cores 12-15,28-31, about 6 fps at render scale 50: good for start checks (no FATAL) and a shot, not for perf numbers or GPU-specific bugs (lavapipe's subgroup size is 8, not 32).
   - **No `lab-run` replays while he plays.** A GPU fault in a replay resets the GPU and crashes his game; `lab-run` refuses in that case.
   - Live work in his game is allowed when it was started with `NX2NAVI_SHADER_RELOAD=1`:
     - shader edits through hot-reload: write a temp file and rename it, keep backups in `build/v111/reload-bak/`, restore failed tests

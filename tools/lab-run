@@ -9,6 +9,10 @@
 #   one .rdc per listed present lands in $OUT. Give a dump frame after the last capture frame (README "RenderDoc").
 # LAB_HANG=1: RADV_DEBUG=nogpl,hang and the radv_dumps_* land in $OUT/hang (radv writes them under $HOME, so HOME is
 #   pointed there for the game only; XDG_CACHE_HOME stays).
+# LAB_SOFT=1: software rendering on Mesa lavapipe (llvmpipe Vulkan), no GPU: only lavapipe's ICD is visible
+#   (VK_DRIVER_FILES), LP_NUM_THREADS=8, pinned to cores LAB_SOFT_CPUS (12-15,28-31; never 0-7,16-23), render scale
+#   50, fps limit 30, a scratch pipeline cache. Skips the lock, VRAM and Cal's-game guards (software runs may overlap his
+#   play), aborts if the log names any device but llvmpipe. Slow (about 1-3 fps): keep replays short, LAB_TIMEOUT up.
 # Never touches shader-cache or the binary; the game itself still writes its caches in the bin dir's cwd.
 set -u
 # lab-run [--show] ...: --show also writes latest-frame.png (only if the dump frame was reached); off by default.
@@ -20,7 +24,8 @@ ROOT=$HOME/claude/nx2navi
 BIN=${LAB_BIN:-$ROOT/NX2navi/build/v111}
 OUT=$ROOT/.lab/$label; log=$OUT/run.log
 # lock shared with every other lab/investigation run (held by the game via fd 9, gone when it exits)
-[ $dry = 1 ] || {
+soft=${LAB_SOFT:-}
+[ $dry = 1 ] || [ -n "$soft" ] || {
 exec 9>/tmp/nx2navi-lab.lock; flock -w ${LAB_LOCK_WAIT:-3600} 9 || { echo "lab-run: lock busy" >&2; exit 3; }
 # VRAM guard (2026-11-09: two GPU jobs at once exhausted the 16 GiB card, amdgpu "Not enough memory for command
 # submission", device lost): wait until the card has room for a replay (LAB_VRAM_MIB free, default 10240)
@@ -48,6 +53,14 @@ envs=(); for kv in "$@"; do envs+=("$kv"); done
 # hang mode keeps every shader's IR text (keep_shader_info) under keys of their own: those entries filled 4.0 of the
 # 4.3 GB of the shared pipeline-cache.bin (2026-11-09), so a hang run writes a scratch cache instead
 radv=nogpl; [ -n "${LAB_HANG:-}" ] && { radv=nogpl,hang; mkdir -p "$OUT/hang"; envs+=("NX2NAVI_PIPELINE_CACHE=$OUT/pipeline-cache.bin" "XDG_CACHE_HOME=${XDG_CACHE_HOME:-$HOME/.cache}" "HOME=$OUT/hang"); }
+pin=(); vkwrap=nixVulkanIntel
+if [ -n "$soft" ]; then
+  mesa=$(nix build nixpkgs#mesa --no-link --print-out-paths | head -1) || exit 4
+  lvp=$mesa/share/vulkan/icd.d/lvp_icd.x86_64.json; [ -f "$lvp" ] || { echo "lab-run: no $lvp" >&2; exit 4; }
+  pin=(taskset -c "${LAB_SOFT_CPUS:-12-15,28-31}"); vkwrap=env
+  envs=("VK_DRIVER_FILES=$lvp" "VK_ICD_FILENAMES=$lvp" LP_NUM_THREADS=${LAB_SOFT_THREADS:-8} NX2NAVI_RENDER_SCALE=50
+    NX2NAVI_FPS_LIMIT=30 "NX2NAVI_PIPELINE_CACHE=$OUT/pipeline-cache.bin" "${envs[@]}")
+fi
 if [ -n "${LAB_VALIDATE:-}" ]; then
   vvl=$(nix build nixpkgs#vulkan-validation-layers --no-link --print-out-paths | tail -1) || exit 4
   cat >"$OUT/vk_layer_settings.txt" <<EOF
@@ -90,10 +103,10 @@ else restore_saves() { :; }; fi
 t0=$(date +%s.%N)
 FEED=$HOME/claude/.services/screensavers/feeds/nx2navi-lab.log
 echo "$(date +%H:%M) run $label: replay to frame $frame ${envs[*]}" >>"$FEED"
-setsid nice -n 19 env WAYLAND_DISPLAY=${LAB_DISPLAY:-gpu-display} XDG_RUNTIME_DIR=${LAB_RUNTIME:-$HOME/claude/.services/gpu-display/runtime} \
+setsid nice -n 19 "${pin[@]}" env WAYLAND_DISPLAY=${LAB_DISPLAY:-gpu-display} XDG_RUNTIME_DIR=${LAB_RUNTIME:-$HOME/claude/.services/gpu-display/runtime} \
   nix develop $ROOT --command env TERM=dumb SDL_VIDEODRIVER=wayland SDL_JOYSTICK_HIDAPI_STEAM=0 RADV_DEBUG=$radv \
   ${LAB_AUDIO:+PULSE_SERVER=unix:/run/user/1000/pulse/native} NX2NAVI_PIPE_SKIP=strict NX2NAVI_INPUT_SCRIPT="$rec" NX2NAVI_DUMP=$frame NX2NAVI_DUMP_DIR=$OUT/dump "${envs[@]}" \
-  bash -c 'cd "$0" && exec nixVulkanIntel "./$1"' "$BIN" "${LAB_EXE:-nx2navi}" </dev/null >"$log" 2>&1 &
+  bash -c 'cd "$0" && exec $2 "./$1"' "$BIN" "${LAB_EXE:-nx2navi}" $vkwrap </dev/null >"$log" 2>&1 &
 pgid=$!
 # the live screensaver's job registry: the Director's jobwatch scene shows this run's progress and the game's last line
 job=nx2navi-$label; jlog=$OUT/job.log; : >"$jlog"
@@ -104,6 +117,9 @@ for ((i=0; i<tmo*2; i++)); do sleep 0.5
   if ((i % 8 == 0)); then cur=$(grep -aoE 'kernel: frame [0-9]+' "$log" | tail -1 | grep -oE '[0-9]+$'); echo "$label: frame ${cur:-0} of $frame | $(tail -c 300 "$log" | tail -1 | cut -c1-160)" >>"$jlog"; fi
   echo "$((i/2)) $(wc -l <"$log")" >>"$OUT/trace"   # elapsed s, log lines: lab-when <label> <regex> maps a log line to a time
   grep -aqE "vk_dump: frame $frame: [0-9]+ passes" "$log" && { hit=1; break; }
+  # software mode: the device must be lavapipe; anything else (RADV) is stopped at once
+  [ -n "$soft" ] && grep -aqE 'vk: using gpu' "$log" && ! grep -aqiE 'vk: using gpu.*llvmpipe' "$log" && {
+    echo "lab-run: LAB_SOFT picked a device other than llvmpipe; aborting" >&2; grep -aE 'vk: gpu ' "$log" >&2; break; }
   grep -aqE 'FATAL|=== end' "$log" && break
   kill -0 $pgid 2>/dev/null || break
 done
