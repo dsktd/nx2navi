@@ -173,14 +173,15 @@ try-name NAME="" *args:
 
 # try-i2f on play11 with the VRAM hold settings (#160): reuse released render targets, trim at 85%, released cap
 # 1536 MiB with LRU, live textures idle 15 s may drop. Lab 46k frames: card 84-94% vs 91-99%, 0 vs 51 trims at 95%,
-# worst frame 27 vs 98 ms, no fps cost (66.6 vs 66.2, n=5). Any variable can be overridden from the environment.
+# worst frame 27 vs 98 ms, no fps cost (66.6 vs 66.2, n=5). STALE_LIVE=1 is the #149/#169 terrain fix (lab: 3974
+# tiles recovered, 0 unresolved). Any variable can be overridden from the environment.
 # RT_RECYCLE is off (2026-11-11): on play11 it gave back render targets the game took back with their content lost,
 # environment lighting flickered with camera angle and time of day (play-20261111-115322).
 try-vram *args:
     NX2NAVI_EXE="${NX2NAVI_EXE:-play11}" NX2NAVI_TEX_RT_RECYCLE="${NX2NAVI_TEX_RT_RECYCLE:-0}" \
     NX2NAVI_TEX_RT_TRIM="${NX2NAVI_TEX_RT_TRIM:-85}" NX2NAVI_TEX_RT_TRIM_PER_MIN="${NX2NAVI_TEX_RT_TRIM_PER_MIN:-0}" \
     NX2NAVI_TEX_RELEASED_MIB="${NX2NAVI_TEX_RELEASED_MIB:-1536}" NX2NAVI_TEX_RELEASED_LRU="${NX2NAVI_TEX_RELEASED_LRU:-1}" \
-    NX2NAVI_TEX_LIVE_IDLE="${NX2NAVI_TEX_LIVE_IDLE:-900}" \
+    NX2NAVI_TEX_LIVE_IDLE="${NX2NAVI_TEX_LIVE_IDLE:-900}" NX2NAVI_TEX_STALE_LIVE="${NX2NAVI_TEX_STALE_LIVE:-1}" \
     {{just_executable()}} -f "{{justfile()}}" try-i2f {{args}}
 
 # Play casually with everything Tally needs if something goes wrong, at no measurable cost: no debugger, the log
