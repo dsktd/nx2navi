@@ -308,6 +308,6 @@ scenario-add name from session frame="999999":
 # (12-15,28-31). Runtime only: a restart of those processes or a reboot undoes it. CPUS=<list> picks other cores.
 pin-desktop CPUS="8-11,24-27":
     #!/usr/bin/env bash
-    for name in niri pipewire pipewire-pulse wireplumber waybar Xwayland xwayland-satellite mako; do
+    for name in niri pipewire pipewire-pulse wireplumber waybar Xwayland xwayland-satell mako; do  # comm names are cut at 15 characters
         for pid in $(pgrep -x "$name"); do taskset -apc "{{CPUS}}" "$pid" >/dev/null && echo "$name $pid -> {{CPUS}}"; done
     done
