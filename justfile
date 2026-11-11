@@ -157,19 +157,33 @@ try-i2f *args:
     NX2NAVI_PIPELINE_CACHE="{{src}}/build/{{ver}}/pipeline-cache-i2f.bin" \
     {{just_executable()}} -f "{{justfile()}}" try {{args}}
 
-# Rename Link in all English dialogue to NAME (whole words only, tags untouched): rebuilds the mod in
-# NX2navi/build/{{ver}}/mods-name/link-name from the game's own text and checks it. Python 3.14 from nixpkgs (stdlib
-# only), so it runs on the host and in the container alike.
-rename NAME:
-    cd "{{src}}" && rm -rf "build/{{ver}}/msg-edit-name" && \
-    nix shell nixpkgs#python314 -c python3 -I ../tools/msgmod.py rename --old Link --new "{{NAME}}" --edits "build/{{ver}}/msg-edit-name" && \
-    nix shell nixpkgs#python314 -c python3 -I ../tools/msgmod.py build --mod link-name --mods-dir "build/{{ver}}/mods-name" --edits "build/{{ver}}/msg-edit-name" && \
-    nix shell nixpkgs#python314 -c python3 -I ../tools/msgmod.py check --mod link-name --mods-dir "build/{{ver}}/mods-name" --edits "build/{{ver}}/msg-edit-name"
+# Text mod (#170), built into NX2navi/build/{{ver}}/mods-text/text from the game's own text: Link renamed to NAME
+# (whole words, tags untouched; an empty NAME keeps the last one, saved in mods-text/name) plus every change in
+# build/{{ver}}/items.toml (`just items` makes it). Python 3.14 from nixpkgs, stdlib only: host or container.
+text NAME="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd "{{src}}"
+    py="nix shell nixpkgs#python314 -c python3 -I"
+    out="build/{{ver}}/mods-text" edits="build/{{ver}}/msg-edit-text"
+    mkdir -p "$out"
+    name="{{NAME}}"; [ -n "$name" ] || name=$(cat "$out/name" 2>/dev/null || true)
+    rm -rf "$edits" && mkdir -p "$edits/USen"
+    if [ -n "$name" ] && [ "$name" != Link ]; then $py ../tools/msgmod.py rename --old Link --new "$name" --edits "$edits"; fi
+    printf '%s\n' "${name:-Link}" > "$out/name"
+    if [ -f "build/{{ver}}/items.toml" ]; then $py ../tools/itemtext.py apply --export "build/{{ver}}/msg/USen" --items "build/{{ver}}/items.toml" --edits "$edits/USen"; fi
+    $py ../tools/msgmod.py build --mod text --mods-dir "$out" --edits "$edits"
+    $py ../tools/msgmod.py check --mod text --mods-dir "$out" --edits "$edits"
 
-# try-vram with Link renamed: `just try-name` plays the last built name, `just try-name Zed` renames first.
+# Make NX2navi/build/{{ver}}/items.toml: every item's name and description on the Items screen, to edit. Then
+# `just try-name` (or `just text`) builds them into the text mod.
+items:
+    cd "{{src}}" && nix shell nixpkgs#python314 -c python3 -I ../tools/itemtext.py init --export "build/{{ver}}/msg/USen" --out "build/{{ver}}/items.toml"
+
+# try-vram with the text mod: rebuilds it first (Link renamed to NAME, or the last name; items.toml applied).
 try-name NAME="" *args:
-    {{ if NAME != "" { just_executable() + " -f " + justfile() + " rename '" + NAME + "' &&" } else { "" } }} \
-    NX2NAVI_MODS_DIR="${NX2NAVI_MODS_DIR:-{{src}}/build/{{ver}}/mods-name}" {{just_executable()}} -f "{{justfile()}}" try-vram {{args}}
+    {{just_executable()}} -f "{{justfile()}}" text "{{NAME}}"
+    NX2NAVI_MODS_DIR="${NX2NAVI_MODS_DIR:-{{src}}/build/{{ver}}/mods-text}" {{just_executable()}} -f "{{justfile()}}" try-vram {{args}}
 
 # try-i2f on play11 with the VRAM hold settings (#160): reuse released render targets, trim at 85%, released cap
 # 1536 MiB with LRU, live textures idle 15 s may drop. Lab 46k frames: card 84-94% vs 91-99%, 0 vs 51 trims at 95%,
