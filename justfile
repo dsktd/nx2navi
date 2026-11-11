@@ -303,3 +303,11 @@ regress *args:
 # A new starting-point scenario from a `just play` session: just scenario-add <name> from 20261109-234907 [frame]
 scenario-add name from session frame="999999":
     python3 -I "{{flake}}/tools/scenario" add {{name}} {{from}} {{session}} {{frame}}
+
+# Pin the desktop (Niri, audio, bar) to the system's cores 8-11,24-27 now, away from the game (0-7,16-23) and Tally
+# (12-15,28-31). Runtime only: a restart of those processes or a reboot undoes it. CPUS=<list> picks other cores.
+pin-desktop CPUS="8-11,24-27":
+    #!/usr/bin/env bash
+    for name in niri pipewire pipewire-pulse wireplumber waybar Xwayland xwayland-satellite mako; do
+        for pid in $(pgrep -x "$name"); do taskset -apc "{{CPUS}}" "$pid" >/dev/null && echo "$name $pid -> {{CPUS}}"; done
+    done
