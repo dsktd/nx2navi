@@ -313,6 +313,7 @@ Open problems mapped onto the architecture:
 - **#160 VRAM growth / #173 streaming.** Section 6, texture cache.
 - **#172 seam.** Follow-another-descriptor (`TEX_DESC_STRICT`).
 - **#168 grass.** Grass uses direct mesh draws; indirect mesh records are zero and the readback is right; cause open.
+- **Hedge leaves / GPU foliage (f6702, Hyrule Castle courtyard).** Every indirect mesh draw of the frame (45: depth prepass 0129-0139, shadows 0157-0177, G-buffer 0202-0212; no task shader, ms e.g. 064a675a, fs 55ff9d82 sampling a 128x128x200-layer array atlas, tex 708) has record count 0. Their arg buffers (0x2a01e4000, 0x29fd80000, 0x29d7b6000, 0x2a0ccc010 ...) are bound as SSBOs only by passes 0001-0013, which are `DispatchComputeIndirect` (dumps print indirect dispatches as `0x0x0`, `op_dispatch_ind` in `runtime/vk_exec_draw.c`). So the foliage chain is GPU-driven from frame start; whether its own indirect group counts are 0 (nothing generated upstream) or its output is wrong is not visible: dumps do not read back indirect dispatch args. Near courtyard hedges render as bare vine cores (shot-06696) while far ones keep baked leaves; unproven that the leaves are these draws.
 
 Patches since 0051 (README has each entry): 0052/0065 RT dedicated + trim, 0053-0063 watch/buf/dump/pick tooling, 0064 I2F sign, 0066/0068 gone rule, 0067 mesh draws in dumps, 0069 cfg row, 0070 unresolved reasons, 0071 find/poke.req, 0072 live evict, 0073 upstream 42ae87b port, 0074 STALE_LIVE, 0075/0078 RT recycle, 0076 live RT idle, 0077 VMA block size, 0079 DESC_STRICT.
 
