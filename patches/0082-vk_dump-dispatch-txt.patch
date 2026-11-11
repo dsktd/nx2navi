@@ -1,0 +1,116 @@
+From 78d728383e90bd207aa911084937bcbeda601598 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 17:32:25 -0500
+Subject: [PATCH] vk_dump: dispatch.txt holds each indirect dispatch's {x, y,
+ z} group counts as the GPU reads them, by pass (passes.txt prints indirect
+ dispatches as 0x0x0), so a GPU-driven chain whose later draws are empty shows
+ whether it ran
+
+---
+ runtime/vk_dump.c      | 43 +++++++++++++++++++++++++++++++++++++++++-
+ runtime/vk_exec.h      |  1 +
+ runtime/vk_exec_draw.c |  1 +
+ 3 files changed, 44 insertions(+), 1 deletion(-)
+
+diff --git a/runtime/vk_dump.c b/runtime/vk_dump.c
+index c699c9b..d4dcb26 100644
+--- a/runtime/vk_dump.c
++++ b/runtime/vk_dump.c
+@@ -11,6 +11,7 @@
+ //                hashes (sh_<hash>.spv written once) and the bound textures with their samplers
+ //   mesh.txt     indirect mesh draws: the {count, first} record each read, by pass and draw (NX2NAVI_DUMP_MESH=0: mesh
+ //                draws left out of passes.txt and mesh.txt, as before)
++//   dispatch.txt indirect dispatches (passes.txt shows them as 0x0x0): the {x, y, z} group counts each read, by pass
+ //   images.txt   per image: channel min/max, distinct texel values over the image and over its top quarter
+ // Sampled 8-bit 2D textures up to TEX2D_CAP texels are copied once each as pass_<seq>_tex<id>_... at the end of the pass
+ // that samples them; texture lines carry the storage address, mirror state, upload count and the image's and slot's
+@@ -924,7 +925,7 @@ out:
+ // in the frame's command buffer before the draw, written to mesh.txt once its fence completes, with the pass and draw
+ // it belongs to in passes.txt. Called outside a render pass (mesh_ring_entry ends it), so the next pass is the draw's.
+ typedef struct { VkBuffer buf; VmaAllocation alloc; const uint8_t *map; uint64_t addr, frame; int pass, draw; } MeshJob;
+-static FILE *mesh_f;
++static FILE *mesh_f, *dispatch_f;
+ 
+ static void mesh_done(void *arg) {
+     MeshJob *j = arg;
+@@ -962,6 +963,45 @@ out:
+     plat_mutex_unlock(&rec_lock);
+ }
+ 
++// An indirect dispatch's group counts {x, y, z} as the GPU holds them when the dispatch reads them: copied in the frame's
++// command buffer before the dispatch, written to dispatch.txt once its fence completes. Called before vk_dump_dispatch
++// numbers the dispatch, so seq is its pass number in passes.txt.
++static void dispatch_done(void *arg) {
++    MeshJob *j = arg;
++    vmaInvalidateAllocation(vk_ctx()->vma, j->alloc, 0, VK_WHOLE_SIZE);
++    uint32_t w[3];
++    memcpy(w, j->map, 12);
++    plat_mutex_lock(&img_lock);
++    if (!dispatch_f) {
++        char path[600];
++        snprintf(path, sizeof path, "%s/dispatch.txt", dir);
++        dispatch_f = fopen(path, "w");
++    }
++    if (dispatch_f) {
++        fprintf(dispatch_f, "frame %llu pass %04d: indirect dispatch args at %#llx: %ux%ux%u\n",
++                (unsigned long long)j->frame, j->pass, (unsigned long long)j->addr, w[0], w[1], w[2]);
++        fflush(dispatch_f);
++    }
++    plat_mutex_unlock(&img_lock);
++    vmaDestroyBuffer(vk_ctx()->vma, j->buf, j->alloc);
++    free(j);
++}
++
++void vk_dump_dispatch_ind(VkExec *ex, uint64_t addr) {
++    plat_mutex_lock(&rec_lock);
++    if (!active()) goto out;
++    MeshJob *j = calloc(1, sizeof *j);
++    if (!j) rt_fatal("vk_dump: out of memory");
++    if (!copy_range(ex, addr, 12, &j->buf, &j->alloc, &j->map)) {
++        free(j);
++        goto out;
++    }
++    j->addr = addr, j->frame = frame_now(), j->pass = seq, j->draw = -1;
++    vk_completion_add(ex->fence, dispatch_done, j);
++out:
++    plat_mutex_unlock(&rec_lock);
++}
++
+ static void target_line(VkExec *ex, const VkExecTarget *t, const char *tag, int n) {
+     char fn[16], name[160];
+     if (!t->image) {
+@@ -1299,6 +1339,7 @@ void vk_dump_present(uint64_t frame) {
+     images_f = NULL;
+     if (bufs_f) fclose(bufs_f), bufs_f = NULL;
+     if (mesh_f) fclose(mesh_f), mesh_f = NULL;
++    if (dispatch_f) fclose(dispatch_f), dispatch_f = NULL;
+     plat_mutex_unlock(&img_lock);
+     fclose(passes_f);
+     passes_f = NULL;
+diff --git a/runtime/vk_exec.h b/runtime/vk_exec.h
+index dda261d..5131da3 100644
+--- a/runtime/vk_exec.h
++++ b/runtime/vk_exec.h
+@@ -183,6 +183,7 @@ void vk_dump_init(void);                 // reads the environment; vk_exec_recor
+ void vk_dump_pass_end(VkExec *ex);       // after vkCmdEndRendering
+ void vk_dump_draw(VkExec *ex, const VkPipeState *s, VkPipeline p, const VkPipeInfo *info);   // after a draw's binds
+ void vk_dump_mesh_ind(VkExec *ex, uint64_t addr);   // an indirect mesh draw's record, read back to mesh.txt
++void vk_dump_dispatch_ind(VkExec *ex, uint64_t addr);   // an indirect dispatch's group counts, read back to dispatch.txt
+ extern int vk_dump_mesh;   // NX2NAVI_DUMP_MESH (default 1): mesh draws in dumps
+ void vk_dump_dispatch(VkExec *ex, const GfxShader *cs, VkPipeline p, const VkPipeInfo *info, const p_dispatch *d);
+ void vk_dump_copy(VkExec *ex, uint32_t op, const void *payload);   // before a copy or texture clear is replayed
+diff --git a/runtime/vk_exec_draw.c b/runtime/vk_exec_draw.c
+index ed040f2..cd8853c 100644
+--- a/runtime/vk_exec_draw.c
++++ b/runtime/vk_exec_draw.c
+@@ -4530,6 +4530,7 @@ static void op_dispatch_ind(VkExec *ex, const p_dispatch_ind *d) {
+         vk_exec_barrier(ex);
+         B.c0_valid[2] = 0;   // the range no longer holds B.c0[2]
+     }
++    if (vk_dump_armed) vk_dump_dispatch_ind(ex, d->ind);   // the group counts as the dispatch reads them (dispatch.txt)
+     VkPassMark *m = dispatch_mark(ex, cs, 0, 0, 0);
+     vkCmdDispatchIndirect(ex->cb, ip.buffer, ip.offset);
+     vk_pass_mark_end(ex->cb, m);
+-- 
+2.56.0
+

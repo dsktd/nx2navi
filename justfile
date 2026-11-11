@@ -153,8 +153,9 @@ try *args:
 # `just try` on nx2navi.play5 (0001-0067, mesh draws in dumps) with the translator fix 0064 (#164, signed I2F): its own translator, shader cache and pipeline cache copy
 # under build/v111 (*-i2f), so the live caches stay as they are. Every shader is translated again on first use.
 try-i2f *args:
-    NX2NAVI_EXE="${NX2NAVI_EXE:-play5}" NX2NAVI_XLATE="{{src}}/build/{{ver}}/xlate-i2f/nx2navi_xlate" NX2NAVI_SHADER_CACHE="{{src}}/build/{{ver}}/shader-cache-i2f" \
-    NX2NAVI_PIPELINE_CACHE="{{src}}/build/{{ver}}/pipeline-cache-i2f.bin" \
+    NX2NAVI_EXE="${NX2NAVI_EXE:-play5}" NX2NAVI_XLATE="${NX2NAVI_XLATE:-{{src}}/build/{{ver}}/xlate-i2f/nx2navi_xlate}" \
+    NX2NAVI_SHADER_CACHE="${NX2NAVI_SHADER_CACHE:-{{src}}/build/{{ver}}/shader-cache-i2f}" \
+    NX2NAVI_PIPELINE_CACHE="${NX2NAVI_PIPELINE_CACHE:-{{src}}/build/{{ver}}/pipeline-cache-i2f.bin}" \
     {{just_executable()}} -f "{{justfile()}}" try {{args}}
 
 # Text mod (#170), built into NX2navi/build/{{ver}}/mods-text/text from the game's own text: Link renamed to NAME
@@ -209,6 +210,8 @@ play *args:
     set -euo pipefail
     cd "{{src}}"
     mkdir -p "build/{{ver}}/logs"
+    # live dumps (dump.req) beside the logs, not in the checkout's root (the runtime's default "dump" is cwd-relative)
+    export NX2NAVI_DUMP_DIR="${NX2NAVI_DUMP_DIR:-$PWD/build/{{ver}}/dump}"
     ts=$(date +%Y%m%d-%H%M%S)
     log="build/{{ver}}/logs/play-$ts.log"
     echo "log: $log"
