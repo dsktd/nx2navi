@@ -138,6 +138,11 @@ def hist_of(img):
     return cv2.normalize(h, h).flatten()
 
 
+def grid_of(img):
+    """8x4 Lab colour layout (where the sky, ground, bright and dark parts sit); a cheap scene-type cue."""
+    return cv2.resize(cv2.cvtColor(img, cv2.COLOR_BGR2Lab), (8, 4), interpolation=cv2.INTER_AREA).astype(np.float32).flatten()
+
+
 def featurize(d):
     """Write feat.npz (ORB points/descriptors and HSV histogram per frame, HUD masked) for the frames in d; returns the count."""
     feats = {}
@@ -145,7 +150,7 @@ def featurize(d):
     for i, jp in enumerate(jps):
         img = cv2.imread(str(jp))
         pts, des = orb_of(img)
-        feats['p%d' % i], feats['d%d' % i], feats['h%d' % i] = pts, des, hist_of(img)
+        feats['p%d' % i], feats['d%d' % i], feats['h%d' % i], feats['g%d' % i] = pts, des, hist_of(img), grid_of(img)
     np.savez_compressed(d / 'feat.npz', n=len(jps), **feats)
     return len(jps)
 
@@ -210,6 +215,36 @@ def cmd_add(args, from_seed=False):
         save_index(idx)
 
 
+def cmd_move(args):
+    """ref move <from-area> <id>_<t> <to-area|drop>: re-file a probed segment (or drop it from disk and index)."""
+    if len(args) != 3:
+        die('usage: ref move <from-area> <id>_<t> <to-area|drop>')
+    src = resolve_area(args[0], load_areas())['key'] if args[0] != 'unsorted' else 'unsorted'
+    vid, t = args[1].rsplit('_', 1)
+    d = seg_dir(src, vid, int(t))
+    if not d.exists():
+        die('no such segment ' + str(d))
+    idx = [e for e in load_index() if not (e['id'] == vid and e['t'] == int(t) and e['area'] == src)]
+    if args[2] == 'drop':
+        shutil.rmtree(d)
+    else:
+        dst = resolve_area(args[2], load_areas())['key']
+        e = next(e for e in load_index() if e['id'] == vid and e['t'] == int(t) and e['area'] == src)
+        e['area'] = dst
+        idx.append(e)
+        (REF_DIR / 'frames' / dst).mkdir(parents=True, exist_ok=True)
+        d.rename(seg_dir(dst, vid, int(t)))
+    save_index(idx)
+
+
+def cmd_batch(args):
+    """ref batch <file>: run one ref command per line (e.g. a pile of `move`s)."""
+    for line in Path(args[0]).read_text().splitlines():
+        line = line.split('#', 1)[0].split()
+        if line:
+            CMDS[line[0]](line[1:])
+
+
 def cmd_areas(args):
     idx = load_index()
     for a in load_areas():
@@ -262,11 +297,25 @@ def cmd_candidates(args):
 
 def cmd_sheet(args):
     """ref sheet <area>: contact sheet of every stored frame (every 2nd) into the gallery, to check a segment shows the area."""
+    if args == ['all']:  # one tile per stored segment (its middle frame), labelled with the area
+        tiles = []
+        for a in load_areas():
+            for sd in sorted((REF_DIR / 'frames' / a['key']).glob('*_*')):
+                jps = sorted(sd.glob('f*.jpg'))
+                if jps:
+                    tiles.append(label(cv2.resize(cv2.imread(str(jps[len(jps) // 2])), (320, 180)), a['key'] + ' ' + sd.name[-4:]))
+        while len(tiles) % 4:
+            tiles.append(np.zeros_like(tiles[0]))
+        GALLERY.mkdir(parents=True, exist_ok=True)
+        out = GALLERY / 'ref-sheet-all.jpg'
+        cv2.imwrite(str(out), np.vstack([np.hstack(tiles[i:i + 4]) for i in range(0, len(tiles), 4)]))
+        print(out)
+        return
     a = resolve_area(' '.join(args), load_areas())
     tiles = []
     for sd in sorted((REF_DIR / 'frames' / a['key']).glob('*_*')):
         for i, jp in enumerate(sorted(sd.glob('f*.jpg'))):
-            if i % 3 == 0:
+            if i % (1 if a['key'] == 'unsorted' else 3) == 0:
                 im = cv2.resize(cv2.imread(str(jp)), (256, 144))
                 tiles.append(label(im, '%s %d' % (sd.name[:8], i)))
     if not tiles:
@@ -282,13 +331,14 @@ def cmd_sheet(args):
 
 def read_feats(d):
     z = np.load(d / 'feat.npz')
-    return [(z['p%d' % i], z['d%d' % i], z['h%d' % i]) for i in range(int(z['n']))]
+    return [(z['p%d' % i], z['d%d' % i], z['h%d' % i], z['g%d' % i]) for i in range(int(z['n']))]
 
 
 def match_score(fa, fb, bf):
     """ORB ratio-test matches then RANSAC homography inliers between two (pts, des, hist) triples."""
-    (pa, da, ha), (pb, db, hb) = fa, fb
+    (pa, da, ha, ga), (pb, db, hb, gb) = fa, fb
     hc = float(cv2.compareHist(ha, hb, cv2.HISTCMP_CORREL))
+    gs = max(0.0, 1.0 - float(np.abs(ga - gb).mean()) / 60.0)  # colour layout similarity 0..1
     inl = 0
     if len(da) >= 8 and len(db) >= 8:
         good = [m[0] for m in bf.knnMatch(da, db, k=2) if len(m) == 2 and m[0].distance < 0.75 * m[1].distance]
@@ -297,7 +347,7 @@ def match_score(fa, fb, bf):
             dst = pb[[m.trainIdx for m in good]].reshape(-1, 1, 2)
             _, mask = cv2.findHomography(src, dst, cv2.RANSAC, 6.0)
             inl = int(mask.sum()) if mask is not None else 0
-    return hc, inl
+    return hc, inl, gs
 
 
 def label(img, text):
@@ -313,10 +363,10 @@ def cmd_compare(args):
     if shot is None:
         die('cannot read ' + args[0])
     areas = load_areas()
-    want = [resolve_area(' '.join(args[1:]), areas)] if len(args) > 1 else areas
+    want = [resolve_area(' '.join(args[1:]), areas)] if len(args) > 1 else [a for a in areas if a['key'] != 'unsorted']
     h0 = FW * shot.shape[0] // shot.shape[1]
     small = cv2.resize(shot, (FW, h0), interpolation=cv2.INTER_AREA)
-    fs = (*orb_of(small), hist_of(small))
+    fs = (*orb_of(small), hist_of(small), grid_of(small))
     bf = cv2.BFMatcher(cv2.NORM_HAMMING)
     cands = []
     for a in want:
@@ -324,15 +374,15 @@ def cmd_compare(args):
             if not (sd / 'feat.npz').exists():
                 continue
             for i, ft in enumerate(read_feats(sd)):
-                hc, inl = match_score(fs, ft, bf)
-                score = 0.5 * max(hc, 0) + 0.5 * min(inl, 60) / 60
-                cands.append((score, hc, inl, a['key'], sd, i))
+                hc, inl, gs = match_score(fs, ft, bf)
+                score = 0.3 * max(hc, 0) + 0.4 * gs + 0.3 * min(inl, 60) / 60
+                cands.append((score, hc, inl, a['key'], sd, i, gs))
     if not cands:
         die('no reference frames for %s: run ref add / ref sync' % (args[1] if len(args) > 1 else 'any area'))
     cands.sort(key=lambda c: -c[0])
     GALLERY.mkdir(parents=True, exist_ok=True)
     stem = Path(args[0]).stem
-    for rank, (score, hc, inl, key, sd, i) in enumerate(cands[:3], 1):
+    for rank, (score, hc, inl, key, sd, i, gs) in enumerate(cands[:3], 1):
         ref = cv2.imread(str(sd / ('f%03d.jpg' % (i + 1))))
         vid, t0 = sd.name.rsplit('_', 1)
         entry = next((e for e in load_index() if e['id'] == vid and e['t'] == int(t0)), None)
@@ -344,8 +394,8 @@ def cmd_compare(args):
         pic = np.hstack([label(a, 'ours: ' + stem), label(b, 'ref %s %s&t=%d' % (key, vid, ts))])
         out = GALLERY / ('ref-%s-%d-%s.png' % (stem, rank, key))
         cv2.imwrite(str(out), pic)
-        print('%d score %.2f (hist %.2f, orb inliers %d)  %s  https://www.youtube.com/watch?v=%s&t=%d  -> %s'
-              % (rank, score, hc, inl, key, vid, ts, out))
+        print('%d score %.2f (hist %.2f, layout %.2f, orb inliers %d)  %s  https://www.youtube.com/watch?v=%s&t=%d  -> %s'
+              % (rank, score, hc, gs, inl, key, vid, ts, out))
 
 
 def cmd_seed(args):
@@ -371,6 +421,9 @@ def cmd_sync(args):
             cmd_add([e['url'], 't=%d' % e['t'], 'len=%d' % e['len'], 'step=%g' % e['step'], 'area=' + e['area']], True)
 
 
+CMDS = {}
+
+
 def main():
     if not os.environ.get('REF_NO_NICE'):  # CPU work shares the machine with Cal's game: low priority, spare cores
         os.nice(19)
@@ -378,9 +431,10 @@ def main():
             os.sched_setaffinity(0, {12, 13, 14, 15, 28, 29, 30, 31})
         except OSError:
             pass
-    cmds = {'add': cmd_add, 'areas': cmd_areas, 'find': cmd_find, 'compare': cmd_compare, 'seed': cmd_seed,
-            'sync': cmd_sync, 'candidates': cmd_candidates,
-            'sheet': cmd_sheet, 'reindex': cmd_reindex}
+    cmds = CMDS
+    cmds.update({'add': cmd_add, 'areas': cmd_areas, 'find': cmd_find, 'compare': cmd_compare, 'seed': cmd_seed,
+                 'sync': cmd_sync, 'candidates': cmd_candidates, 'sheet': cmd_sheet, 'reindex': cmd_reindex,
+                 'move': cmd_move, 'batch': cmd_batch})
     if len(sys.argv) < 2 or sys.argv[1] not in cmds:
         print(__doc__)
         sys.exit(2)

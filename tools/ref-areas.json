@@ -7,13 +7,13 @@
   {"key": "hyrule_field_night", "name": "Hyrule Field (night)", "scene": "0x51", "aliases": ["hyrule field night"], "time": "night", "queries": ["Ocarina of Time Switch 2 Hyrule Field night"]},
   {"key": "kakariko", "name": "Kakariko Village", "scene": "0x52", "aliases": ["kakariko village", "spot01"], "queries": ["Ocarina of Time Switch 2 Kakariko Village"]},
   {"key": "graveyard", "name": "Graveyard", "scene": "0x53", "aliases": ["kakariko graveyard", "spot02"], "queries": ["Ocarina of Time Switch 2 Graveyard"]},
-  {"key": "castle_courtyard", "name": "Hyrule Castle courtyard", "scene": null, "aliases": ["castle", "courtyard", "hyrule castle"], "queries": ["Ocarina of Time Switch 2 Hyrule Castle courtyard Zelda"]},
+  {"key": "castle_courtyard", "name": "Hyrule Castle courtyard", "scene": null, "aliases": ["castle", "courtyard", "hyrule castle"], "queries": ["Ocarina of Time Remake Zelda's courtyard Hyrule Castle window", "Ocarina of Time Remake meet Princess Zelda castle garden"]},
   {"key": "death_mountain", "name": "Death Mountain Trail", "scene": "0x60", "aliases": ["death mountain", "dmt", "spot16"], "queries": ["Ocarina of Time Switch 2 Death Mountain"]},
   {"key": "goron_city", "name": "Goron City", "scene": "0x62", "aliases": ["spot18"], "queries": ["Ocarina of Time Switch 2 Goron City"]},
   {"key": "zoras_domain", "name": "Zora's Domain", "scene": "0x58", "aliases": ["zora domain", "zoras domain", "spot07"], "queries": ["Ocarina of Time Switch 2 Zora's Domain"]},
   {"key": "lake_hylia", "name": "Lake Hylia", "scene": "0x57", "aliases": ["spot06"], "queries": ["Ocarina of Time Switch 2 Lake Hylia"]},
-  {"key": "gerudo_valley", "name": "Gerudo Valley", "scene": "0x5A", "aliases": ["spot09"], "queries": ["Ocarina of Time Switch 2 Gerudo Valley"]},
-  {"key": "temple_of_time", "name": "Temple of Time", "scene": "0x43", "aliases": ["tot"], "queries": ["Ocarina of Time Switch 2 Temple of Time"]},
+  {"key": "gerudo_valley", "name": "Gerudo Valley", "scene": "0x5A", "aliases": ["spot09"], "queries": ["Ocarina of Time Remake Gerudo Valley bridge carpenter gameplay", "Ocarina of Time Remake Gerudo Valley Switch 2 Epona"]},
+  {"key": "temple_of_time", "name": "Temple of Time", "scene": "0x43", "aliases": ["tot"], "queries": ["Ocarina of Time Remake Switch 2 Temple of Time Master Sword gameplay", "Ocarina of Time Remake Door of Time Temple of Time"]},
   {"key": "deku_tree", "name": "Inside the Deku Tree", "scene": "0x00", "aliases": ["great deku tree", "ydan"], "queries": ["Ocarina of Time Switch 2 Inside the Deku Tree"]},
   {"key": "dodongos_cavern", "name": "Dodongo's Cavern", "scene": "0x01", "aliases": ["dodongo cavern", "ddan"], "queries": ["Ocarina of Time Switch 2 Dodongo's Cavern"]},
   {"key": "jabu_jabu", "name": "Jabu-Jabu's Belly", "scene": "0x02", "aliases": ["jabu jabu", "jabu", "bdan"], "queries": ["Ocarina of Time Switch 2 Jabu-Jabu's Belly"]},
@@ -21,6 +21,8 @@
   {"key": "fire_temple", "name": "Fire Temple", "scene": "0x04", "aliases": ["hidan"], "queries": ["Ocarina of Time Switch 2 Fire Temple"]},
   {"key": "water_temple", "name": "Water Temple", "scene": "0x05", "aliases": ["mizusin"], "queries": ["Ocarina of Time Switch 2 Water Temple"]},
   {"key": "shadow_temple", "name": "Shadow Temple", "scene": "0x07", "aliases": ["hakadan"], "queries": ["Ocarina of Time Switch 2 Shadow Temple"]},
+  {"key": "market", "name": "Castle Town market", "scene": null, "aliases": ["castle town", "hyrule market"], "queries": ["Ocarina of Time Switch 2 Castle Town market gameplay"]},
+  {"key": "unsorted", "name": "unsorted probes", "scene": null, "aliases": [], "queries": []},
   {"key": "ice_cavern", "name": "Ice Cavern", "scene": "0x09", "aliases": ["ice_doukutu"], "queries": ["Ocarina of Time Switch 2 Ice Cavern"]}
  ]
 }

@@ -559,12 +559,19 @@ comparisons live in `~/claude/nx2navi-ref/` (`REF_DIR`; PRIVATE, never committed
   Segments are capped at 120 s. The cut video is deleted unless `keep`.
 - `ref find <area|scene id> [search]`: scene id, stored segments with `&t=` URLs; `search` (or no segments) lists YouTube hits.
 - `ref candidates [area...]`: gameplay-looking hits (1-40 min, no OST) to choose seeds from; `ref sheet <area>`: contact sheet.
-- `ref compare <shot.png> [area]`: scores every stored frame (0.5 x HSV histogram correlation + 0.5 x ORB RANSAC inliers
-  capped at 60), writes the top 3 as side-by-sides to `$REF_GALLERY` (default `~/claude/nx2navi/.lab/gallery/`, as
+- `ref move <from-area> <id>_<t> <to-area|drop>`, `ref batch <file>` (one ref command per line), `ref reindex`
+  (recompute features), `ref sheet all` (one tile per segment, to check the seeds). Probe a video with
+  `ref add <url> t=.. len=120 step=10 area=unsorted`, look at `ref sheet unsorted`, then `move` the good ones.
+- `ref compare <shot.png> [area]`: scores every stored frame (0.3 x HSV histogram correlation + 0.4 x 8x4 Lab colour
+  layout + 0.3 x ORB RANSAC inliers capped at 60; the HUD corners and text box are masked out), writes the top 3 as side-by-sides to `$REF_GALLERY` (default `~/claude/nx2navi/.lab/gallery/`, as
   `ref-<shot>-<rank>-<area>.png`) and prints score lines with the `&t=` URL of the reference frame.
 - `ref seed <file>` / `ref sync`: add many from a seed file / re-fetch what the index lists but the machine lacks.
 
-Area names are the shared vocabulary with teleport. Scene ids are OoT decomp table numbers from memory; neither
+Seeded 2026-11-11: 21 segments over 20 areas (plus `market`); `castle_courtyard` and `gerudo_valley` have no footage yet
+(`ref find <area> search` lists candidates; segment starts in the seed file were found by probing, several first guesses
+showed menus or interiors). Compare scores are weak across different camera spots (ORB inliers are mostly 0-30, the
+layout/histogram terms pick similar-looking scenes): judge the side-by-side, not the number. Area names are the
+shared vocabulary with teleport. Scene ids are OoT decomp table numbers from memory; neither
 `romfs_index.py` nor the docs carry a scene table, so they are unverified for the Switch 2 data.
 Example: `tools/ref compare build/v111/logs/shot-3.png kokiri_forest`.
 

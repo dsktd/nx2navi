@@ -16,34 +16,10 @@
   "step": 2.0
  },
  {
-  "area": "hyrule_field_day",
-  "url": "https://www.youtube.com/watch?v=_JlV0qIyLdI&t=120",
-  "id": "_JlV0qIyLdI",
-  "t": 120,
-  "len": 30,
-  "step": 2.0
- },
- {
   "area": "kakariko",
   "url": "https://www.youtube.com/watch?v=oJ6WBdseRC8&t=40",
   "id": "oJ6WBdseRC8",
   "t": 40,
-  "len": 30,
-  "step": 2.0
- },
- {
-  "area": "graveyard",
-  "url": "https://www.youtube.com/watch?v=8pBpPQzrUdc&t=60",
-  "id": "8pBpPQzrUdc",
-  "t": 60,
-  "len": 30,
-  "step": 2.0
- },
- {
-  "area": "castle_courtyard",
-  "url": "https://www.youtube.com/watch?v=hquUGw9izH8&t=60",
-  "id": "hquUGw9izH8",
-  "t": 60,
   "len": 30,
   "step": 2.0
  },
@@ -80,14 +56,6 @@
   "step": 2.0
  },
  {
-  "area": "gerudo_valley",
-  "url": "https://www.youtube.com/watch?v=nJfxOLLBj9I&t=60",
-  "id": "nJfxOLLBj9I",
-  "t": 60,
-  "len": 30,
-  "step": 2.0
- },
- {
   "area": "deku_tree",
   "url": "https://www.youtube.com/watch?v=XcDU0IY8olU&t=60",
   "id": "XcDU0IY8olU",
@@ -118,5 +86,93 @@
   "t": 60,
   "len": 30,
   "step": 2.0
+ },
+ {
+  "area": "fire_temple",
+  "url": "https://www.youtube.com/watch?v=COcJcr-SGIM&t=60",
+  "id": "COcJcr-SGIM",
+  "t": 60,
+  "len": 30,
+  "step": 2.0
+ },
+ {
+  "area": "water_temple",
+  "url": "https://www.youtube.com/watch?v=_0kdHdCqKdc&t=60",
+  "id": "_0kdHdCqKdc",
+  "t": 60,
+  "len": 30,
+  "step": 2.0
+ },
+ {
+  "area": "shadow_temple",
+  "url": "https://www.youtube.com/watch?v=nQfMHRg8FRM&t=60",
+  "id": "nQfMHRg8FRM",
+  "t": 60,
+  "len": 30,
+  "step": 2.0
+ },
+ {
+  "area": "ice_cavern",
+  "url": "https://www.youtube.com/watch?v=UPAwZ0_19Yg&t=60",
+  "id": "UPAwZ0_19Yg",
+  "t": 60,
+  "len": 30,
+  "step": 2.0
+ },
+ {
+  "area": "lost_woods",
+  "url": "https://www.youtube.com/watch?v=5jcdJ-2ad94&t=20",
+  "id": "5jcdJ-2ad94",
+  "t": 20,
+  "len": 30,
+  "step": 2.0
+ },
+ {
+  "area": "hyrule_field_night",
+  "url": "https://www.youtube.com/watch?v=k5wUM1YlckI&t=180",
+  "id": "k5wUM1YlckI",
+  "t": 180,
+  "len": 30,
+  "step": 2.0
+ },
+ {
+  "area": "hyrule_field_day",
+  "url": "https://www.youtube.com/watch?v=LVA1H5fd5TE&t=60",
+  "id": "LVA1H5fd5TE",
+  "t": 60,
+  "len": 120,
+  "step": 10.0
+ },
+ {
+  "area": "zoras_domain",
+  "url": "https://www.youtube.com/watch?v=_JlV0qIyLdI&t=600",
+  "id": "_JlV0qIyLdI",
+  "t": 600,
+  "len": 120,
+  "step": 10.0
+ },
+ {
+  "area": "graveyard",
+  "url": "https://www.youtube.com/watch?v=oJ6WBdseRC8&t=600",
+  "id": "oJ6WBdseRC8",
+  "t": 600,
+  "len": 120,
+  "step": 10.0
+ },
+ {
+  "area": "market",
+  "url": "https://www.youtube.com/watch?v=s1BElOIu8us&t=0",
+  "id": "s1BElOIu8us",
+  "t": 0,
+  "len": 120,
+  "step": 10.0
+ },
+ {
+  "area": "temple_of_time",
+  "url": "https://www.youtube.com/watch?v=A_0ZUaRxxAE&t=10",
+  "id": "A_0ZUaRxxAE",
+  "t": 10,
+  "len": 120,
+  "step": 10.0
  }
 ]
