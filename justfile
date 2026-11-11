@@ -195,13 +195,14 @@ try-name NAME="" *args:
 # environment lighting flickered with camera angle and time of day (play-20261111-115322).
 # #174 texel fetch clamp: nx2navi.tld with TLD_CLAMP=1 and TEX_DESC_STRICT=1, its own translator (xlate-tld), shader
 # cache and pipeline cache copy (*-tld). Live dumps (dump.req) land in build/v111/dump as with every try.
+# Runs through try-name, so the text mod and the try-vram settings apply as on Cal's usual line.
 try-tld *args:
     NX2NAVI_EXE="${NX2NAVI_EXE:-tld}" NX2NAVI_TLD_CLAMP="${NX2NAVI_TLD_CLAMP:-1}" \
     NX2NAVI_TEX_DESC_STRICT="${NX2NAVI_TEX_DESC_STRICT:-1}" \
     NX2NAVI_XLATE="${NX2NAVI_XLATE:-{{src}}/build/{{ver}}/xlate-tld/nx2navi_xlate}" \
     NX2NAVI_SHADER_CACHE="${NX2NAVI_SHADER_CACHE:-{{src}}/build/{{ver}}/shader-cache-tld}" \
     NX2NAVI_PIPELINE_CACHE="${NX2NAVI_PIPELINE_CACHE:-{{src}}/build/{{ver}}/pipeline-cache-tld.bin}" \
-    {{just_executable()}} -f "{{justfile()}}" try-i2f {{args}}
+    {{just_executable()}} -f "{{justfile()}}" try-name "" {{args}}
 
 try-vram *args:
     NX2NAVI_EXE="${NX2NAVI_EXE:-play11}" NX2NAVI_TEX_RT_RECYCLE="${NX2NAVI_TEX_RT_RECYCLE:-1}" \
