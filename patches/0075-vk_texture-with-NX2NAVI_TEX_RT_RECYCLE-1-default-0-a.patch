@@ -1,0 +1,150 @@
+From 5899cee3b81ee14bb7e36ba0e2e5cc098e367c7d Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 08:11:46 -0500
+Subject: [PATCH] vk_texture: with NX2NAVI_TEX_RT_RECYCLE=1 (default 0) a new
+ render target in its own memory takes the image and memory of a released one
+ of the same description unused for NX2NAVI_TEX_RT_TRIM_AGE submits, instead
+ of creating one while the released one waits for a sweep; counted in the mem
+ destroys line (#160)
+
+---
+ runtime/cfg.c        |  6 ++---
+ runtime/vk_texture.c | 53 ++++++++++++++++++++++++++++++++++++++++----
+ 2 files changed, 52 insertions(+), 7 deletions(-)
+
+diff --git a/runtime/cfg.c b/runtime/cfg.c
+index a673519..49d0cf5 100644
+--- a/runtime/cfg.c
++++ b/runtime/cfg.c
+@@ -58,7 +58,7 @@ static const char *const known[] = {
+     "SHADER_MEMO", "SHADER_RELOAD", "SHADOW_COMPARE", "SHADOW_RANGE", "SHADOW_RES", "SHADOW_SCALE", "SHARED_FONTS", "SHARPNESS", "SHOTS", "SHOTS_DIR",
+     "SHOTS_FULL", "SPEED_PROBE", "SPIN", "SPIN_HANDOFF_US", "SPLIT_DRAWS", "SPLIT_US", "STICK_DEADZONE", "STICK_SENS",
+     "SWKBD_ANSWER",
+-    "SWKBD_TEST", "TAA", "TEST_PAD", "TEST_PAD_AT", "TEST_PREPARE_SHADERS", "TEX_ALIAS", "TEX_MEMO", "TEX_LIVE_EVICT", "TEX_SAME", "TEX_LIVE_GUARD", "TEX_LIVE_IDLE", "TEX_STALE_GONE", "TEX_VRAM_PRESSURE", "TIMER_1MS", "TRACE", "TXD_TRANSPOSE", "UBO_SNAPSHOT", "UNJITTER", "UPSCALER", "VK_DYN_A2C", "VK_DYN_VERTEX", "VK_NOOPT", "VK_NO_FLOAT64",
++    "SWKBD_TEST", "TAA", "TEST_PAD", "TEST_PAD_AT", "TEST_PREPARE_SHADERS", "TEX_ALIAS", "TEX_MEMO", "TEX_LIVE_EVICT", "TEX_RT_RECYCLE", "TEX_SAME", "TEX_LIVE_GUARD", "TEX_LIVE_IDLE", "TEX_STALE_GONE", "TEX_VRAM_PRESSURE", "TIMER_1MS", "TRACE", "TXD_TRANSPOSE", "UBO_SNAPSHOT", "UNJITTER", "UPSCALER", "VK_DYN_A2C", "VK_DYN_VERTEX", "VK_NOOPT", "VK_NO_FLOAT64",
+     "VK_PRESENT", "VK_RECORDER", "VK_SSBO_ALIGN", "VK_SUBGROUP", "VK_SUBGROUP_PIN", "VK_VALIDATION", "VOLUME", "VRAM_HEADROOM", "VS_OUTS",
+     "WALK_KEY", "WALK_SCALE", "WB_EXACT", "WB_FENCE_LIMIT", "WB_MERGE", "WINDOW_SIZE", "XLATE", "XLATE_ID", "XLATE_KEEP", "XLATE_PROCS",
+     "ZSTD_CHECK", "ZSTD_NATIVE",
+@@ -97,7 +97,7 @@ static const struct { const char *key, *section; } sections[] = {
+     {"TIMER_1MS", "performance"}, {"PIPE_WAIT", "performance"}, {"PIPE_SKIP", "performance"},
+     {"LIB_PREBUILD", "performance"}, {"LIB_PREBUILD_THREADS", "performance"}, {"PIPE_PREBUILD", "performance"},
+     {"PREWARM_XLATE", "performance"}, {"GPL", "performance"}, {"ASTC", "performance"}, {"MEMORY", "performance"},
+-    {"TEX_ALIAS", "performance"}, {"TEX_VRAM_PRESSURE", "performance"}, {"TEX_STALE_GONE", "performance"}, {"TEX_STALE_LIVE", "performance"}, {"TEX_LIVE_EVICT", "performance"}, {"TEX_LIVE_IDLE", "performance"}, {"TEX_LIVE_GUARD", "performance"}, {"ASTC_BC", "performance"}, {"LOD_GUARD", "performance"}, {"FIX_C0", "performance"}, {"FIX_ZERO", "performance"},
++    {"TEX_ALIAS", "performance"}, {"TEX_VRAM_PRESSURE", "performance"}, {"TEX_STALE_GONE", "performance"}, {"TEX_STALE_LIVE", "performance"}, {"TEX_LIVE_EVICT", "performance"}, {"TEX_RT_RECYCLE", "performance"}, {"TEX_LIVE_IDLE", "performance"}, {"TEX_LIVE_GUARD", "performance"}, {"ASTC_BC", "performance"}, {"LOD_GUARD", "performance"}, {"FIX_C0", "performance"}, {"FIX_ZERO", "performance"},
+     {"BIND_SKIP", "performance"}, {"SHADER_MEMO", "performance"}, {"PIPE_MEMO", "performance"}, {"TEX_MEMO", "performance"}, {"TEX_SAME", "performance"}, {"DESC_TEMPLATE", "performance"},
+     {"PUSH_SKIP", "performance"}, {"SPLIT_DRAWS", "performance"}, {"SPLIT_US", "performance"}, {"VK_VALIDATION", "performance"},
+     {"VK_DYN_VERTEX", "performance"}, {"VK_DYN_A2C", "performance"}, {"VK_SUBGROUP_PIN", "performance"},
+@@ -173,7 +173,7 @@ static const CfgMeta metas[] = {
+     {"PIPE_PREBUILD", "1", "0|1", RESTART}, {"PREWARM_XLATE", "", "1..64", RESTART}, {"GPL", "1", "0|1", RESTART},
+     // textures and memory
+     {"ASTC", "auto", "auto|gpu|native|cpu", RESTART}, {"MEMORY", "auto", "auto|import|mirror|verify", RESTART},
+-    {"TEX_ALIAS", "1", "0|1", RESTART}, {"TEX_VRAM_PRESSURE", "90", "0..100", RESTART}, {"TEX_STALE_GONE", "0", "0|1", RESTART}, {"TEX_STALE_LIVE", "0", "0|1", RESTART}, {"TEX_LIVE_EVICT", "85", "0..100", RESTART}, {"TEX_LIVE_IDLE", "3600", "1..1000000", RESTART}, {"TEX_LIVE_GUARD", "240", "0..1000000", RESTART}, {"ASTC_BC", "", "0|1", RESTART}, {"ZSTD_NATIVE", "1", "0|1", RESTART}, {"ZSTD_CHECK", "0", "0|1", RESTART},
++    {"TEX_ALIAS", "1", "0|1", RESTART}, {"TEX_VRAM_PRESSURE", "90", "0..100", RESTART}, {"TEX_STALE_GONE", "0", "0|1", RESTART}, {"TEX_STALE_LIVE", "0", "0|1", RESTART}, {"TEX_LIVE_EVICT", "85", "0..100", RESTART}, {"TEX_RT_RECYCLE", "0", "0|1", RESTART}, {"TEX_LIVE_IDLE", "3600", "1..1000000", RESTART}, {"TEX_LIVE_GUARD", "240", "0..1000000", RESTART}, {"ASTC_BC", "", "0|1", RESTART}, {"ZSTD_NATIVE", "1", "0|1", RESTART}, {"ZSTD_CHECK", "0", "0|1", RESTART},
+     // render fixes
+     {"LOD_GUARD", "1", "0|1", RESTART}, {"FIX_C0", "1", "0|1", RESTART}, {"FIX_ZERO", "1", "0|1", RESTART},
+     {"BIND_SKIP", "1", "0|1", RESTART}, {"SHADER_MEMO", "1", "0|1", RESTART}, {"PIPE_MEMO", "1", "0|1", RESTART}, {"TEX_MEMO", "1", "0|1", RESTART}, {"TEX_SAME", "1", "0|1", RESTART},
+diff --git a/runtime/vk_texture.c b/runtime/vk_texture.c
+index fe7f629..e3d2594 100644
+--- a/runtime/vk_texture.c
++++ b/runtime/vk_texture.c
+@@ -648,6 +648,48 @@ static int shadow_scale_of(const nvn_texdesc *d, const TexVkFormat *f, uint32_t
+ }
+ 
+ // defer_init: the caller records the image's first transition (init_image or alias_copy).
++// NX2NAVI_TEX_RT_RECYCLE (default 0; 1 = on): a new render target in its own memory takes the image and memory of a
++// released one of the same image description (format, size, levels, layers, samples, usage, target) that nothing
++// looked up for NX2NAVI_TEX_RT_TRIM_AGE submits (at least RECYCLE_AGE), instead of a vkAllocateMemory/vkCreateImage
++// while the released one waits for a sweep. The game moves its transient render targets between addresses: a long
++// session destroyed 39 GiB of released entries by the count sweep and created as much again (#160). The image starts
++// over from UNDEFINED in init_image, as a new one would; its views and replay caches go with vk_exec_image_gone. The age
++// keeps entries the game may still take back, and the frames in flight that read the image long done.
++#define RECYCLE_AGE 16
++static int rt_recycle_on = -1;
++static uint64_t rc_n, rc_bytes;
++static int dedicated_own(const Tex *e);
++static void destroy_tex(Tex *e);
++static int trim_age = -1;   // NX2NAVI_TEX_RT_TRIM_AGE (sweep_rt_trim)
++static VkImage rt_recycle(const VkImageCreateInfo *ci, int target, Tex *e) {   // tex_lock held
++    if (rt_recycle_on < 0) {
++        rt_recycle_on = rt_knob("TEX_RT_RECYCLE", "0");
++        rt_log("vk: released render targets %s (NX2NAVI_TEX_RT_RECYCLE)",
++               rt_recycle_on ? "recycled for new ones of the same description" : "not recycled");
++    }
++    if (!rt_recycle_on) return VK_NULL_HANDLE;
++    uint32_t age = trim_age > RECYCLE_AGE ? (uint32_t)trim_age : trim_age < 0 ? 240 : RECYCLE_AGE;
++    for (Tex *r = rel_head; r; r = r->rel_next) {
++        const VkTexImage *p = &r->pub;
++        if (p->mirrored || !p->image || !r->alloc || r->bound_to || r->share || r->gpu_dirty || p->scale != 1) continue;
++        if (p->format != ci->format || p->type != ci->imageType || p->usage != ci->usage || p->width != ci->extent.width ||
++            p->height != ci->extent.height || p->depth != ci->extent.depth || p->levels != ci->mipLevels ||
++            p->layers != ci->arrayLayers || p->samples != (uint32_t)ci->samples || (int)r->key.d.target != target)
++            continue;
++        if (submit_epoch - r->last_use < age || !dedicated_own(r)) continue;
++        VkImage img = p->image;
++        e->alloc = r->alloc;
++        vk_exec_image_gone(img);
++        r->pub.image = VK_NULL_HANDLE, r->alloc = NULL;
++        rc_n++, rc_bytes += r->t.L.size;
++        dcause = DC_YIELD;
++        destroy_tex(r);
++        dcause = DC_NEW;
++        return img;
++    }
++    return VK_NULL_HANDLE;
++}
++
+ static Tex *create_tex(const tex_t *t, const TexKey *k, int defer_init) {
+     static volatile int32_t n_unmapped, n_unsupported, n_failed, n_unbound, n_thick;
+     VkCtx *c = vk_ctx();
+@@ -791,6 +833,8 @@ static Tex *create_tex(const tex_t *t, const TexKey *k, int defer_init) {
+             img = VK_NULL_HANDLE;
+         }
+     }
++    if (!img && !tex_mirrored(t) && rt_dedicated_bytes() && L.size >= rt_dedicated_bytes())
++        img = rt_recycle(&ci, d->target, e);
+     if (!img) {
+         VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+         if (rt_dedicated_bytes() && !tex_mirrored(t) && L.size >= rt_dedicated_bytes())
+@@ -954,7 +998,7 @@ static void destroy_tex(Tex *e) {
+         e->share = NULL;
+     } else {
+         free(e->share);
+-        vk_exec_image_gone(e->pub.image);
++        if (e->pub.image) vk_exec_image_gone(e->pub.image);   // NULL: recycled (rt_recycle)
+         vk_defer_image(e->pub.image, e->alloc);
+     }
+     free(e->snap);
+@@ -1017,7 +1061,7 @@ static uint64_t n_pressure_drops;
+ // Entries looked up less than NX2NAVI_TEX_RT_TRIM_AGE submits ago (default 240; 0 = any) are kept: the game takes them
+ // back next frame. NX2NAVI_TEX_RT_TRIM_PER_MIN (default 6; 0 = no cap) caps the trims per minute.
+ #define TRIM_SETTLE 32
+-static int rt_trim = -1, trim_age = -1, trim_per_min = -1;
++static int rt_trim = -1, trim_per_min = -1;
+ static uint64_t trim_ep_n, trim_ep_bytes, trim_tot_n, trim_tot_bytes;
+ static uint64_t trim_cool_base, trim_hold, trim_until, trim_win;
+ static uint64_t trim_pend_before, trim_pend_freed, trim_pend_n;
+@@ -3038,18 +3082,19 @@ void vk_texture_format_log(uint64_t frame) {
+     le_tot_n += le_n, le_tot_bytes += le_bytes;
+     uint64_t len = le_n, lenb = le_bytes, letn = le_tot_n, letb = le_tot_bytes, leg = le_guard_n;
+     le_n = le_bytes = 0;
++    uint64_t rcn = rc_n, rcb = rc_bytes;
+     unlock();
+     // Why live textures stay (#160): live entries made again from a stale slot after their key went, the keys known
+     // gone, and every destroy so far by cause (range gone, replaced, released-count, released-bytes, pressure, yield).
+     rt_log("mem: textures frame %llu: live %llu %.0f MiB, of them made from stale slots of gone keys %llu %.0f MiB; such "
+            "entries made %llu, slots held stale %llu, finalized with no entry %llu; gone keys %u (resets %llu); destroys: "
+            "range gone %llu %.0f MiB, replaced %llu %.0f MiB, released-count %llu %.0f MiB, released-bytes %llu %.0f MiB, "
+-           "pressure %llu %.0f MiB, yield/trim %llu %.0f MiB",
++           "pressure %llu %.0f MiB, yield/trim %llu %.0f MiB (of them recycled for a new render target, NX2NAVI_TEX_RT_RECYCLE, %llu %.0f MiB)",
+            (unsigned long long)frame, (unsigned long long)live_n, live_b / 1048576.0, (unsigned long long)fg_n,
+            fg_b / 1048576.0, (unsigned long long)gm, (unsigned long long)gb, (unsigned long long)gu, gk,
+            (unsigned long long)gr, (unsigned long long)dn[1], db[1] / 1048576.0, (unsigned long long)dn[2],
+            db[2] / 1048576.0, (unsigned long long)dn[3], db[3] / 1048576.0, (unsigned long long)dn[4], db[4] / 1048576.0,
+-           (unsigned long long)dn[5], db[5] / 1048576.0, (unsigned long long)dn[6], db[6] / 1048576.0);
++           (unsigned long long)dn[5], db[5] / 1048576.0, (unsigned long long)dn[6], db[6] / 1048576.0, (unsigned long long)rcn, rcb / 1048576.0);
+     rt_log("mem: textures frame %llu: live entries dropped unbound under VRAM pressure (NX2NAVI_TEX_LIVE_EVICT) %llu "
+            "%.0f MiB since the last line, %llu %.0f MiB since start; of them used within NX2NAVI_TEX_LIVE_GUARD submits %llu",
+            (unsigned long long)frame, (unsigned long long)len, lenb / 1048576.0, (unsigned long long)letn,
+-- 
+2.56.0
+
