@@ -150,10 +150,10 @@ try *args:
     NX2NAVI_SHADER_RELOAD="${NX2NAVI_SHADER_RELOAD:-1}" NX2NAVI_DUMP_REQ="${NX2NAVI_DUMP_REQ:-1}" \
     {{just_executable()}} -f "{{justfile()}}" play {{args}}
 
-# `just try` with the translator fix 0064 (#164, signed I2F): its own translator, shader cache and pipeline cache copy
+# `just try` on nx2navi.play5 (0001-0067, mesh draws in dumps) with the translator fix 0064 (#164, signed I2F): its own translator, shader cache and pipeline cache copy
 # under build/v111 (*-i2f), so the live caches stay as they are. Every shader is translated again on first use.
 try-i2f *args:
-    NX2NAVI_XLATE="{{src}}/build/{{ver}}/xlate-i2f/nx2navi_xlate" NX2NAVI_SHADER_CACHE="{{src}}/build/{{ver}}/shader-cache-i2f" \
+    NX2NAVI_EXE="${NX2NAVI_EXE:-play5}" NX2NAVI_XLATE="{{src}}/build/{{ver}}/xlate-i2f/nx2navi_xlate" NX2NAVI_SHADER_CACHE="{{src}}/build/{{ver}}/shader-cache-i2f" \
     NX2NAVI_PIPELINE_CACHE="{{src}}/build/{{ver}}/pipeline-cache-i2f.bin" \
     {{just_executable()}} -f "{{justfile()}}" try {{args}}
 

@@ -1,0 +1,214 @@
+From 4a0f7bf8bb724ab14883f4a6028c3b9249da8bf1 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 20:58:49 -0500
+Subject: [PATCH] vk_dump: mesh draws are dumped like vertex draws
+ (NX2NAVI_DUMP_MESH, default 1; 0 leaves them out as before): passes.txt names
+ their task, mesh and fragment shaders and their bindings and c-banks, the
+ pick lists ts/ms with cache .spv paths, and each indirect mesh draw's {count,
+ first} record is read back after the frame to mesh.txt (#168)
+
+---
+ runtime/vk_dump.c      | 81 ++++++++++++++++++++++++++++++++++++------
+ runtime/vk_exec.h      |  2 ++
+ runtime/vk_exec_draw.c |  3 +-
+ 3 files changed, 75 insertions(+), 11 deletions(-)
+
+diff --git a/runtime/vk_dump.c b/runtime/vk_dump.c
+index 2abfaf8..24de927 100644
+--- a/runtime/vk_dump.c
++++ b/runtime/vk_dump.c
+@@ -9,6 +9,8 @@
+ //                                                    in both, a pixel with a NaN channel is magenta
+ //   passes.txt   per pass or dispatch: targets, draws, each distinct pipeline + texture set with its shaders' SPIR-V
+ //                hashes (sh_<hash>.spv written once) and the bound textures with their samplers
++//   mesh.txt     indirect mesh draws: the {count, first} record each read, by pass and draw (NX2NAVI_DUMP_MESH=0: mesh
++//                draws left out of passes.txt and mesh.txt, as before)
+ //   images.txt   per image: channel min/max, distinct texel values over the image and over its top quarter
+ // Sampled 8-bit 2D textures up to TEX2D_CAP texels are copied once each as pass_<seq>_tex<id>_... at the end of the pass
+ // that samples them; texture lines carry the storage address, mirror state, upload count and the image's and slot's
+@@ -619,6 +621,8 @@ typedef struct { VkPipeline p; uint64_t th; int draws; char *text; } Ent;
+ static Ent ents[MAX_ENTS];
+ static int nents, ents_over, pass_draws;
+ static int dump_draws;       // NX2NAVI_DUMP_DRAWS=1: every draw of a pass listed in order with its arguments
++int vk_dump_mesh = 1;        // NX2NAVI_DUMP_MESH (default 1): mesh draws are dumped and picked like vertex draws, with
++                             // their task and mesh shaders; 0: left out, as before
+ static Str draw_lines;       // those lines, flushed at the pass end
+ char vk_dump_draw_args[128]; // set by the draw ops (vk_exec_draw.c) before prepare_draw: kind, count, instances
+ typedef struct { VkImage image; VkFormat format; uint32_t w, h, d; int id, is2d; } Lut;
+@@ -873,12 +877,18 @@ void vk_dump_draw(VkExec *ex, const VkPipeState *s, VkPipeline p, const VkPipeIn
+     int pipe = -1;
+     for (int i = 0; i < nents; i++)
+         if (ents[i].p == p && ents[i].th == th) { pipe = i; break; }
++    int mesh = gfx_shader_stage(s->vs) == GFX_STAGE_MS;
+     if (dump_draws) {
+-        sp(&draw_lines, "    draw %d: pipe %d vs %016llx fs %016llx %s", pass_draws - 1, pipe < 0 ? nents : pipe,
+-           (unsigned long long)shader_hash(s->vs), (unsigned long long)shader_hash(s->fs), vk_dump_draw_args);
++        if (mesh)
++            sp(&draw_lines, "    draw %d: pipe %d ts %016llx ms %016llx fs %016llx %s", pass_draws - 1,
++               pipe < 0 ? nents : pipe, (unsigned long long)(s->ts ? shader_hash(s->ts) : 0),
++               (unsigned long long)shader_hash(s->vs), (unsigned long long)shader_hash(s->fs), vk_dump_draw_args);
++        else
++            sp(&draw_lines, "    draw %d: pipe %d vs %016llx fs %016llx %s", pass_draws - 1, pipe < 0 ? nents : pipe,
++               (unsigned long long)shader_hash(s->vs), (unsigned long long)shader_hash(s->fs), vk_dump_draw_args);
+         cbank_list(&draw_lines, ex, info);
+         sp(&draw_lines, "\n");
+-        vertex_list(&draw_lines, ex, s->vs);
++        if (!mesh) vertex_list(&draw_lines, ex, s->vs);
+     }
+     if (pipe >= 0) {
+         ents[pipe].draws++;
+@@ -889,15 +899,62 @@ void vk_dump_draw(VkExec *ex, const VkPipeState *s, VkPipeline p, const VkPipeIn
+         goto out;
+     }
+     Str b = {0};
+-    sp(&b, "vs %016llx fs %016llx prog %llu prim %d\n", (unsigned long long)shader_hash(s->vs),
+-       (unsigned long long)shader_hash(s->fs), (unsigned long long)(ex->prog ? ex->prog->serial : 0), s->prim);
+-    vertex_list(&b, ex, s->vs);
++    if (mesh)
++        sp(&b, "ts %016llx ms %016llx fs %016llx prog %llu mesh\n", (unsigned long long)(s->ts ? shader_hash(s->ts) : 0),
++           (unsigned long long)shader_hash(s->vs), (unsigned long long)shader_hash(s->fs),
++           (unsigned long long)(ex->prog ? ex->prog->serial : 0));
++    else
++        sp(&b, "vs %016llx fs %016llx prog %llu prim %d\n", (unsigned long long)shader_hash(s->vs),
++           (unsigned long long)shader_hash(s->fs), (unsigned long long)(ex->prog ? ex->prog->serial : 0), s->prim);
++    if (!mesh) vertex_list(&b, ex, s->vs);
+     describe_bindings(&b, ex, info);
+     ents[nents++] = (Ent){p, th, 1, b.s};
+ out:
+     plat_mutex_unlock(&rec_lock);
+ }
+ 
++// An indirect mesh draw's record {count, first} as the GPU holds it when the draw reads it (NX2NAVI_DUMP_MESH): copied
++// in the frame's command buffer before the draw, written to mesh.txt once its fence completes, with the pass and draw
++// it belongs to in passes.txt. Called outside a render pass (mesh_ring_entry ends it), so the next pass is the draw's.
++typedef struct { VkBuffer buf; VmaAllocation alloc; const uint8_t *map; uint64_t addr, frame; int pass, draw; } MeshJob;
++static FILE *mesh_f;
++
++static void mesh_done(void *arg) {
++    MeshJob *j = arg;
++    vmaInvalidateAllocation(vk_ctx()->vma, j->alloc, 0, VK_WHOLE_SIZE);
++    uint32_t w[2];
++    memcpy(w, j->map, 8);
++    plat_mutex_lock(&img_lock);
++    if (!mesh_f) {
++        char path[600];
++        snprintf(path, sizeof path, "%s/mesh.txt", dir);
++        mesh_f = fopen(path, "w");
++    }
++    if (mesh_f) {
++        fprintf(mesh_f, "frame %llu pass %04d draw %d: indirect mesh record at %#llx: count %u first %u\n",
++                (unsigned long long)j->frame, j->pass, j->draw, (unsigned long long)j->addr, w[0], w[1]);
++        fflush(mesh_f);
++    }
++    plat_mutex_unlock(&img_lock);
++    vmaDestroyBuffer(vk_ctx()->vma, j->buf, j->alloc);
++    free(j);
++}
++
++void vk_dump_mesh_ind(VkExec *ex, uint64_t addr) {
++    plat_mutex_lock(&rec_lock);
++    if (!vk_dump_mesh || !active()) goto out;
++    MeshJob *j = calloc(1, sizeof *j);
++    if (!j) rt_fatal("vk_dump: out of memory");
++    if (!copy_range(ex, addr, 8, &j->buf, &j->alloc, &j->map)) {
++        free(j);
++        goto out;
++    }
++    j->addr = addr, j->frame = frame_now(), j->pass = seq, j->draw = pass_draws;
++    vk_completion_add(ex->fence, mesh_done, j);
++out:
++    plat_mutex_unlock(&rec_lock);
++}
++
+ static void target_line(VkExec *ex, const VkExecTarget *t, const char *tag, int n) {
+     char fn[16], name[160];
+     if (!t->image) {
+@@ -1153,6 +1210,7 @@ void vk_dump_init(void) {
+     skip_runs = sr && *sr && *sr != '0';
+     const char *dd = cfg_get("NX2NAVI_DUMP_DRAWS");
+     dump_draws = dd && *dd && *dd != '0';
++    vk_dump_mesh = rt_knob("DUMP_MESH", "1");
+     const char *du = cfg_get("NX2NAVI_DUMP_UBO");
+     dump_ubo = du && *du ? atoi(du) : 0;
+     if (dump_ubo == 1) dump_ubo = 16;
+@@ -1233,6 +1291,7 @@ void vk_dump_present(uint64_t frame) {
+     fclose(images_f);
+     images_f = NULL;
+     if (bufs_f) fclose(bufs_f), bufs_f = NULL;
++    if (mesh_f) fclose(mesh_f), mesh_f = NULL;
+     plat_mutex_unlock(&img_lock);
+     fclose(passes_f);
+     passes_f = NULL;
+@@ -1275,7 +1334,7 @@ static VkRect2D pick_sc;
+ static PickRec *pick_recs;
+ static VkQueryPool pick_pool;
+ static const VkPipeInfo *pick_info;
+-static const GfxShader *pick_vs, *pick_fs;
++static const GfxShader *pick_vs, *pick_fs, *pick_ts;
+ static int pick_prim;
+ static int pick_oq_split = -1;         // NX2NAVI_PICK_OQ (default 1)
+ static int pick_resumed;               // vk_pick_post begins the game's query again
+@@ -1400,7 +1459,7 @@ void vk_pick_pass_end(void) {
+ void vk_pick_note(const VkPipeState *s, const VkPipeInfo *info) {
+     if (!pick_now()) return;
+     pick_notes++;
+-    pick_info = info, pick_vs = s->vs, pick_fs = s->fs, pick_prim = s->prim;
++    pick_info = info, pick_vs = s->vs, pick_fs = s->fs, pick_ts = s->ts, pick_prim = s->prim;
+ }
+ 
+ // Before a draw's own command: 1 when the draw is to be recorded once more, first, for the pick (vk_pick_post after).
+@@ -1424,13 +1483,15 @@ int vk_pick_pre(VkExec *ex) {
+     r->c0 = ex->color[0].tex ? (uint64_t)(uintptr_t)ex->color[0].tex->mem : 0;
+     r->dep = ex->depth.tex ? (uint64_t)(uintptr_t)ex->depth.tex->mem : 0;
+     Str b = {0};
+-    shader_line(&b, "vs", pick_vs);
++    int mesh = gfx_shader_stage(pick_vs) == GFX_STAGE_MS;
++    if (mesh) shader_line(&b, "ts", pick_ts);
++    shader_line(&b, mesh ? "ms" : "vs", pick_vs);
+     shader_line(&b, "fs", pick_fs);
+     sp(&b, "  prog %llu prim %d draw: %s\n  c-banks:", (unsigned long long)(ex->prog ? ex->prog->serial : 0), pick_prim,
+        vk_dump_draw_args);
+     cbank_list(&b, ex, info);
+     sp(&b, "\n");
+-    vertex_list(&b, ex, pick_vs);
++    if (!mesh) vertex_list(&b, ex, pick_vs);
+     describe_bindings(&b, ex, info);
+     r->text = b.s;
+     pick_sc = sc, pick_q = pick_n++;
+diff --git a/runtime/vk_exec.h b/runtime/vk_exec.h
+index 27cbfda..a57b80e 100644
+--- a/runtime/vk_exec.h
++++ b/runtime/vk_exec.h
+@@ -175,6 +175,8 @@ void vk_bufcap_pass_end(VkExec *ex);     // vk_exec_pass_end while vk_bufcap_on
+ void vk_dump_init(void);                 // reads the environment; vk_exec_record's first call
+ void vk_dump_pass_end(VkExec *ex);       // after vkCmdEndRendering
+ void vk_dump_draw(VkExec *ex, const VkPipeState *s, VkPipeline p, const VkPipeInfo *info);   // after a draw's binds
++void vk_dump_mesh_ind(VkExec *ex, uint64_t addr);   // an indirect mesh draw's record, read back to mesh.txt
++extern int vk_dump_mesh;   // NX2NAVI_DUMP_MESH (default 1): mesh draws in dumps
+ void vk_dump_dispatch(VkExec *ex, const GfxShader *cs, VkPipeline p, const VkPipeInfo *info, const p_dispatch *d);
+ void vk_dump_copy(VkExec *ex, uint32_t op, const void *payload);   // before a copy or texture clear is replayed
+ void vk_dump_present(uint64_t frame);    // vk_be_present: waits for the dump frame's copies and closes the logs
+diff --git a/runtime/vk_exec_draw.c b/runtime/vk_exec_draw.c
+index ccef1b0..4f5bf4a 100644
+--- a/runtime/vk_exec_draw.c
++++ b/runtime/vk_exec_draw.c
+@@ -3174,7 +3174,7 @@ static int prepare_draw_ex(VkExec *ex, int prim, int32_t count, int restart, int
+     if (fbl & ex->fb_dirty) feedback_barrier(ex);
+     feedback_written(ex, &s);
+     if (!mesh) bind_vertex_buffers(ex);
+-    if (vk_dump_armed && !mesh) vk_dump_draw(ex, &s, p, info);
++    if (vk_dump_armed && (!mesh || vk_dump_mesh)) vk_dump_draw(ex, &s, p, info);
+     if (__atomic_load_n(&vk_pick_armed, __ATOMIC_RELAXED)) vk_pick_note(&s, info);
+     if (ao_trace_on() && fs) ao_trace(ex, fs, 1);
+     if (vk_hdr_track) vk_hdr_draw(ex, info);
+@@ -4039,6 +4039,7 @@ static void op_draw_mesh_ind(VkExec *ex, const p_draw_mesh_ind *d) {
+     VkDeviceSize at;
+     DUMP_ARGS("mesh indirect args %#llx", (unsigned long long)d->ind);
+     if (!mesh_ring_entry(ex, &ip, &at)) return warn_once(W_MESH, "the indirect mesh ring could not be created: skipped");
++    if (vk_dump_armed) vk_dump_mesh_ind(ex, d->ind);   // the record as the draw reads it (mesh.txt)
+     if (!prepare_draw_ex(ex, NVN_DRAW_PRIMITIVE_TRIANGLES, 0x7fffffff, 0, 1)) return;
+     vk_exec_frame.draws++;
+     static uint32_t n_logged;
+-- 
+2.56.0
+
