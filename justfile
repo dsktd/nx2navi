@@ -278,6 +278,12 @@ replay file *env:
 selftest:
     cd "{{src}}" && {{dev}} env {{radv}} {{wrapper}} build/{{ver}}/nx2navi --selftest
 
+# Differential test of the SM86 lowering (patch 0085, tests/xdiff): every instruction form in the shader cache's
+# stored inputs, lowered by the translator and checked against an SM86 reference on random inputs; reads the cache
+# only, CPU only (niced, lab cores), report in build/xdiff/report.txt. E.g. just xdiff --shaders 2000 --opcode I2F,IMAD
+xdiff *args:
+    cd "{{src}}" && nice -n 19 taskset -c 12-15,28-31 python3 -I tests/xdiff/xdiff.py --cache build/{{ver}}/shader-cache --xlate build/xlate/nx2navi_xlate --jobs 8 {{args}}
+
 # Pull upstream and rebuild what changed
 update: && xlate game shaders
     git -C ~/claude/.bare/NX2navi.git fetch

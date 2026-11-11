@@ -1,0 +1,3324 @@
+From a71513c9f93344b9696cee896a188e2324f419d8 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 18:02:25 -0500
+Subject: [PATCH] tests/xdiff: differential test of the SM86 lowering over the
+ game's own shader forms; real instructions of every form in a shader cache's
+ stored inputs are lowered with nx2navi_xlate --lower and run on random inputs
+ through an SM86 reference and a Maxwell reference that decodes with the
+ translator's own tables, mismatches ranked by the shaders they reach;
+ selftest.py checks the checker on a transcription of the lowering and catches
+ the I2F signed-flag bug of patch 0064
+
+---
+ docs/building.md          |   8 +
+ tests/xdiff/census.py     | 139 +++++++
+ tests/xdiff/fake_xlate.py |  40 ++
+ tests/xdiff/fp.py         | 350 +++++++++++++++++
+ tests/xdiff/isa.py        | 100 +++++
+ tests/xdiff/lower_py.py   | 762 ++++++++++++++++++++++++++++++++++++++
+ tests/xdiff/maxwell.py    | 462 +++++++++++++++++++++++
+ tests/xdiff/selftest.py   | 279 ++++++++++++++
+ tests/xdiff/sm86.py       | 646 ++++++++++++++++++++++++++++++++
+ tests/xdiff/state.py      | 103 ++++++
+ tests/xdiff/xdiff.py      | 326 ++++++++++++++++
+ 11 files changed, 3215 insertions(+)
+ create mode 100644 tests/xdiff/census.py
+ create mode 100644 tests/xdiff/fake_xlate.py
+ create mode 100644 tests/xdiff/fp.py
+ create mode 100644 tests/xdiff/isa.py
+ create mode 100644 tests/xdiff/lower_py.py
+ create mode 100644 tests/xdiff/maxwell.py
+ create mode 100644 tests/xdiff/selftest.py
+ create mode 100644 tests/xdiff/sm86.py
+ create mode 100644 tests/xdiff/state.py
+ create mode 100644 tests/xdiff/xdiff.py
+
+diff --git a/docs/building.md b/docs/building.md
+index 7e95561..0aada24 100644
+--- a/docs/building.md
++++ b/docs/building.md
+@@ -262,6 +262,14 @@ A change to the SM86 tensor lowering (`tools/xlate/AmpereLowering.cs` Hmma, Ldsm
+ `tests\maxwell_warp_emu.py`, a model of what the shader translator makes of Maxwell code (the docstring names the
+ vector file and what is checked). `tests\maxwell_warp_emu_selftest.py` checks the emulator itself. No game files.
+ 
++A change to the rest of the SM86 lowering (ALU, conversions, moves, the uniform datapath) passes
++`python tests\xdiff\xdiff.py --cache <shader-cache>`: it lowers real instructions of every form the game's shaders use
++(read from the cache's stored translation inputs) with `nx2navi_xlate --lower`, runs each on random inputs through an
++SM86 reference and the lowered Maxwell words through a Maxwell reference that decodes them with the translator's own
++decoder tables, and writes `build\xdiff\report.txt` with the discrepancies ranked by the shaders they reach and a
++`--words ... --case N` repro for each. `python tests\xdiff\selftest.py` checks the checker without the translator
++binary (on `tests\xdiff\lower_py.py`, a transcription of the lowering, which must be kept in step with the C#).
++
+ ## Reverse engineering (optional)
+ 
+ - Ghidra 12.1.2 with the Ghidra-Switch-Loader extension in `toolchain\ghidra\` (JDK 21) opens the game modules (NSO).
+diff --git a/tests/xdiff/census.py b/tests/xdiff/census.py
+new file mode 100644
+index 0000000..a082b40
+--- /dev/null
++++ b/tests/xdiff/census.py
+@@ -0,0 +1,139 @@
++"""The SM86 instructions of the game's shaders, from the runtime's stored translation inputs.
++
++Every translation the runtime makes stores its inputs as <shader-cache>/in/<input id>.in (runtime/gfx_shader.c
++in_store: header {magic "TKSI", version, stage, length, c1 length, answers size}, the answers, the 0x880-byte control
++section, the code, c1); tools/pack_shader_cache.py folds them into shader-cache.pack (kind 4). An NVN2 program
++(control magic 0x98761234) is SM86 code: its size is at control +0x38, and graphics, task and mesh programs start
++with a 0x80-byte header (AmpereLowering.Lower).
++
++programs(cache) yields (input id, stage name, [128-bit instruction words]) for every distinct NVN2 program; forms()
++groups the instructions by form (opcode and modifiers, with register numbers, immediates, constant offsets and
++predicate indices masked out) and counts the shaders each form occurs in."""
++
++from __future__ import annotations
++
++import hashlib
++import struct
++import sys
++from collections import defaultdict
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[2]
++sys.path.insert(0, str(ROOT / "tools"))
++from pack_shader_cache import PACK, loose_files, read_pack  # noqa: E402
++
++import sm86  # noqa: E402
++
++IN_MAGIC = 0x49534B54
++NVN2_MAGIC = 0x98761234
++CONTROL_SIZE = 0x880
++STAGES = {0: "vs", 4: "ps", 5: "cs", 6: "ts", 7: "ms"}   # runtime/gfx.h GFX_STAGE_*
++
++
++def parse_in(data: bytes):
++    """(stage name, [128-bit words]) of an NVN2 program's stored inputs, or None."""
++    if len(data) < 24:
++        return None
++    magic, version, stage, length, c1_len, asize = struct.unpack_from("<6I", data)
++    if magic != IN_MAGIC or stage not in STAGES:
++        return None
++    control = data[24 + asize:24 + asize + CONTROL_SIZE]
++    code = data[24 + asize + CONTROL_SIZE:24 + asize + CONTROL_SIZE + length]
++    if len(control) < CONTROL_SIZE or struct.unpack_from("<I", control)[0] != NVN2_MAGIC:
++        return None
++    size = struct.unpack_from("<I", control, 0x38)[0]
++    header = 0 if STAGES[stage] == "cs" else 0x80
++    if size > len(code) or size <= header or (size - header) % 16:
++        return None
++    words = [int.from_bytes(code[k:k + 16], "little") for k in range(header, size, 16)]
++    return STAGES[stage], words
++
++
++def programs(cache: Path, limit: int | None = None):
++    """Distinct NVN2 programs (by code) of a shader cache folder, loose and packed inputs."""
++    seen = set()
++    sources = []
++    for (kind, name), path in sorted(loose_files(cache).items()):
++        if kind == 4:
++            sources.append((name.hex(), lambda p=path: p.read_bytes()))
++    pack = cache / PACK
++    entries = read_pack(pack) if pack.is_file() else {}
++    if entries:
++        fh = open(pack, "rb")
++
++        def reader(off, size):
++            fh.seek(off)
++            return fh.read(size)
++        for (kind, name), (off, size) in sorted(entries.items()):
++            if kind == 4:
++                sources.append((name.hex(), lambda o=off, s=size: reader(o, s)))
++    n = 0
++    for iid, read in sources:
++        parsed = parse_in(read())
++        if not parsed:
++            continue
++        stage, words = parsed
++        h = hashlib.sha256(b"".join(w.to_bytes(16, "little") for w in words)).digest()
++        if h in seen:   # the same code under other answers
++            continue
++        seen.add(h)
++        yield iid, stage, words
++        n += 1
++        if limit and n >= limit:
++            return
++
++
++# Predicate index fields (3 bits; the negate bit above them stays in the form) per family.
++PRED_FIELDS = {
++    "FSETP": (81, 84, 87), "ISETP": (81, 84, 87, 68), "IADD3": (81, 84, 87, 77), "UIADD3": (81, 84, 87, 77),
++    "LEA": (81, 87), "ULEA": (81, 87), "LOP3": (81, 87), "ULOP3": (81, 87), "SEL": (87,), "USEL": (87,),
++    "FSEL": (87,), "FMNMX": (87,), "IMNMX": (87,), "IMAD": (87,), "UIMAD": (87,), "PLOP3": (81, 84, 87, 77, 68),
++    "UPLOP3": (81, 84, 87, 77, 68), "FSET": (87,), "UISETP": (81, 84, 87, 68),
++}
++M128 = (1 << 128) - 1
++
++
++def field_mask(off, n):
++    return ((1 << n) - 1) << off
++
++
++def form_key(w: int) -> int:
++    """The instruction with what differs between uses of one form masked out."""
++    op = w & 0xFFF
++    form = (w >> 9) & 7
++    m = M128 & ~field_mask(12, 20) & ~field_mask(105, 23)   # guard, Rd, Ra; scheduling and reuse bits
++    if form == 1:
++        m &= ~field_mask(32, 8) & ~field_mask(64, 8)
++    elif form in (2, 4):
++        m &= ~field_mask(32, 32) & ~field_mask(64, 8)
++    elif form in (3, 5):
++        m &= ~field_mask(38, 16) & ~field_mask(64, 8)
++    elif form in (6, 7):
++        m &= ~field_mask(32, 6) & ~field_mask(64, 8)
++    for off in PRED_FIELDS.get(sm86.mnemonic(op), ()):
++        m &= ~field_mask(off, 3)
++    return w & m
++
++
++KEEP = 32   # distinct example instructions kept per form
++
++
++def forms(progs):
++    """({form key: {"shaders": set of program indices, "count": uses, "insns": [up to KEEP distinct words]}},
++    [input id of each program index], instruction count) over (id, stage, words)."""
++    out = defaultdict(lambda: {"shaders": set(), "count": 0, "insns": []})
++    ids = []
++    ninsn = 0
++    for iid, _stage, words in progs:
++        n = len(ids)
++        ids.append(iid)
++        for w in words:
++            if (w >> 12) & 15 == 15:   # @!PT: compiler padding, never runs
++                continue
++            ninsn += 1
++            e = out[form_key(w)]
++            e["shaders"].add(n)
++            e["count"] += 1
++            if len(e["insns"]) < KEEP and w not in e["insns"]:
++                e["insns"].append(w)
++    return out, ids, ninsn
+diff --git a/tests/xdiff/fake_xlate.py b/tests/xdiff/fake_xlate.py
+new file mode 100644
+index 0000000..bad601e
+--- /dev/null
++++ b/tests/xdiff/fake_xlate.py
+@@ -0,0 +1,40 @@
++"""Stands in for `nx2navi_xlate --lower <file>` (tools/xlate/Program.cs LowerFile) with the Python transcription
++lower_py.py, so the xdiff driver can be checked end to end where the translator binary is not at hand:
++
++  python tests/xdiff/xdiff.py --xlate tests/xdiff/fake_xlate.py --cache <folder>
++
++Same output: the Maxwell words one per line, the closing EXIT, "urbase N"; a refusal goes to stderr with exit 1.
++XDIFF_FAKE_BUGS=i2f-bit12 injects a known bug."""
++
++import os
++import sys
++from pathlib import Path
++
++sys.path.insert(0, str(Path(__file__).resolve().parent))
++import lower_py  # noqa: E402
++
++
++def main():
++    if len(sys.argv) != 3 or sys.argv[1] != "--lower":
++        sys.exit("usage: fake_xlate.py --lower <file>")
++    words = []
++    for line in Path(sys.argv[2]).read_text().splitlines():
++        line = line.split("#")[0].strip()
++        if line:
++            words.append(sum(int(x.removeprefix("0x"), 16) << (32 * k) for k, x in enumerate(line.split())))
++    if len(words) != 1:
++        print("fake_xlate lowers one instruction", file=sys.stderr)
++        return 1
++    try:
++        out, ub = lower_py.lower(words[0], [b for b in os.environ.get("XDIFF_FAKE_BUGS", "").split(",") if b])
++    except lower_py.Fail as e:
++        print(f"LoweringException: {e}", file=sys.stderr)
++        return 1
++    for w in out + [0xE30000000007000F]:   # EXIT under PT
++        print(f"{w:016x}")
++    print(f"urbase {ub}")
++    return 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/tests/xdiff/fp.py b/tests/xdiff/fp.py
+new file mode 100644
+index 0000000..1694262
+--- /dev/null
++++ b/tests/xdiff/fp.py
+@@ -0,0 +1,350 @@
++"""Exact IEEE helpers for the reference interpreters (stdlib only): f32 and f16 bit patterns to exact values and back
++under the four rounding modes, flush to zero, and the NVIDIA conventions both ISAs share (canonical NaN 0x7fffffff,
++min/max return the non-NaN operand, saturation sends NaN to 0)."""
++
++from __future__ import annotations
++
++import math
++from fractions import Fraction
++
++M32 = 0xFFFFFFFF
++QNAN = 0x7FFFFFFF
++RN, RM, RP, RZ = 0, 1, 2, 3          # SM86 and Maxwell rounding field order: nearest even, down, up, toward zero
++
++
++class Fmt:
++    def __init__(self, ebits, mbits):
++        self.ebits, self.mbits = ebits, mbits
++        self.bias = (1 << (ebits - 1)) - 1
++        self.emax = self.bias
++        self.emin = 1 - self.bias
++        self.sign = 1 << (ebits + mbits)
++        self.expmask = ((1 << ebits) - 1) << mbits
++        self.inf = self.expmask
++        self.qnan = self.expmask | (1 << (mbits - 1)) | ((1 << (mbits - 1)) - 1)
++        self.mask = (1 << (ebits + mbits + 1)) - 1
++
++
++F32, F16, F64 = Fmt(8, 23), Fmt(5, 10), Fmt(11, 52)
++
++
++def is_nan(bits, f=F32):
++    return (bits & f.expmask) == f.expmask and (bits & ((1 << f.mbits) - 1)) != 0
++
++
++def is_inf(bits, f=F32):
++    return (bits & ~f.sign & f.mask) == f.inf
++
++
++def is_denorm(bits, f=F32):
++    return (bits & f.expmask) == 0 and (bits & ((1 << f.mbits) - 1)) != 0
++
++
++def ftz(bits, on, f=F32):
++    return bits & f.sign if on and is_denorm(bits, f) else bits
++
++
++def value(bits, f=F32):
++    """Exact value of a finite pattern as a Fraction; ('inf', sign) / 'nan' otherwise."""
++    s = -1 if bits & f.sign else 1
++    e = (bits & f.expmask) >> f.mbits
++    m = bits & ((1 << f.mbits) - 1)
++    if e == (1 << f.ebits) - 1:
++        return "nan" if m else ("inf", s)
++    if e == 0:
++        return s * Fraction(m, 1 << (f.mbits - f.emin))
++    return s * Fraction((1 << f.mbits) | m) * Fraction(2) ** (e - f.bias - f.mbits)
++
++
++def _round_int(q: Fraction, mode):
++    """q rounded to an integer under mode (q may be negative)."""
++    fl = q.numerator // q.denominator
++    rem = q - fl
++    if rem == 0:
++        return fl
++    if mode == RM:
++        return fl
++    if mode == RP:
++        return fl + 1
++    if mode == RZ:
++        return fl + 1 if q < 0 else fl
++    if rem > Fraction(1, 2) or (rem == Fraction(1, 2) and fl & 1):
++        return fl + 1
++    return fl
++
++
++def pack(q, mode=RN, f=F32, neg_zero=False):
++    """Bits of the exact value q (Fraction, 'nan', ('inf', s)) rounded into format f."""
++    if q == "nan":
++        return f.qnan if f is not F32 else QNAN
++    if isinstance(q, tuple):
++        return f.inf | (f.sign if q[1] < 0 else 0)
++    if q == 0:
++        return f.sign if neg_zero else 0
++    sign = f.sign if q < 0 else 0
++    a = -q if q < 0 else q
++    e = a.numerator.bit_length() - a.denominator.bit_length()
++    if Fraction(2) ** e > a:
++        e -= 1
++    e = max(e, f.emin)
++    scale = Fraction(2) ** (e - f.mbits)
++    # round the magnitude, with the direction of RM/RP taken from the sign
++    m_mode = mode
++    if sign and mode in (RM, RP):
++        m_mode = RP if mode == RM else RM
++    m = _round_int(a / scale, m_mode)
++    if m >= 1 << (f.mbits + 1):
++        m >>= 1
++        e += 1
++    if e > f.emax:
++        up = m_mode == RN or m_mode == RP
++        return sign | (f.inf if up else (f.expmask - (1 << f.mbits)) | ((1 << f.mbits) - 1))
++    if m < 1 << f.mbits:            # subnormal (e == emin) or zero after rounding
++        return sign | m
++    return sign | ((e + f.bias) << f.mbits) | (m & ((1 << f.mbits) - 1))
++
++
++def f2bits(x: float) -> int:
++    import struct
++    return struct.unpack("<I", struct.pack("<f", x))[0]
++
++
++def bits2f(b: int) -> float:
++    import struct
++    return struct.unpack("<f", struct.pack("<I", b & M32))[0]
++
++
++def same(a, b, isfloat=True):
++    """Equal results: identical bits, or both NaN for a float result (payloads are undefined in SPIR-V)."""
++    return a == b or (isfloat and is_nan(a) and is_nan(b))
++
++
++# ---- arithmetic on f32 bit patterns ----------------------------------------------------------------------------
++
++def neg(b, on=True):
++    return b ^ 0x80000000 if on else b
++
++
++def fabs(b, on=True):
++    return b & 0x7FFFFFFF if on else b
++
++
++def _special(*vals):
++    return any(v == "nan" for v in vals)
++
++
++def fadd(a, b, mode=RN, fz=False):
++    a, b = ftz(a, fz), ftz(b, fz)
++    va, vb = value(a), value(b)
++    if _special(va, vb):
++        return QNAN
++    if isinstance(va, tuple) or isinstance(vb, tuple):
++        if isinstance(va, tuple) and isinstance(vb, tuple) and va[1] != vb[1]:
++            return QNAN
++        return pack(va if isinstance(va, tuple) else vb)
++    s = va + vb
++    if s == 0:   # exact zero: -0 only for -0 + -0, or under RM
++        nz = (a & b & 0x80000000) != 0 if (va == 0 and vb == 0) else mode == RM
++        return 0x80000000 if nz else 0
++    return ftz(pack(s, mode), fz)
++
++
++def fmul(a, b, mode=RN, fz=False):
++    a, b = ftz(a, fz), ftz(b, fz)
++    va, vb = value(a), value(b)
++    sign = (a ^ b) & 0x80000000
++    if _special(va, vb):
++        return QNAN
++    if isinstance(va, tuple) or isinstance(vb, tuple):
++        if va == 0 or vb == 0:
++            return QNAN
++        return F32.inf | sign
++    p = va * vb
++    if p == 0:
++        return sign
++    return ftz(pack(p, mode), fz)
++
++
++def ffma(a, b, c, mode=RN, fz=False):
++    a, b, c = ftz(a, fz), ftz(b, fz), ftz(c, fz)
++    va, vb, vc = value(a), value(b), value(c)
++    psign = (a ^ b) & 0x80000000
++    if _special(va, vb, vc):
++        return QNAN
++    if isinstance(va, tuple) or isinstance(vb, tuple):
++        if va == 0 or vb == 0:
++            return QNAN
++        pinf = ("inf", -1 if psign else 1)
++        if isinstance(vc, tuple) and vc[1] != pinf[1]:
++            return QNAN
++        return pack(pinf)
++    if isinstance(vc, tuple):
++        return pack(vc)
++    p = va * vb
++    s = p + vc
++    if s == 0:
++        if p == 0 and vc == 0:
++            nz = psign != 0 and (c & 0x80000000) != 0
++        else:
++            nz = mode == RM
++        return 0x80000000 if nz else 0
++    return ftz(pack(s, mode), fz)
++
++
++def sat(b):
++    if is_nan(b):
++        return 0
++    v = value(b)
++    if isinstance(v, tuple):
++        return 0x3F800000 if v[1] > 0 else 0
++    if v <= 0:
++        return 0
++    return 0x3F800000 if v >= 1 else b
++
++
++def _mnmx(a, b, want_min):
++    if is_nan(a):
++        return QNAN if is_nan(b) else b
++    if is_nan(b):
++        return a
++    if flt(a, b):
++        return a if want_min else b
++    if flt(b, a):
++        return b if want_min else a
++    if a != b:   # +0 and -0: min is -0, max is +0
++        return (a | b) if want_min else (a & b)
++    return a
++
++
++def fmin(a, b):
++    return _mnmx(a, b, True)
++
++
++def fmax(a, b):
++    return _mnmx(a, b, False)
++
++
++def flt(a, b):
++    """a < b for non-NaN patterns (+0 == -0); a Python float holds every f32 exactly."""
++    return bits2f(a) < bits2f(b)
++
++
++def fcomp(code, a, b):
++    """The 4-bit float compare shared by SM86 FSETP/FSET and Maxwell: F LT EQ LE GT NE GE NUM NAN LTU EQU LEU GTU NEU
++    GEU T."""
++    unordered = is_nan(a) or is_nan(b)
++    if code == 0:
++        return False
++    if code == 15:
++        return True
++    if code == 7:
++        return not unordered
++    if code == 8:
++        return unordered
++    if unordered:
++        return code >= 9
++    lt, gt = flt(a, b), flt(b, a)
++    eq = not lt and not gt
++    base = code - 8 if code >= 9 else code
++    return {1: lt, 2: eq, 3: lt or eq, 4: gt, 5: not eq, 6: gt or eq}[base]
++
++
++def icomp(code, a, b, signed):
++    """3-bit integer compare: F LT EQ LE GT NE GE T."""
++    if signed:
++        a, b = s32(a), s32(b)
++    return [False, a < b, a == b, a <= b, a > b, a != b, a >= b, True][code]
++
++
++def boolop(op, x, y):
++    return [x and y, x or y, x != y][op]
++
++
++def s32(v):
++    v &= M32
++    return v - (1 << 32) if v & 0x80000000 else v
++
++
++def frnd(b, mode, fz=False):
++    """Round to an integral f32 value."""
++    b = ftz(b, fz)
++    v = value(b)
++    if v == "nan":
++        return QNAN
++    if isinstance(v, tuple):
++        return b
++    r = _round_int(v, mode)
++    if r == 0:
++        return b & 0x80000000
++    return pack(Fraction(r))
++
++
++def f2i(b, mode, bits, signed, fz=False, src=F32):
++    """Saturating float to integer (NaN gives 0), as NVIDIA F2I."""
++    b = ftz(b, fz, src)
++    v = value(b, src)
++    lo, hi = (-(1 << (bits - 1)), (1 << (bits - 1)) - 1) if signed else (0, (1 << bits) - 1)
++    if v == "nan":
++        return 0
++    if isinstance(v, tuple):
++        r = hi if v[1] > 0 else lo
++    else:
++        r = min(max(_round_int(v, mode), lo), hi)
++    return r & M32
++
++
++def i2f(v, signed, mode, dst=F32):
++    if signed:
++        v = s32(v)
++    if v == 0:
++        return 0
++    return pack(Fraction(v), mode, dst)
++
++
++def f32_to_f16(b, mode=RN):
++    v = value(b)
++    if v == "nan":
++        return 0x7FFF
++    return pack(v, mode, F16, neg_zero=bool(b & 0x80000000))
++
++
++def f16_to_f32(h):
++    v = value(h & 0xFFFF, F16)
++    if v == "nan":
++        return QNAN
++    return pack(v, RN, F32, neg_zero=bool(h & 0x8000))
++
++
++def mufu(op, b):
++    """MUFU in Maxwell numbering on an f32 pattern (radians for SIN/COS); returns float or None for NaN."""
++    x = bits2f(b)
++    try:
++        if math.isnan(x):
++            return math.nan
++        if op == 0:
++            return math.cos(x) if math.isfinite(x) else math.nan
++        if op == 1:
++            return math.sin(x) if math.isfinite(x) else math.nan
++        if op == 2:
++            return 2.0 ** x if x < 200 else math.inf
++        if op == 3:
++            return math.log2(x) if x > 0 else (-math.inf if x == 0 else math.nan)
++        if op == 4:
++            return 1.0 / x if x != 0 else math.copysign(math.inf, x)
++        if op == 5:
++            return 1.0 / math.sqrt(x) if x > 0 else (math.copysign(math.inf, x) if x == 0 else math.nan)
++        if op == 8:
++            return math.sqrt(x) if x >= 0 else (x if x == 0 else math.nan)
++    except OverflowError:
++        return math.inf
++    raise ValueError(f"MUFU {op}")
++
++
++def close(a, b, rel=2e-6, absol=4e-5):
++    """MUFU results: approximations on both sides, compared with a tolerance."""
++    fa, fb = bits2f(a), bits2f(b)
++    if math.isnan(fa) or math.isnan(fb):
++        return math.isnan(fa) and math.isnan(fb)
++    if math.isinf(fa) or math.isinf(fb):
++        return fa == fb or (abs(fa) > 3e38 and abs(fb) > 3e38 and (fa > 0) == (fb > 0))
++    return abs(fa - fb) <= max(absol, rel * max(abs(fa), abs(fb)))
+diff --git a/tests/xdiff/isa.py b/tests/xdiff/isa.py
+new file mode 100644
+index 0000000..05e89fc
+--- /dev/null
++++ b/tests/xdiff/isa.py
+@@ -0,0 +1,100 @@
++"""The translator's Maxwell decoder, read from its own sources.
++
++decode(word) gives what the shader translator (Ryujinx.Graphics.Shader) sees in one 64-bit Maxwell instruction: the
++table entry Decoders/InstTable.cs matches (the entry with the fewest don't-care bits among the top 14 wins, the first
++added on a tie, as InstTable.Add does) and every field its Decoders/InstDecoders.cs struct defines, evaluated from
++the C# expression itself. So a lowering that puts a field at the wrong bit (I2F's signed flag in bit 12, patch 0064)
++decodes here exactly as the translator decodes it.
++
++  insn = decode(0x5cb8000000002a02)
++  insn.name, insn.emitter, insn.f['ISrcFmt'], insn.f['Dest']
++"""
++
++from __future__ import annotations
++
++import re
++from dataclasses import dataclass, field
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[2]
++SHADER_SRC = ROOT / "tools" / "vendor" / "ryujinx" / "src" / "Ryujinx.Graphics.Shader"
++
++ENCODING_BITS = 14
++_ADD = re.compile(r'Add\("([01x]{64})",\s*InstName\.(\w+),\s*InstEmit\.(\w+)')
++_STRUCT = re.compile(r"readonly struct Inst(\w+)\s*\{(.*?)\n    \}", re.S)
++_PROP = re.compile(r"public (\w+) (\w+) => (.*?);\s*$", re.M)
++_CAST = re.compile(r"\((?:int|uint|long|ulong|bool|[A-Z]\w*)\)(?=\s*[\(_])")
++
++
++@dataclass
++class Insn:
++    word: int
++    name: str          # InstName, e.g. "I2f"
++    emitter: str       # InstEmit method, e.g. "I2fR" (also the decoder struct name without "Inst")
++    f: dict = field(default_factory=dict)
++
++    def __getitem__(self, key):
++        return self.f[key]
++
++
++class Isa:
++    def __init__(self, src: Path = SHADER_SRC):
++        table = (src / "Decoders" / "InstTable.cs").read_text(encoding="utf-8")
++        decoders = (src / "Decoders" / "InstDecoders.cs").read_text(encoding="utf-8")
++        self.table: list = [None] * (1 << ENCODING_BITS)
++        for enc, name, emitter in _ADD.findall(table):
++            top = enc[:ENCODING_BITS]
++            xbits = top.count("x")
++            xs = [ENCODING_BITS - 1 - i for i, ch in enumerate(top) if ch == "x"]
++            base = int(top.replace("x", "0"), 2)
++            for k in range(1 << len(xs)):
++                v = base
++                for j, bit in enumerate(xs):
++                    if k >> j & 1:
++                        v |= 1 << bit
++                cur = self.table[v]
++                if cur is None or cur[2] > xbits:
++                    self.table[v] = (name, emitter, xbits)
++        self.fields: dict[str, list] = {}
++        for sname, body in _STRUCT.findall(decoders):
++            props = []
++            for ctype, pname, expr in _PROP.findall(body):
++                if "_opcode" not in expr:
++                    continue
++                py = _CAST.sub("", expr).replace("_opcode", "op")
++                code = compile(py, f"Inst{sname}.{pname}", "eval")
++                props.append((pname, ctype, code))
++            self.fields[sname] = props
++
++    def decode(self, word: int) -> Insn | None:
++        e = self.table[word >> (64 - ENCODING_BITS)]
++        if e is None:
++            return None
++        name, emitter, _ = e
++        f = {}
++        for pname, ctype, code in self.fields.get(emitter, ()):
++            v = eval(code, {}, {"op": word})
++            if ctype == "bool":
++                v = bool(v)
++            elif ctype == "int":
++                v &= 0xFFFFFFFF
++                if v >= 0x80000000:
++                    v -= 1 << 32
++            f[pname] = int(v) if not isinstance(v, bool) else v
++        return Insn(word, name, emitter, f)
++
++
++_isa: Isa | None = None
++
++
++def isa(src: Path | None = None) -> Isa:
++    global _isa
++    if src is not None:
++        return Isa(src)
++    if _isa is None:
++        _isa = Isa()
++    return _isa
++
++
++def decode(word: int) -> Insn | None:
++    return isa().decode(word)
+diff --git a/tests/xdiff/lower_py.py b/tests/xdiff/lower_py.py
+new file mode 100644
+index 0000000..33001c2
+--- /dev/null
++++ b/tests/xdiff/lower_py.py
+@@ -0,0 +1,762 @@
++"""A line-by-line Python transcription of the ALU, conversion and move lowerings of tools/xlate/AmpereLowering.cs
++(Lowerer: Raw, Mat, Fadd ... I2f), plain register layout only. selftest.py runs the checker on it where the translator
++binary is not at hand, and injects known bugs into it (I2F's signed flag in bit 12, patch 0064) to show they are
++caught. It is a copy: the real check is xdiff.py on `nx2navi_xlate --lower`; keep the two in step when the C# changes.
++
++lower(w) -> (Maxwell words, urbase), as LowerFile prints them (closing EXIT left out)."""
++
++from __future__ import annotations
++
++RZ, PT = 255, 7
++SA, SB, SC, SX = 252, 253, 254, 239
++RUP = 238
++U = 0xFFFFFFFFFFFFFFFF
++
++
++class Fail(Exception):
++    pass
++
++
++class Lowerer:
++    def __init__(self, w, bugs=()):
++        self.w, self.out, self.bugs = w, [], set(bugs)
++        hi = -1
++        for r in (self.bits(16, 8), self.bits(24, 8)):
++            if r < RZ:
++                hi = max(hi, r)
++        b = self.bits(0, 12) & 0x1FF
++        if b < 0x080:
++            r = self.bits(64, 8)
++            if r < RZ:
++                hi = max(hi, r)
++        if self.bits(9, 3) == 1 and self.bits(32, 8) < RZ:
++            hi = max(hi, self.bits(32, 8))
++        if hi >= 237:   # Lowerer: RegisterPressureException, lowered again in spill mode (not transcribed)
++            raise Fail("spill mode")
++        self.urbase = (hi + 2) & ~1
++        self.guard = self.bits(12, 4) << 16
++
++    def bits(self, o, n):
++        return (self.w >> o) & ((1 << n) - 1)
++
++    def bit(self, o):
++        return (self.w >> o) & 1
++
++    @property
++    def form(self):
++        return self.bits(9, 3)
++
++    @property
++    def W1(self):
++        return self.bits(32, 32)
++
++    @property
++    def W2(self):
++        return self.bits(64, 32)
++
++    # building blocks
++    def emit(self, x):
++        self.out.append(x & U)
++
++    def emitg(self, x):
++        self.out.append((x | self.guard) & U)
++
++    def unguarded(self, x):
++        return x | (PT << 16)
++
++    def put(self, x, guarded):
++        self.out.append((x | self.guard) if guarded else self.unguarded(x))
++
++    def mov(self, d, s, guarded=True):
++        self.put(0x5c98000000000000 | (15 << 39) | (s << 20) | d, guarded)
++
++    def mov32i(self, d, imm, guarded=False):
++        self.put(0x0100000000000000 | (15 << 12) | (imm << 20) | d, guarded)
++
++    def movc(self, d, bank, off, guarded=False):
++        self.put(0x4c98000000000000 | (15 << 39) | ((off // 4) << 20) | (bank << 34) | d, guarded)
++
++    def lop32i(self, d, a, imm, op):
++        self.emit(self.unguarded(0x0400000000000000 | (op << 53) | (imm << 20) | (a << 8) | d))
++
++    def fmul32i(self, d, a, imm):
++        self.emit(self.unguarded(0x1e00000000000000 | (imm << 20) | (a << 8) | d))
++
++    def iadd3(self, d, a, b, c, guarded, negB=False):
++        self.put(0x5cc0000000000000 | (c << 39) | (b << 20) | (a << 8) | d | ((1 << 50) if negB else 0), guarded)
++
++    def sel(self, d, a, b, p, guarded):
++        self.put(0x5ca0000000000000 | ((p & 7) << 39) | ((p >> 3) << 42) | (b << 20) | (a << 8) | d, guarded)
++
++    def isetp_ltu(self, pd, a, b):
++        self.emitg(0x5b60000000000000 | (1 << 49) | (PT << 39) | (a << 8) | (b << 20) | (pd << 3) | PT)
++
++    # operands
++    uniform = False
++
++    def gpr(self, r):
++        if self.uniform:
++            return RZ if r == RZ else self.ur(r)
++        return r
++
++    def ur(self, r):
++        if r == 63:
++            return RZ
++        if r > 62 or self.urbase + r >= 237:
++            raise Fail("spill mode")
++        return self.urbase + r
++
++    def cbuf(self):
++        bank, off = self.bits(54, 5), self.bits(38, 16)
++        bank = 17 if bank == 24 else bank
++        if bank >= 18 or off & 3 or (self.bit(91) and not self.uniform):
++            raise Fail("constant operand")
++        return bank, off
++
++    def raw(self, which, scratch):
++        if which == 0:
++            return self.gpr(self.bits(24, 8)), self.bit(73), self.bit(72)
++        form = self.form
++        if form == 0:
++            raise Fail("form 0")
++        wide = form in (4, 5, 6) if which == 1 else form in (2, 3, 7)
++        if wide:
++            if form in (4, 2):
++                self.mov32i(scratch, self.W1)
++                return scratch, 0, 0
++            if form in (5, 3):
++                bank, off = self.cbuf()
++                self.movc(scratch, bank, off)
++                return scratch, self.bit(62), self.bit(63)
++            return self.ur(self.bits(32, 8)), self.bit(62), self.bit(63)
++        upper = which == 2 or form in (2, 3, 7)
++        return ((self.gpr(self.bits(64, 8)), self.bit(74), self.bit(75)) if upper
++                else (self.gpr(self.bits(32, 8)), self.bit(62), self.bit(63)))
++
++    def second(self):
++        return 2 if self.form in (2, 3, 7) else 1
++
++    def mat(self, reg, a, n, scratch):
++        if not a and not n:
++            return reg
++        if a:
++            self.lop32i(scratch, reg, 0x7fffffff, 0)
++            reg = scratch
++        if n:
++            self.lop32i(scratch, reg, 0x80000000, 2)
++            reg = scratch
++        return reg
++
++    def plain(self, which, scratch):
++        return self.raw(which, scratch)[0]
++
++    def floatmat(self, which, scratch):
++        r, a, n = self.raw(which, scratch)
++        return self.mat(r, a, n, scratch)
++
++    @property
++    def dst(self):
++        return self.gpr(self.bits(16, 8))
++
++    # instructions
++    def fadd(self):
++        if self.bits(81, 10):
++            raise Fail("FADD mode")
++        a, aa, an = self.raw(0, SA)
++        b, ba, bn = self.raw(self.second(), SB)
++        self.emitg(0x5c58000000000000 | (b << 20) | (a << 8) | self.dst | (an << 48) | (aa << 46) | (bn << 45)
++                   | (ba << 49) | (self.bits(78, 2) << 39) | (self.bits(80, 1) << 44) | (self.bits(77, 1) << 50))
++
++    SCALE = [0, 3, 2, 1, 0, 6, 5, 4]
++
++    def fmul(self):
++        if self.bit(76) or self.bits(81, 3) or self.bits(87, 4) or self.bits(84, 3) == 0:
++            raise Fail("FMUL mode")
++        a, aa, an = self.raw(0, SA)
++        b, ba, bn = self.raw(1, SB)
++        a = self.mat(a, aa, 0, SA)
++        b = self.mat(b, ba, 0, SB)
++        self.emitg(0x5c68000000000000 | (b << 20) | (a << 8) | self.dst | ((an != bn) << 48)
++                   | (self.SCALE[self.bits(84, 3)] << 41) | (self.bits(78, 2) << 39) | (self.bits(80, 1) << 44)
++                   | (self.bits(77, 1) << 50))
++
++    def ffma(self):
++        if self.bit(76) or self.bits(81, 10):
++            raise Fail("FFMA mode")
++        a, aa, an = self.raw(0, SA)
++        b, ba, bn = self.raw(1, SB)
++        c, ca, cn = self.raw(2, SC)
++        a, b, c = self.mat(a, aa, 0, SA), self.mat(b, ba, 0, SB), self.mat(c, ca, 0, SC)
++        self.emitg(0x5980000000000000 | (c << 39) | (b << 20) | (a << 8) | self.dst | ((an != bn) << 48) | (cn << 49)
++                   | (self.bits(77, 1) << 50) | (self.bits(78, 2) << 51) | (self.bits(80, 1) << 53))
++
++    def fmnmx(self):
++        if self.bits(74, 6) or self.bits(81, 6):
++            raise Fail("FMNMX mode")
++        a, aa, an = self.raw(0, SA)
++        b, ba, bn = self.raw(self.second(), SB)
++        self.emitg(0x5c60000000000000 | (b << 20) | (a << 8) | self.dst | (an << 48) | (aa << 46) | (bn << 45)
++                   | (ba << 49) | (self.bits(87, 3) << 39) | (self.bits(90, 1) << 42) | (self.bits(80, 1) << 44))
++
++    def frnd(self):
++        if self.bits(75, 2) != 2 or self.bits(84, 2) != 2 or self.bits(81, 3) or self.bits(86, 6):
++            raise Fail("FRND format")
++        b, ba, bn = self.raw(1, SB)
++        self.emitg(0x5ca8000000000000 | (2 << 8) | (2 << 10) | (b << 20) | self.dst | ((8 + self.bits(78, 2)) << 39)
++                   | (self.bits(80, 1) << 44) | (bn << 45) | (ba << 49))
++
++    def setp(self, floating):
++        if not floating and self.bit(72):
++            raise Fail("ISETP.EX not transcribed")
++        combine = self.bits(74, 2)
++        if combine > 2:
++            raise Fail("combine")
++        a, aa, an = self.raw(0, SA)
++        b, ba, bn = self.raw(1, SB)
++        w = ((0x5bb0000000000000 if floating else 0x5b60000000000000) | self.bits(84, 3) | (self.bits(81, 3) << 3)
++             | (a << 8) | (b << 20) | (self.bits(87, 3) << 39) | (self.bits(90, 1) << 42) | (combine << 45))
++        if floating:
++            w |= (self.bits(80, 1) << 47) | (self.bits(76, 4) << 48) | (an << 43) | (aa << 7) | (bn << 6) | (ba << 44)
++        else:
++            w |= (self.bits(73, 1) << 48) | (self.bits(76, 3) << 49)
++        self.emitg(w)
++
++    def fset(self):
++        if self.bits(64, 8) or self.bits(74, 2) == 3 or self.bits(81, 6):
++            raise Fail("FSET mode")
++        a, aa, an = self.raw(0, SA)
++        b, ba, bn = self.raw(1, SB)
++        self.emitg(0x5800000000000000 | (b << 20) | (a << 8) | self.dst | (self.bits(87, 3) << 39)
++                   | (self.bits(90, 1) << 42) | (self.bits(74, 2) << 45) | (self.bits(76, 4) << 48) | (1 << 52)
++                   | (self.bits(80, 1) << 55) | (an << 43) | (bn << 53) | (aa << 54) | (ba << 44))
++
++    def sel_(self, floating):
++        a = self.floatmat(0, SA) if floating else self.plain(0, SA)
++        b = self.floatmat(1, SB) if floating else self.plain(1, SB)
++        self.sel(self.dst, a, b, self.bits(87, 4), True)
++
++    def i2fp(self):
++        w2 = self.W2 & ~(0x400 | 0xc000 | 0x08000000)
++        if w2 != 0x00201000:
++            raise Fail("I2FP format")
++        b = self.plain(1, SB)
++        self.emitg(0x5cb8000000000000 | (2 << 8) | (2 << 10) | (self.bits(74, 1) << (12 if "i2f-bit12" in self.bugs else 13))
++                   | (b << 20) | (self.bits(78, 2) << 39) | self.dst)
++
++    def iadd3_(self):
++        op = self.bits(0, 12)
++        negA, negC, ext = self.bit(72), self.bit(75), self.bit(74)
++        negB = int(op != 0x810 and self.bit(63) and self.form not in (2, 3))
++        c1, c2 = self.bits(81, 3), self.bits(84, 3)
++        a, b, c = self.plain(0, SA), self.plain(1, SB), self.plain(2, SC)
++        d = self.dst
++        if self.form in (2, 3) and (self.bit(63) or negC):
++            raise Fail("IADD3 negation with a wide third source")
++        if not ext and c1 == 7 and c2 == 7:
++            self.emitg(0x5cc0000000000000 | (c << 39) | (b << 20) | (a << 8) | d | (negA << 51) | (negB << 50)
++                       | (negC << 49))
++            return
++        lo, hi, one = 244, 245, 246
++
++        def inv(r, n, t):
++            if not n:
++                return r
++            self.lop32i(t, r, 0xffffffff, 2)
++            return t
++        a, b, c = inv(a, negA, 241), inv(b, negB, 242), inv(c, negC, 243)
++
++        def addc(r):
++            self.emit(self.unguarded(0x5c10000000000000 | (1 << 47) | (r << 20) | (lo << 8) | lo))
++            self.emit(self.unguarded(0x5c10000000000000 | (1 << 43) | (RZ << 20) | (hi << 8) | hi))
++        self.emit(self.unguarded(0x5c10000000000000 | (1 << 47) | (b << 20) | (a << 8) | lo))
++        self.emit(self.unguarded(0x5c10000000000000 | (1 << 43) | (RZ << 20) | (RZ << 8) | hi))
++        addc(c)
++        if ext:
++            for p in (self.bits(87, 4), self.bits(77, 4)):
++                if p == 15:
++                    continue
++                self.mov32i(one, 1)
++                if p != 7:
++                    self.sel(one, one, RZ, p, False)
++                addc(one)
++        elif negA or negB or negC:
++            self.mov32i(one, negA + negB + negC)
++            addc(one)
++        if d != RZ:
++            self.mov(d, lo)
++        guard = self.bits(12, 3)
++        for k in ((1, 0) if guard == c1 else (0, 1)):
++            p = c1 if k == 0 else c2
++            if p == 7:
++                continue
++            self.lop32i(one, hi, 1 if k == 0 else 2, 0)
++            self.emitg(0x5b60000000000000 | (5 << 49) | (PT << 39) | (RZ << 20) | (one << 8) | (p << 3) | PT)
++
++    def imad(self):
++        known = 0xff | 1 << 9 | 1 << 10 | 1 << 11 | 7 << 17 | 0xf << 23 | ((1 << 27) if self.form in (6, 7) else 0)
++        x = self.bit(74)
++        if (self.W2 & ~known) or self.bits(81, 3) != 7 or (not x and self.bits(87, 4) != 15):
++            raise Fail("IMAD mode")
++        a, b, c = self.plain(0, SA), self.plain(1, SB), self.plain(2, SC)
++        if self.bit(75) and c != RZ:
++            if x:
++                self.lop32i(SC, c, 0xffffffff, 2)
++            else:
++                self.iadd3(SC, RZ, c, RZ, False, negB=True)
++            c = SC
++        signed = ((1 << 48) | (1 << 53)) if self.bit(73) else 0
++        d = self.dst
++
++        def imad(dst):
++            return 0x5a00000000000000 | (c << 39) | (b << 20) | (a << 8) | dst | signed
++        if not x:
++            self.emitg(imad(d))
++            return
++        self.mov32i(SX, 1)
++        self.sel(SX, SX, RZ, self.bits(87, 4), False)
++        self.emit(self.unguarded(imad(SA)))
++        self.iadd3(d, SA, SX, RZ, True)
++
++    def lop3(self):
++        if self.bit(80) or self.bits(87, 4) != 15:
++            raise Fail("LOP3 predicate mode")
++        a, b, c = self.plain(0, SA), self.plain(1, SB), self.gpr(self.bits(64, 8))
++        p = self.bits(81, 3)
++        self.emitg(0x5be0000000000000 | (c << 39) | (b << 20) | (a << 8) | self.dst | (self.bits(72, 8) << 28)
++                   | ((0 if p == 7 else 3) << 36) | (p << 48))
++
++    def imnmx(self):
++        a, b = self.plain(0, SA), self.plain(1, SB)
++        self.emitg(0x5c20000000000000 | (b << 20) | (a << 8) | self.dst | (self.bits(87, 3) << 39)
++                   | (self.bits(90, 1) << 42) | (self.bits(73, 1) << 48))
++
++    def shf(self):
++        if self.bits(81, 10):
++            raise Fail("SHF mode")
++        t = self.bits(73, 2)
++        wrap, right, hi = self.bit(75), self.bit(76), self.bit(80)
++        wide, signed = t <= 1, t in (0, 2)
++        low, s, high = self.plain(0, SA), self.plain(1, SB), self.plain(2, SC)
++        d = self.dst
++        ms = 3 if t == 0 else 2 if t == 1 else 0
++        if not right and hi:
++            self.emitg(0x5bf8000000000000 | (high << 39) | (s << 20) | (low << 8) | d | (wrap << 50) | (ms << 37))
++        elif not right:
++            if wrap and wide:
++                raise Fail("SHF.L.W 64")
++            self.emitg(0x5c48000000000000 | (s << 20) | (low << 8) | d | (wrap << 39))
++        elif not hi:
++            self.emitg(0x5cf8000000000000 | (high << 39) | (s << 20) | (low << 8) | d | (wrap << 50) | (ms << 37))
++        else:
++            if wrap and wide:
++                raise Fail("SHF.R.W 64")
++            self.emitg(0x5c28000000000000 | (s << 20) | (high << 8) | d | (wrap << 39) | (signed << 48))
++
++    def lea(self):
++        op = self.bits(0, 12)
++        a, b, d = self.plain(0, SA), self.plain(1, SB), self.dst
++        shift, carry = self.bits(75, 5), self.bits(81, 3)
++        negB = int(op != 0x811 and self.bit(63))
++        if self.bit(72):
++            raise Fail("LEA negated a")
++        if not self.bit(80):
++            if self.bit(74):
++                raise Fail("LEA.X without .HI")
++
++            def iscadd(dst, bb):
++                return 0x5c18000000000000 | (shift << 39) | (bb << 20) | (a << 8) | dst | (negB << 48)
++            if carry == 7:
++                self.emitg(iscadd(d, b))
++                return
++            if negB:
++                raise Fail("LEA carry with negated b")
++            self.mov(SX, b, False)
++            self.emit(self.unguarded(iscadd(SC, SX)))
++            if d != RZ:
++                self.mov(d, SC)
++            self.isetp_ltu(carry, SC, SX)
++            return
++        if carry != 7:
++            raise Fail("LEA.HI carry out")
++        high = self.gpr(self.bits(64, 8))
++        self.mov32i(SX, 32 - shift if high == RZ else shift)
++        if high == RZ:
++            self.emitg(0x5c28000000000000 | (SX << 20) | (a << 8) | SC | (self.bit(73) << 48))
++        else:
++            self.emitg(0x5bf8000000000000 | (high << 39) | (SX << 20) | (a << 8) | SC)
++        if self.bit(74):
++            self.mov32i(SX, 1)
++            self.sel(SX, SX, RZ, self.bits(87, 4), False)
++            self.iadd3(SC, SC, SX, RZ, True)
++        self.iadd3(d, SC, b, RZ, True, bool(negB))
++
++    def f2i(self):
++        op = self.bits(0, 12)
++        known = 1 << 8 | 3 << 11 | 1 << 13 | 3 << 14 | 1 << 16 | 3 << 20
++        w2 = self.W2 & ~(0x08000000 if op == 0xd05 else 0)
++        dsz, ssz = self.bits(75, 2), self.bits(84, 2)
++        if (w2 & ~known) or dsz > 2 or ssz not in (1, 2) or (ssz == 1 and self.bits(60, 2)):
++            raise Fail("F2I format")
++        if op == 0x905:
++            self.mov32i(SB, self.W1)
++            b, ab, nb = SB, 0, 0
++        else:
++            b, ab, nb = self.raw(1, SB)
++        fmt = dsz | (4 if self.bit(72) else 0)
++        self.emitg(0x5cb0000000000000 | (b << 20) | self.dst | ((fmt & 3) << 8) | ((fmt >> 2) << 12) | (ssz << 10)
++                   | (self.bits(78, 2) << 39) | (self.bits(80, 1) << 44) | (nb << 45) | (ab << 49))
++
++    def i2f(self):
++        op = self.bits(0, 12)
++        known = 1 << 10 | 3 << 11 | 3 << 14 | 3 << 20
++        w2 = self.W2 & ~(0x08000000 if op == 0xd06 else 0)
++        src, dst, sel = self.bits(84, 2), self.bits(75, 2), self.bits(60, 2)
++        if (w2 & ~known) or src == 3 or dst == 0 or (op != 0xb06 and (self.W1 & 0xcfffff00)):
++            raise Fail("I2F format")
++        b = self.plain(1, SB) if op == 0xb06 else self.ur(self.bits(32, 8)) if op == 0xd06 else self.gpr(self.bits(32, 8))
++        bytesel = sel if src == 0 else sel * 2 if src == 1 else 0
++        self.emitg(0x5cb8000000000000 | (dst << 8) | (src << 10) | (self.bits(74, 1) << (12 if "i2f-bit12" in self.bugs else 13))
++                   | (b << 20) | (bytesel << 41) | (self.bits(78, 2) << 39) | self.dst)
++
++    def prmt(self):
++        if self.bits(72, 4) or self.bits(76, 15):
++            raise Fail("PRMT mode")
++        a, s, c = self.plain(0, SA), self.plain(1, SB), self.plain(2, SC)
++        self.emitg(0x5bc0000000000000 | (c << 39) | (s << 20) | (a << 8) | self.dst)
++
++    def popc(self):
++        if self.W2 & ~0x08000000:
++            raise Fail("POPC mode")
++        b, _, inv = self.raw(1, SB)
++        self.emitg(0x5c08000000000000 | (b << 20) | (inv << 40) | self.dst)
++
++    def flo(self):
++        if (self.W2 & ~(0x600 | 0x08000000)) != 0x000e0000:
++            raise Fail("FLO mode")
++        b, _, inv = self.raw(1, SB)
++        self.emitg(0x5c30000000000000 | (b << 20) | (inv << 40) | (self.bits(74, 1) << 41) | (self.bits(73, 1) << 48)
++                   | self.dst)
++
++    def f2fp(self):
++        if (self.bits(62, 2) or self.bits(73, 5) or self.bits(79, 2) or self.bits(81, 10) or self.bit(91)
++                or self.bit(72)):
++            raise Fail("F2FP mode")
++        merge = self.bit(78)
++        a = self.plain(2, SC) if merge else self.plain(0, SA)
++        b = self.plain(1, SB)
++        if merge:
++            self.mov(247, a, False)
++        else:
++            self.emit(self.unguarded(0x5ca8000000000000 | (1 << 8) | (2 << 10) | (a << 20) | 247))
++        self.emit(self.unguarded(0x5ca8000000000000 | (1 << 8) | (2 << 10) | (b << 20) | 246))
++        self.emitg(0x5c18000000000000 | (16 << 39) | (246 << 20) | (247 << 8) | self.dst)
++
++    def mov_(self):
++        op = self.bits(0, 12)
++        if self.bits(72, 4) != 15:
++            raise Fail("MOV lane mask")
++        d = self.dst
++        if op == 0x802:
++            self.mov32i(d, self.W1, True)
++        elif op == 0x202:
++            self.mov(d, self.gpr(self.bits(32, 8)))
++        elif op == 0xc02:
++            self.mov(d, self.ur(self.bits(32, 8)))
++        else:
++            bank, off = self.cbuf()
++            self.movc(d, bank, off, True)
++
++    def imad_wide(self):
++        op = self.bits(0, 12)
++        wide, signed = op in (0x225, 0x625, 0x825), self.bit(73)
++        if (self.W2 & ~0x000e02ff) != 0x07800000 or self.bits(81, 3) != 7:
++            raise Fail("IMAD.HI/WIDE mode")
++        a = self.gpr(self.bits(24, 8))
++        if op in (0x825, 0x827):
++            self.mov32i(SB, self.W1)
++            b = SB
++        elif op == 0xa27:
++            bank, off = self.cbuf()
++            self.movc(SB, bank, off)
++            b = SB
++        else:
++            b = self.gpr(self.bits(64 if op == 0x625 else 32, 8))
++        if op == 0x625:
++            bank, off = self.cbuf()
++            self.movc(SC, bank, off)
++            self.movc(SX, bank, off + 4)
++            clo, chi = SC, SX
++        else:
++            c = self.gpr(self.bits(64, 8))
++            if c != RZ and c & 1:
++                raise Fail("odd addend pair")
++            clo, chi = c, (RZ if c == RZ else c + 1)
++        d = self.dst
++        if wide and (d == RZ or d & 1):
++            raise Fail("destination pair")
++        sign = ((1 << 40) | (1 << 41)) if signed else 0
++        self.emit(self.unguarded(0x5c38000000000000 | (b << 20) | (a << 8) | 247 | sign))
++        self.emit(self.unguarded(0x5c38000000000000 | (1 << 39) | (b << 20) | (a << 8) | 248 | sign))
++        self.emit(self.unguarded(0x5c10000000000000 | (1 << 47) | (clo << 20) | (247 << 8) | 247))
++        self.emit(self.unguarded(0x5c10000000000000 | (1 << 43) | (chi << 20) | (248 << 8) | 248))
++        if wide:
++            self.mov(d, 247)
++            self.mov(d + 1, 248)
++        else:
++            self.mov(d, 248)
++
++    def iabs(self):
++        op = self.bits(0, 12)
++        if self.W2 & ~(0x08000000 if op == 0xc13 else 0):
++            raise Fail("IABS mode")
++        b = self.plain(1, SB)
++        self.iadd3(SX, RZ, b, RZ, False, negB=True)
++        self.emitg(0x5c20000000000000 | (SX << 20) | (b << 8) | self.dst | (15 << 39) | (1 << 48))
++
++    def sgxt(self):
++        if (self.W2 & ~0x200) or self.W1 > 32:
++            raise Fail("SGXT mode")
++        self.emitg(0x3800000000000000 | ((self.W1 << 8) << 20) | (self.bits(73, 1) << 48)
++                   | (self.gpr(self.bits(24, 8)) << 8) | self.dst)
++
++    def brev(self):
++        if self.W2 or self.W1 > 255:
++            raise Fail("BREV mode")
++        self.emitg(0x3828000000000000 | (self.gpr(self.bits(32, 8)) << 8) | (1 << 39) | (1 << 40) | self.dst)
++
++    def mufu(self):
++        op = self.bits(0, 12)
++        operation = self.bits(74, 6)
++        if operation > 8 or operation in (6, 7) or self.bit(73):
++            raise Fail("MUFU operation")
++        if op == 0x908:
++            self.mov32i(SB, self.W1)
++            src, ab, ng = SB, 0, 0
++        else:
++            src, ab, ng = self.raw(1, SB)
++        if operation <= 1:
++            src = self.mat(src, ab, ng, SB)
++            self.fmul32i(SB, src, 0x40c90fdb)
++            src, ab, ng = SB, 0, 0
++        self.emitg(0x5080000000000000 | (operation << 20) | (src << 8) | self.dst | (ab << 46) | (ng << 48))
++
++    def setp_extended(self):
++        cmp, combine, low = self.bits(76, 3), self.bits(74, 2), self.bits(68, 4)
++        if cmp in (0, 7) or combine == 3:
++            raise Fail("ISETP.EX mode")
++        a = self.raw(0, SA)[0]
++        b = self.raw(1, SB)[0]
++        t = 6
++        while t >= 0 and t in (low & 7, self.bits(87, 3), self.bits(12, 3), self.bits(81, 3), self.bits(84, 3)):
++            t -= 1
++        if t < 0:
++            raise Fail("no scratch predicate")
++        self.emit(self.unguarded(0x38e8000000000000 | (1 << (20 + t)) | (RZ << 8) | SX))
++
++        def isetp(c, inp, bop, sg):
++            return (0x5b60000000000000 | (t << 3) | PT | (a << 8) | (b << 20) | ((inp & 7) << 39) | ((inp >> 3) << 42)
++                    | (bop << 45) | ((1 << 48) if sg else 0) | (c << 49))
++        sg = self.bit(73)
++        And, Or, Lt, Eq, Gt, Ne = 0, 1, 1, 2, 4, 5
++        if cmp == Eq:
++            self.emitg(isetp(Eq, low, And, sg))
++        elif cmp == Ne:
++            self.emitg(isetp(Ne, low, Or, sg))
++        else:
++            self.emitg(isetp(Eq, low, And, sg))
++            self.emitg(isetp(Lt if cmp <= 3 else Gt, t, Or, sg))
++        self.emitg(0x5090000000000000 | self.bits(84, 3) | (self.bits(81, 3) << 3) | (t << 12) | (PT << 29)
++                   | (self.bits(87, 3) << 39) | (self.bits(90, 1) << 42) | (combine << 45))
++        self.emit(self.unguarded(0x38f0000000000000 | (1 << (20 + t)) | (SX << 8)))
++
++    def plop3(self):
++        lut = self.bits(64, 3) | self.bits(72, 5) << 3
++        t1, t2, lut2 = self.bits(81, 3), self.bits(84, 3), self.bits(16, 8)
++        ones, ra, rb, rc, r1, r2 = 240, 241, 242, 243, 244, 245
++        self.mov32i(ones, 0xffffffff)
++        self.sel(ra, ones, RZ, self.bits(87, 4), False)
++        self.sel(rb, ones, RZ, self.bits(77, 4), False)
++        c = self.bits(68, 4)
++        if self.bit(67) and not self.uniform:
++            if (c & 7) == 7:
++                self.mov(rc, ones, False)
++            else:
++                self.emit(self.unguarded(0x3828000000000000 | ((c & 7) << 20) | (RUP << 8) | rc))
++                self.lop32i(rc, rc, 1, 0)
++                self.iadd3(rc, RZ, rc, RZ, False, negB=True)
++            if c & 8:
++                self.lop32i(rc, rc, 0xffffffff, 2)
++        else:
++            self.sel(rc, ones, RZ, c, False)
++
++        def lop3(dst, table):
++            return self.unguarded(0x5be0000000000000 | (rc << 39) | (rb << 20) | (ra << 8) | dst | (table << 28) | (7 << 48))
++        self.emit(lop3(r1, lut))
++        if t2 != 7:
++            self.emit(lop3(r2, lut2))
++
++        def ne(p, r):
++            return 0x5b60000000000000 | (5 << 49) | (PT << 39) | (RZ << 20) | (r << 8) | (p << 3) | PT
++        if t1 != 7:
++            self.emitg(ne(t1, r1))
++        if t2 != 7:
++            self.emitg(ne(t2, r2))
++
++    def predicate_register(self, to_reg):
++        if self.W1 > 0x7f or (self.W2 & ~0x3000) or (not to_reg and self.bits(16, 8)):
++            raise Fail("P2R/R2P mode")
++        w = ((0x38e8000000000000 | self.dst) if to_reg else 0x38f0000000000000) \
++            | (self.gpr(self.bits(24, 8)) << 8) | (self.W1 << 20) | (self.bits(76, 2) << 41)
++        self.emitg(w)
++
++    def umov(self):
++        op = self.bits(0, 12)
++        d = self.ur(self.bits(16, 8))
++        if d == RZ:
++            return
++        if op == 0x882:
++            self.mov32i(d, self.W1, True)
++        else:
++            self.emitg(0x5c98000000000000 | (15 << 39) | (self.ur(self.bits(32, 8)) << 20) | d)
++
++    def uldc(self):
++        width = self.bits(73, 3)
++        d = self.ur(self.bits(16, 8))
++        if width < 4:
++            cb, at = self.bits(54, 5), self.bits(38, 16)
++            cb = 17 if cb == 24 else cb
++            if cb >= 18 or at >= 0x8000:
++                raise Fail("ULDC narrow")
++            if d != RZ:
++                self.emitg(0xef90000000000000 | (RZ << 8) | (at << 20) | (cb << 36) | (width << 48) | d)
++            return
++        bank, off = self.cbuf()
++        if width == 4:
++            if d != RZ:
++                self.movc(d, bank, off, True)
++            return
++        if width == 5 and (self.bits(16, 8) & 1) == 0:
++            if d != RZ:
++                self.movc(d, bank, off, True)
++                self.movc(d + 1, bank, off + 4, True)
++            return
++        raise Fail("ULDC width")
++
++    def uniform_predicates(self):
++        op = self.bits(0, 12)
++        if not ((0x080 <= (op & 0x1ff) <= 0x0bf and op != 0x886) or op == 0x9c3):
++            return 0, 0
++        inp = out = 0
++
++        def use(mask, p):
++            return mask | (1 << (p & 7)) if (p & 7) != 7 else mask
++        inp = use(inp, self.bits(12, 3))
++        b = op & 0x1ff
++        if b == 0x08c:
++            out = use(use(out, self.bits(81, 3)), self.bits(84, 3))
++            inp = use(inp, self.bits(87, 3))
++        elif b == 0x09c:
++            out = use(use(out, self.bits(81, 3)), self.bits(84, 3))
++            inp = use(use(use(inp, self.bits(87, 3)), self.bits(77, 3)), self.bits(68, 3))
++        elif b == 0x090:
++            out = use(use(out, self.bits(81, 3)), self.bits(84, 3))
++            if self.bit(74):
++                inp = use(use(inp, self.bits(87, 3)), self.bits(77, 3))
++        elif b == 0x092:
++            out = use(out, self.bits(81, 3))
++            inp = use(inp, self.bits(87, 3))
++        elif b == 0x087:
++            inp = use(inp, self.bits(87, 3))
++        elif b in (0x091, 0x0a4, 0x0a5):
++            out = use(out, self.bits(81, 3))
++            if self.bit(74):
++                inp = use(inp, self.bits(87, 3))
++        return inp, out
++
++    def lower_one(self):
++        op = self.bits(0, 12)
++        if op in (0x882, 0xc82):
++            return self.umov()
++        if op == 0xab9:
++            return self.uldc()
++        if op in (0x290, 0x890, 0xa90, 0x2a4, 0x4a4, 0x8a4, 0xaa4, 0x2a5, 0x8a5, 0x292, 0x892, 0xa92, 0x299, 0x499,
++                  0x899, 0x291, 0x891, 0x287, 0x887, 0x28c, 0x88c, 0xa8c, 0x89c, 0x296, 0x896):
++            twin = (op & 0x1ff) - 0x80
++            saved = self.w
++            self.w = (self.w & ~0x1ff) | twin
++            self.w &= ~(1 << 91)
++            self.uniform = True
++            try:
++                return self.lower_one()
++            finally:
++                self.uniform = False
++                self.w = saved
++        table = {
++            (0x225, 0x227, 0x625, 0x825, 0x827, 0xa27): self.imad_wide,
++            (0x213, 0xa13, 0xc13): self.iabs,
++            (0x81a,): self.sgxt,
++            (0x301,): self.brev,
++            (0x308, 0x908, 0xb08, 0xd08): self.mufu,
++            (0x81c,): self.plop3,
++            (0x803,): lambda: self.predicate_register(True),
++            (0x804,): lambda: self.predicate_register(False),
++        }
++        for ops, fn in table.items():
++            if op in ops:
++                return fn()
++        if op in (0x20c, 0x40c, 0x60c, 0x80c, 0xa0c, 0xc0c) and self.bit(72):
++            return self.setp_extended()
++        return self.lower_basic(op)
++
++    def run(self):
++        self.mov32i(RUP, 0)
++        if self.bits(12, 4) == 15:
++            return self.out
++        inp, out = self.uniform_predicates()
++        m = inp | out
++        if m:
++            self.emit(self.unguarded(0x38e8000000000000 | (m << 20) | (RZ << 8) | 237))
++            self.emit(self.unguarded(0x38f0000000000000 | (m << 20) | (RUP << 8)))
++        self.lower_one()
++        if m:
++            if out:
++                self.emit(self.unguarded(0x38e8000000000000 | (out << 20) | (RUP << 8) | RUP))
++            self.emit(self.unguarded(0x38f0000000000000 | (m << 20) | (237 << 8)))
++        return self.out
++
++    def lower_basic(self, op):
++        table = {
++            (0x221, 0x421, 0x621, 0x821, 0xa21, 0xc21, 0xe21): self.fadd,
++            (0x220, 0x420, 0x620, 0x820, 0xa20, 0xc20): self.fmul,
++            (0x223, 0x423, 0x623, 0x823, 0xa23, 0xc23, 0xe23): self.ffma,
++            (0x209, 0x409, 0x609, 0x809, 0xa09, 0xc09): self.fmnmx,
++            (0x307, 0xb07): self.frnd,
++            (0x20b, 0x40b, 0x60b, 0x80b, 0xa0b, 0xc0b): lambda: self.setp(True),
++            (0x20c, 0x40c, 0x60c, 0x80c, 0xa0c, 0xc0c): lambda: self.setp(False),
++            (0x20a, 0x40a, 0x60a, 0x80a, 0xa0a, 0xc0a): self.fset,
++            (0x207, 0x807, 0xa07, 0xc07): lambda: self.sel_(False),
++            (0x208, 0x808, 0xa08, 0xc08): lambda: self.sel_(True),
++            (0x245, 0x845, 0xa45, 0xc45): self.i2fp,
++            (0x210, 0x410, 0x610, 0x810, 0xa10, 0xc10): self.iadd3_,
++            (0x224, 0x424, 0x624, 0x824, 0xa24, 0xc24, 0xe24): self.imad,
++            (0x212, 0x812, 0xa12, 0xc12): self.lop3,
++            (0x217, 0x817, 0xa17, 0xc17): self.imnmx,
++            (0x219, 0x419, 0x619, 0x819, 0xa19, 0xc19): self.shf,
++            (0x211, 0x811, 0xa11, 0xc11): self.lea,
++            (0x305, 0x905, 0xb05, 0xd05): self.f2i,
++            (0x306, 0xb06, 0xd06): self.i2f,
++            (0x216, 0x416, 0x616, 0x816, 0xa16, 0xc16): self.prmt,
++            (0x309, 0xd09): self.popc,
++            (0x300, 0xd00): self.flo,
++            (0x23e, 0x43e, 0x83e, 0xa3e, 0xc3e): self.f2fp,
++            (0x202, 0x802, 0xa02, 0xc02): self.mov_,
++        }
++        for ops, fn in table.items():
++            if op in ops:
++                return fn()
++        raise Fail(f"op {op:03x} not transcribed")
++
++
++def lower(w, bugs=()):
++    lw = Lowerer(w, bugs)
++    return lw.run(), lw.urbase
+diff --git a/tests/xdiff/maxwell.py b/tests/xdiff/maxwell.py
+new file mode 100644
+index 0000000..011c83e
+--- /dev/null
++++ b/tests/xdiff/maxwell.py
+@@ -0,0 +1,462 @@
++"""Reference semantics of the Maxwell instructions AmpereLowering.cs emits for the ALU, conversion and move
++families, for one thread, with fields decoded by the translator's own decoder (isa.py).
++
++This follows what each instruction means on Maxwell hardware, which is what the lowering relies on. Where the shader
++translator's emitter deviates (FTZ/FMZ ignored, F2I out-of-range values undefined in SPIR-V, ...) that is a translator
++question for the SPIR-V stage, not for this one. An encoding the translator reads as an undefined format (an F2I
++destination format outside IDstFmt, say) raises Undefined: the lowering produced something the translator cannot
++mean, which the driver reports as a mismatch."""
++
++from __future__ import annotations
++
++from fractions import Fraction
++
++import fp
++from fp import M32, s32
++from isa import decode
++from state import RZ, PT, Unsupported
++
++
++class Undefined(Exception):
++    """The translator decodes the word to a format or mode with no defined meaning."""
++
++
++IDST = {1: (16, False), 2: (32, False), 5: (16, True), 6: (32, True)}          # IDstFmt U16 U32 S16 S32
++ISRC = {0: (8, False), 1: (16, False), 2: (32, False), 4: (8, True), 5: (16, True), 6: (32, True)}
++FFMT = {1: fp.F16, 2: fp.F32, 3: fp.F64}
++
++
++def run(words, st, limit=4096):
++    """Executes Maxwell words in order (no branches) until EXIT or the end."""
++    for n, w in enumerate(words):
++        if n >= limit:
++            raise Unsupported("too many lowered instructions")
++        insn = decode(w)
++        if insn is None:
++            raise Undefined(f"{w:016x} matches no translator table entry")
++        if insn.name == "Exit":
++            if insn.f.get("Pred", 7) == 7 and not insn.f.get("PredInv"):
++                return
++            raise Unsupported("predicated EXIT")
++        f = insn.f
++        if "Pred" in f:
++            g = st.P(f["Pred"]) != f.get("PredInv", False)
++            if not g:
++                continue
++        fn = OPS.get(insn.emitter)
++        if fn is None:
++            raise Unsupported(f"Maxwell {insn.emitter} not modelled")
++        fn(st, f)
++
++
++def _dst(st, f, v):
++    st.setR(f["Dest"], v)
++
++
++def _fneg_abs(v, a, n):
++    return fp.neg(fp.fabs(v, a), n)
++
++
++def _fmz(f):
++    return f.get("Fmz", 0) in (1, 2) or f.get("Ftz", False)
++
++
++def mov32i(st, f):
++    _dst(st, f, f["Imm32"])
++
++
++def movr(st, f):
++    _dst(st, f, st.R(f["SrcA"]))
++
++
++def movc(st, f):
++    _dst(st, f, st.cbuf(f["CbufSlot"], f["CbufOffset"] * 4))
++
++
++def lop32i(st, f):
++    a = st.R(f["SrcA"]) ^ (M32 if f["NegA"] else 0)
++    b = (f["Imm32"] & M32) ^ (M32 if f["NegB"] else 0)
++    if f["X"] or f["WriteCC"]:
++        raise Unsupported("LOP32I.X/CC")
++    _dst(st, f, [a & b, a | b, a ^ b, b][f["LogicOp"]])
++
++
++def fmul32i(st, f):
++    fz = _fmz(f)
++    r = fp.fmul(st.R(f["SrcA"]), f["Imm32"] & M32, fp.RN, fz)
++    _dst(st, f, fp.sat(r) if f["Sat"] else r)
++
++
++def iadd3r(st, f):
++    if f["X"] or f["WriteCC"] or f["Lrs"] or f["Apart"] or f["Bpart"] or f["Cpart"]:
++        raise Unsupported("IADD3 X/CC/parts")
++    v = [st.R(f[k]) for k in ("SrcA", "SrcB", "SrcC")]
++    neg = [f["NegA"], f["NegB"], f["NegC"]]
++    _dst(st, f, sum(-x if n else x for x, n in zip(v, neg)))
++
++
++def iaddr(st, f):
++    a, b = st.R(f["SrcA"]), st.R(f["SrcB"])
++    avg = f["AvgMode"]
++    if f["Sat"] or avg == 3:
++        raise Unsupported("IADD sat/plus one")
++    if avg == 2:
++        a = (~a + 1) & M32 if not f["X"] else ~a & M32
++    if avg == 1:
++        b = (~b + 1) & M32 if not f["X"] else ~b & M32
++    s = a + b + (st.cc if f["X"] else 0)
++    if f["WriteCC"]:
++        st.cc = s >> 32 & 1
++    _dst(st, f, s)
++
++
++def iscaddr(st, f):
++    a, b = st.R(f["SrcA"]), st.R(f["SrcB"])
++    a = (a << f["Imm5"]) & M32
++    avg = f["AvgMode"]
++    if avg == 3 or f["WriteCC"]:
++        raise Unsupported("ISCADD mode")
++    if avg == 2:
++        a = -a
++    if avg == 1:
++        b = -b
++    _dst(st, f, a + b)
++
++
++def _setp_out(st, f, r):
++    pc = st.P(f["SrcPred"]) != f["SrcPredInv"]
++    bop = f["Bop"]
++    if bop == 3:
++        raise Undefined("BoolOp 3")
++    st.setP(f["DestPred"], fp.boolop(bop, r, pc))
++    st.setP(f["DestPredInv"], fp.boolop(bop, not r, pc))
++
++
++def isetpr(st, f):
++    if f["X"]:
++        raise Unsupported("ISETP.X")
++    _setp_out(st, f, fp.icomp(f["IComp"], st.R(f["SrcA"]), st.R(f["SrcB"]), f["Signed"]))
++
++
++def fsetpr(st, f):
++    fz = f["Ftz"]
++    a = fp.ftz(_fneg_abs(st.R(f["SrcA"]), f["AbsA"], f["NegA"]), fz)
++    b = fp.ftz(_fneg_abs(st.R(f["SrcB"]), f["AbsB"], f["NegB"]), fz)
++    _setp_out(st, f, fp.fcomp(f["FComp"], a, b))
++
++
++def fsetr(st, f):
++    fz = f["Ftz"]
++    a = fp.ftz(_fneg_abs(st.R(f["SrcA"]), f["AbsA"], f["NegA"]), fz)
++    b = fp.ftz(_fneg_abs(st.R(f["SrcB"]), f["AbsB"], f["NegB"]), fz)
++    pc = st.P(f["SrcPred"]) != f["SrcPredInv"]
++    r = fp.boolop(f["Bop"], fp.fcomp(f["FComp"], a, b), pc)
++    _dst(st, f, (0x3F800000 if f["BVal"] else M32) if r else 0)
++
++
++def selr(st, f):
++    p = st.P(f["SrcPred"]) != f["SrcPredInv"]
++    _dst(st, f, st.R(f["SrcA"]) if p else st.R(f["SrcB"]))
++
++
++def psetp(st, f):
++    a = st.P(f["Src1Pred"]) != f["Src1PredInv"]
++    b = st.P(f["Src2Pred"]) != f["Src2PredInv"]
++    c = st.P(f["SrcPred"]) != f["SrcPredInv"]
++    ab = fp.boolop(f["BoolOpAB"], a, b)
++    st.setP(f["DestPred"], fp.boolop(f["BoolOpC"], ab, c))
++    st.setP(f["DestPredInv"], fp.boolop(f["BoolOpC"], not ab, c))
++
++
++def i2fr(st, f):
++    if f["ISrcFmt"] not in ISRC:
++        raise Undefined(f"I2F ISrcFmt {f['ISrcFmt']}")
++    if f["DstFmt"] not in FFMT:
++        raise Undefined(f"I2F DstFmt {f['DstFmt']}")
++    size, signed = ISRC[f["ISrcFmt"]]
++    b = st.R(f["SrcB"])
++    if size < 32:
++        b = b >> (8 * f["ByteSel"]) & ((1 << size) - 1)
++        if signed and b >> (size - 1):
++            b -= 1 << size
++    if f["AbsB"]:
++        b = abs(s32(b))
++    if f["NegB"]:
++        b = -s32(b) if signed else -b
++    b &= M32
++    r = fp.i2f(b, signed, f["RoundMode"], FFMT[f["DstFmt"]])
++    if f["DstFmt"] == 3:
++        st.setR(f["Dest"], r & M32)
++        if f["Dest"] != RZ:
++            st.setR(f["Dest"] + 1, r >> 32)
++    else:
++        _dst(st, f, r)
++
++
++def f2ir(st, f):
++    if f["IDstFmt"] not in IDST:
++        raise Undefined(f"F2I IDstFmt {f['IDstFmt']} (no such Maxwell destination format)")
++    if f["SrcFmt"] not in (1, 2):
++        raise Unsupported("F2I source format")
++    bits, signed = IDST[f["IDstFmt"]]
++    src = FFMT[f["SrcFmt"]]
++    b = st.R(f["SrcB"])
++    if src is fp.F16:
++        b &= 0xFFFF
++        b = fp.f16_to_f32(b)
++    b = _fneg_abs(b, f["AbsB"], f["NegB"])
++    _dst(st, f, fp.f2i(b, f["RoundMode"], bits, signed, f["Ftz"]))
++
++
++def f2fr(st, f):
++    if f["SrcFmt"] not in FFMT or f["DstFmt"] not in FFMT:
++        raise Undefined("F2F format")
++    if f["SrcFmt"] == 3 or f["DstFmt"] == 3:
++        raise Unsupported("F2F.F64")
++    b = st.R(f["SrcB"])
++    if f["SrcFmt"] == 1:
++        b = fp.f16_to_f32(b & 0xFFFF)
++    b = fp.ftz(_fneg_abs(b, f["AbsB"], f["NegB"]), f["Ftz"])
++    rnd = f["RoundMode"]
++    if rnd >= 4:
++        if f["SrcFmt"] != f["DstFmt"]:
++            raise Unsupported("F2F integer rounding across formats")
++        b = fp.frnd(b, rnd - 4)
++        rnd = fp.RN
++    if f["Sat"]:
++        b = fp.sat(b)
++    if f["DstFmt"] == 1:
++        _dst(st, f, fp.f32_to_f16(b, rnd & 3))
++    else:
++        _dst(st, f, b)
++
++
++def faddr(st, f):
++    a = _fneg_abs(st.R(f["SrcA"]), f["AbsA"], f["NegA"])
++    b = _fneg_abs(st.R(f["SrcB"]), f["AbsB"], f["NegB"])
++    r = fp.fadd(a, b, f["RoundMode"], f["Ftz"])
++    _dst(st, f, fp.sat(r) if f["Sat"] else r)
++
++
++SCALE = {0: 0, 1: -1, 2: -2, 3: -3, 4: 3, 5: 2, 6: 1}
++
++
++def fmulr(st, f):
++    fz = _fmz(f)
++    if f["Scale"] not in SCALE:
++        raise Undefined("FMUL scale 7")
++    a, b = st.R(f["SrcA"]), st.R(f["SrcB"])
++    a = fp.neg(a, f["NegA"])
++    r = fp.fmul(a, b, f["RoundMode"], fz)
++    sc = SCALE[f["Scale"]]
++    if sc:
++        va, vb = fp.value(fp.ftz(a, fz)), fp.value(fp.ftz(b, fz))
++        if not isinstance(va, (tuple, str)) and not isinstance(vb, (tuple, str)) and va * vb != 0:
++            r = fp.ftz(fp.pack(va * vb * Fraction(2) ** sc, f["RoundMode"]), fz)
++    _dst(st, f, fp.sat(r) if f["Sat"] else r)
++
++
++def ffmar(st, f):
++    a = fp.neg(st.R(f["SrcA"]), f["NegA"])
++    c = fp.neg(st.R(f["SrcC"]), f["NegC"])
++    r = fp.ffma(a, st.R(f["SrcB"]), c, f["RoundMode"], _fmz(f))
++    _dst(st, f, fp.sat(r) if f["Sat"] else r)
++
++
++def fmnmxr(st, f):
++    fz = f["Ftz"]
++    a = fp.ftz(_fneg_abs(st.R(f["SrcA"]), f["AbsA"], f["NegA"]), fz)
++    b = fp.ftz(_fneg_abs(st.R(f["SrcB"]), f["AbsB"], f["NegB"]), fz)
++    p = st.P(f["SrcPred"]) != f["SrcPredInv"]
++    _dst(st, f, fp.fmin(a, b) if p else fp.fmax(a, b))
++
++
++def mufu(st, f):
++    op = f["MufuOp"]
++    a = _fneg_abs(st.R(f["SrcA"]), f.get("AbsA", False), f.get("NegA", False))
++    if op not in (0, 1, 2, 3, 4, 5, 8):
++        raise Unsupported(f"MUFU {op}")
++    r = fp.mufu(op, a)
++    try:
++        bits = fp.f2bits(r)
++    except OverflowError:
++        bits = 0x7F800000 if r > 0 else 0xFF800000
++    _dst(st, f, fp.sat(bits) if f.get("Sat") else bits)
++
++
++def imnmxr(st, f):
++    if f["XMode"]:
++        raise Unsupported("IMNMX XMode")
++    a, b = st.R(f["SrcA"]), st.R(f["SrcB"])
++    ka, kb = (s32(a), s32(b)) if f["Signed"] else (a, b)
++    p = st.P(f["SrcPred"]) != f["SrcPredInv"]
++    _dst(st, f, (a if ka <= kb else b) if p else (a if ka >= kb else b))
++
++
++def imadr(st, f):
++    if f["Hilo"] or f["Sat"] or f["AvgMode"] or f["WriteCC"]:
++        raise Unsupported("IMAD mode")
++    a, b, c = st.R(f["SrcA"]), st.R(f["SrcB"]), st.R(f["SrcC"])
++    _dst(st, f, a * b + c + (st.cc if f["X"] else 0))
++
++
++def imulr(st, f):
++    a, b = st.R(f["SrcA"]), st.R(f["SrcB"])
++    if f["ASigned"]:
++        a = s32(a)
++    if f["BSigned"]:
++        b = s32(b)
++    p = a * b
++    _dst(st, f, (p >> 32) if f["Hilo"] else p)
++
++
++def lop3r(st, f):
++    if f["X"] or f["WriteCC"]:
++        raise Unsupported("LOP3.X")
++    a, b, c = st.R(f["SrcA"]), st.R(f["SrcB"]), st.R(f["SrcC"])
++    lut = f["Imm"]
++    r = 0
++    for k in range(8):
++        if lut >> k & 1:
++            r |= ~((a ^ (M32 if k & 4 else 0)) | (b ^ (M32 if k & 2 else 0)) | (c ^ (M32 if k & 1 else 0))) & M32
++    _dst(st, f, r)
++    pop = f["PredicateOp"]
++    st.setP(f["DestPred"], [False, True, r == 0, r != 0][pop])
++
++
++def _shf(st, f, left):
++    if f["XModeShf"] or f["WriteCC"]:
++        raise Unsupported("SHF XMode")
++    lo, s, hi = st.R(f["SrcA"]), st.R(f["SrcB"]), st.R(f["SrcC"])
++    ms = f["MaxShift"]
++    width = 64 if ms in (2, 3) else 32
++    s = s & (width - 1) if f["M"] else min(s, width)
++    v = hi << 32 | lo
++    if left:
++        r = (v << s) >> 32
++    else:
++        if ms == 3 and hi & 0x80000000:
++            v -= 1 << 64
++        r = v >> s
++    _dst(st, f, r & M32)
++
++
++def _shl(st, f, b):
++    if f["X"] or f["WriteCC"]:
++        raise Unsupported("SHL.X")
++    s = b & 31 if f["M"] else b
++    _dst(st, f, (st.R(f["SrcA"]) << s) & M32 if s < 32 else 0)
++
++
++def _shr(st, f, b):
++    if f["XMode"] or f["WriteCC"]:
++        raise Unsupported("SHR.X")
++    a = st.R(f["SrcA"])
++    if f["Brev"]:
++        a = int(f"{a:032b}"[::-1], 2)
++    s = b & 31 if f["M"] else min(b, 32)
++    v = s32(a) if f["Signed"] else a
++    _dst(st, f, (v >> s) & M32)
++
++
++def prmtr(st, f):
++    if f["PMode"]:
++        raise Unsupported("PRMT mode")
++    a, sel, c = st.R(f["SrcA"]), st.R(f["SrcB"]), st.R(f["SrcC"])
++    src = c << 32 | a
++    r = 0
++    for k in range(4):
++        n = sel >> (4 * k) & 15
++        byte = src >> (8 * (n & 7)) & 0xFF
++        if n & 8:
++            byte = 0xFF if byte & 0x80 else 0
++        r |= byte << (8 * k)
++    _dst(st, f, r)
++
++
++def flor(st, f):
++    b = st.R(f["SrcB"]) ^ (M32 if f["NegB"] else 0)
++    if f["Signed"] and b & 0x80000000:
++        b = ~b & M32
++    if b == 0:
++        r = M32
++    else:
++        r = b.bit_length() - 1
++        if f["Sh"]:
++            r = 31 - r
++    _dst(st, f, r)
++
++
++def popcr(st, f):
++    _dst(st, f, bin(st.R(f["SrcB"]) ^ (M32 if f["NegB"] else 0)).count("1"))
++
++
++def p2ri(st, f):
++    if f["Ccpr"]:
++        raise Unsupported("P2R CC")
++    sh = 8 * f["ByteSel"]
++    mask = (f["Imm20"] & 0xFF) << sh
++    preds = sum(int(st.P(k)) << k for k in range(7)) << sh
++    _dst(st, f, (st.R(f["SrcA"]) & ~mask) | (preds & mask))
++
++
++def r2pi(st, f):
++    if f["Ccpr"]:
++        raise Unsupported("R2P CC")
++    sh = 8 * f["ByteSel"]
++    v = st.R(f["SrcA"]) >> sh
++    mask = f["Imm20"] & 0xFF
++    for k in range(7):
++        if mask >> k & 1:
++            st.setP(k, v >> k & 1)
++
++
++def bfei(st, f):
++    if f["Brev"] or f["WriteCC"]:
++        raise Unsupported("BFE.BREV")
++    pos, length = f["Imm20"] & 0xFF, f["Imm20"] >> 8 & 0xFF
++    a = st.R(f["SrcA"])
++    if length == 0 or pos >= 32:
++        r = 0 if not (f["Signed"] and pos >= 32 and a & 0x80000000) else M32
++    else:
++        top = min(pos + length, 32)
++        v = (a >> pos) & ((1 << (top - pos)) - 1)
++        if f["Signed"] and v >> (top - pos - 1) & 1:
++            v -= 1 << (top - pos)
++        r = v
++    _dst(st, f, r)
++
++
++def ldc(st, f):
++    if f["AddressMode"] or f["SrcA"] != RZ:
++        raise Unsupported("LDC with an index")
++    size = f["LsSize"]
++    nbytes = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 8}.get(size)
++    if nbytes is None:
++        raise Undefined("LDC size")
++    v = st.cbuf(f["CbufSlot"], f["CbufOffset"], nbytes)
++    if size in (1, 3) and v >> (8 * nbytes - 1):
++        v -= 1 << (8 * nbytes)
++    if nbytes == 8:
++        st.setR(f["Dest"], v & M32)
++        if f["Dest"] != RZ:
++            st.setR(f["Dest"] + 1, v >> 32)
++    else:
++        _dst(st, f, v)
++
++
++def nop(st, f):
++    pass
++
++
++OPS = {
++    "Mov32i": mov32i, "MovR": movr, "MovC": movc, "Lop32i": lop32i, "Fmul32i": fmul32i, "Iadd3R": iadd3r,
++    "IaddR": iaddr, "IscaddR": iscaddr, "IsetpR": isetpr, "FsetpR": fsetpr, "FsetR": fsetr, "SelR": selr,
++    "Psetp": psetp, "I2fR": i2fr, "F2iR": f2ir, "F2fR": f2fr, "FaddR": faddr, "FmulR": fmulr, "FfmaR": ffmar,
++    "FmnmxR": fmnmxr, "Mufu": mufu, "ImnmxR": imnmxr, "ImadR": imadr, "ImulR": imulr, "Lop3R": lop3r,
++    "ShfLR": lambda st, f: _shf(st, f, True), "ShfRR": lambda st, f: _shf(st, f, False),
++    "ShlR": lambda st, f: _shl(st, f, st.R(f["SrcB"])), "ShlI": lambda st, f: _shl(st, f, f["Imm20"] & M32),
++    "ShrR": lambda st, f: _shr(st, f, st.R(f["SrcB"])), "ShrI": lambda st, f: _shr(st, f, f["Imm20"] & M32),
++    "PrmtR": prmtr, "FloR": flor, "PopcR": popcr, "P2rI": p2ri, "R2pI": r2pi, "BfeI": bfei, "Ldc": ldc,
++    "Nop": nop,
++}
+diff --git a/tests/xdiff/selftest.py b/tests/xdiff/selftest.py
+new file mode 100644
+index 0000000..3aeca81
+--- /dev/null
++++ b/tests/xdiff/selftest.py
+@@ -0,0 +1,279 @@
++"""Checks the checker without the translator binary.
++
++1. Synthesises SM86 instructions of every modelled family and form (random registers, guards and modifiers in the
++   ranges the lowering accepts), lowers them with lower_py.py (a transcription of AmpereLowering.cs) and runs the
++   SM86 and Maxwell references on random inputs: any disagreement is a bug in a reference, in the transcription, or
++   in the lowering itself.
++2. Injects the I2F signed-flag bug of patch 0064 (bit 12 for 13) into the transcription and requires it to be caught.
++
++  python tests/xdiff/selftest.py [--n 300] [--cases 6] [--family I2F] [--seed 1] [-v]
++"""
++
++from __future__ import annotations
++
++import argparse
++import random
++import sys
++from collections import defaultdict
++from pathlib import Path
++
++sys.path.insert(0, str(Path(__file__).resolve().parent))
++
++import census  # noqa: E402
++import lower_py  # noqa: E402
++import sm86  # noqa: E402
++import xdiff  # noqa: E402
++
++
++def R(rng, lo=0, hi=20):
++    return rng.choice([rng.randint(lo, hi)] * 7 + [255])
++
++
++def ins(op, rng, mods=(), c_reg=True, b_reg=True, guard=None):
++    """An SM86 word: opcode, guard, Rd, Ra, the B/C operand of its form, then modifiers [(offset, value)]."""
++    w = op
++    w |= (guard if guard is not None else rng.choice([7, 7, 7, 0, 1, 2, 8, 9, 15 - 8 + 8 * 0]) & 15) << 12
++    w |= rng.randint(0, 20) << 16
++    w |= R(rng) << 24
++    form = (op >> 9) & 7
++    if form == 1:
++        w |= R(rng) << 32
++        if c_reg:
++            w |= R(rng) << 64
++    elif form in (2, 4):
++        w |= rng.getrandbits(32) << 32
++        w |= R(rng) << 64
++    elif form in (3, 5):
++        w |= rng.choice([0, 3, 24]) << 54 | (rng.randint(0, 0x3ff) * 4) << 38
++        w |= R(rng) << 64
++    elif form in (6, 7):
++        w |= rng.choice([0, 1, 2, 5, 9, 63]) << 32
++        w |= R(rng) << 64
++    for off, val in mods:
++        w &= ~(((1 << val.bit_length()) - 1 if isinstance(val, int) else 0) << off)
++        w |= val << off
++    return w
++
++
++def bits(rng, *spec):
++    """[(offset, random value in range)] from (offset, choices)."""
++    return [(off, rng.choice(ch)) for off, ch in spec]
++
++
++B2 = [0, 1]
++
++
++def families(rng):
++    pick = rng.choice
++    p4 = list(range(16))
++    yield "FADD", ins(pick([0x221, 0x421, 0x621, 0x821, 0xa21, 0xc21, 0xe21]), rng,
++                      bits(rng, (72, B2), (73, B2), (77, B2), (78, range(4)), (80, B2)))
++    yield "FMUL", ins(pick([0x220, 0x820, 0xa20, 0xc20]), rng,
++                      bits(rng, (72, B2), (73, B2), (77, B2), (78, range(4)), (80, B2), (84, range(1, 8))))
++    yield "FFMA", ins(pick([0x223, 0x423, 0x623, 0x823, 0xa23, 0xc23, 0xe23]), rng,
++                      bits(rng, (72, B2), (73, B2), (74, B2), (75, B2), (77, B2), (78, range(4)), (80, B2)))
++    yield "FMNMX", ins(pick([0x209, 0x809, 0xa09, 0xc09]), rng, bits(rng, (72, B2), (73, B2), (80, B2), (87, p4)))
++    yield "FRND", ins(0x307, rng, [(75, 2), (84, 2)] + bits(rng, (78, range(4)), (80, B2), (62, B2), (63, B2)))
++    yield "FSETP", ins(pick([0x20b, 0x80b, 0xa0b, 0xc0b]), rng,
++                       bits(rng, (72, B2), (73, B2), (74, range(3)), (76, p4), (80, B2), (81, range(8)),
++                            (84, range(8)), (87, p4)))
++    yield "ISETP", ins(pick([0x20c, 0x80c, 0xa0c, 0xc0c]), rng,
++                       bits(rng, (73, B2), (74, range(3)), (76, range(8)), (81, range(8)), (84, range(8)), (87, p4)))
++    w = ins(pick([0x20a, 0x80a, 0xa0a, 0xc0a]), rng,
++            bits(rng, (72, B2), (73, B2), (74, range(3)), (76, p4), (80, B2), (87, p4)))
++    yield "FSET", w & ~(0xFF << 64)
++    yield "SEL", ins(pick([0x207, 0x807, 0xa07, 0xc07]), rng, bits(rng, (87, p4)))
++    yield "FSEL", ins(pick([0x208, 0x808, 0xa08, 0xc08]), rng, bits(rng, (72, B2), (73, B2), (87, p4)))
++    w = ins(pick([0x245, 0x845, 0xa45, 0xc45]), rng)
++    w = (w & ((1 << 64) - 1)) | (0x00201000 | rng.choice([0, 0x400]) | (rng.randint(0, 3) << 14)) << 64
++    yield "I2FP", w
++    yield "IADD3", ins(pick([0x210, 0x810, 0xa10, 0xc10, 0x410, 0x610]), rng,
++                       bits(rng, (72, B2), (75, B2), (74, B2), (81, [7, 7, 0, 1, 2]), (84, [7, 7, 7, 3]),
++                            (87, [15, 15, 7, 0, 9]), (77, [15, 15, 1])))
++    yield "IMAD", ins(pick([0x224, 0x824, 0xa24, 0xc24, 0x424, 0x624]), rng,
++                      [(81, 7)] + bits(rng, (73, B2), (75, B2), (74, B2), (87, [15, 15, 7, 1, 10])))
++    yield "LOP3", ins(pick([0x212, 0x812, 0xa12, 0xc12]), rng, [(87, 15)] + bits(rng, (72, range(256)), (81, range(8))))
++    yield "IMNMX", ins(pick([0x217, 0x817, 0xa17, 0xc17]), rng, bits(rng, (73, B2), (87, p4)))
++    yield "SHF", ins(pick([0x219, 0x819, 0xa19, 0xc19, 0x419, 0x619]), rng,
++                     bits(rng, (73, range(4)), (75, B2), (76, B2), (80, B2)))
++    yield "LEA", ins(pick([0x211, 0x811, 0xa11, 0xc11]), rng,
++                     bits(rng, (63, B2), (75, range(32)), (81, [7, 7, 0, 2]), (80, B2), (74, B2), (73, B2),
++                          (87, [15, 7, 0, 9])))
++    w = ins(pick([0x305, 0x905, 0xb05, 0xd05]), rng)
++    w = (w & ((1 << 64) - 1)) | sum(o << (k - 64) for k, o in
++                                    bits(rng, (72, B2), (75, range(1, 3)), (78, range(4)), (80, B2))) << 64 | 2 << 84
++    yield "F2I", w
++    w = ins(pick([0x306, 0x306, 0xb06]), rng)
++    w &= ~(0xCFFFFF00 << 32) if (w & 0xFFF) != 0xb06 else ~0
++    w = (w & ((1 << 64) - 1)) | sum(o << (k - 64) for k, o in
++                                    bits(rng, (74, B2), (75, range(1, 3)), (78, range(4)), (84, range(3)))) << 64
++    if (w & 0xFFF) == 0x306:   # byte select 0-3 of an 8-bit source, half 0-1 of a 16-bit one
++        w |= rng.randint(0, {0: 3, 1: 1, 2: 0}[(w >> 84) & 3]) << 60
++    yield "I2F", w
++    yield "PRMT", ins(pick([0x216, 0x816, 0xa16, 0xc16]), rng)
++    w = ins(0x309, rng) & ((1 << 64) - 1)
++    yield "POPC", w
++    w = (ins(0x300, rng) & ((1 << 64) - 1)) | (0x000e0000 | rng.choice([0, 0x200]) | rng.choice([0, 0x400])) << 64
++    yield "FLO", w
++    w = ins(pick([0x23e, 0x83e, 0xa3e]), rng) & ~(0x3 << 62)
++    w = (w & ((1 << 72) - 1)) | rng.choice([0, 1]) << 78
++    yield "F2FP", w
++    yield "MOV", ins(pick([0x202, 0x802, 0xa02, 0xc02]), rng, [(72, 15)])
++    op = pick([0x225, 0x227, 0x625, 0x825, 0x827, 0xa27])
++    w = ins(op, rng)
++    w = (w & ~(0xFF << 16)) | (2 * rng.randint(0, 10)) << 16
++    c = pick([255, 2 * rng.randint(0, 10)])
++    w = (w & ((1 << 64) - 1)) | (0x078e0000 | c | rng.choice([0, 0x200])) << 64
++    if op == 0x625:
++        w |= rng.choice([0, 3]) << 54 | (rng.randint(0, 0x3ff) * 8) << 38
++    yield "IMAD.WIDE", w
++    yield "IABS", ins(pick([0x213, 0xa13, 0xc13]), rng) & ((1 << 64) - 1)
++    w = ins(0x81a, rng) & ((1 << 32) - 1)
++    yield "SGXT", w | rng.randint(0, 32) << 32 | rng.choice([0, 0x200]) << 64
++    yield "BREV", (ins(0x301, rng) & ((1 << 40) - 1))
++    w = ins(pick([0x308, 0x908, 0xb08, 0xd08]), rng)
++    w = (w & ((1 << 72) - 1)) | pick([0, 1, 2, 3, 4, 5, 8]) << 74 | pick([0, 1]) << 72
++    yield "MUFU", w
++    yield "ISETP.EX", ins(pick([0x20c, 0x80c, 0xa0c, 0xc0c]), rng,
++                          [(72, 1)] + bits(rng, (73, B2), (74, range(3)), (76, range(1, 7)), (81, range(8)),
++                                           (84, range(8)), (87, p4), (68, p4)))
++    w = op = 0x81c
++    w |= rng.choice([7, 0, 1, 8]) << 12
++    w |= rng.randint(0, 255) << 16
++    w |= rng.randint(0, 7) << 64 | rng.randint(0, 31) << 72
++    w |= rng.choice(p4) << 68 | rng.choice(p4) << 77 | rng.choice(p4) << 87
++    w |= rng.choice([0, 1, 2, 7]) << 81 | rng.choice([0, 3, 7]) << 84
++    w |= rng.choice([0, 0, 1]) << 67
++    yield "PLOP3", w
++    w = ins(0x803, rng) & ((1 << 32) - 1)
++    yield "P2R", w | rng.randint(0, 0x7f) << 32 | rng.randint(0, 3) << 76
++    w = ins(0x804, rng) & ((1 << 32) - 1) & ~(0xFF << 16)
++    yield "R2P", w | rng.randint(0, 0x7f) << 32 | rng.randint(0, 3) << 76
++    # uniform datapath: the vector twin's encoding + 0x80, uniform register fields, bit 91
++    for fam, (name, w) in ((f, (f, x)) for f, x in [
++            ("UIADD3", ins(pick([0x290, 0x890, 0xa90]), rng, bits(rng, (72, B2), (75, B2), (81, [7, 7, 0, 1]),
++                                                                   (84, [7, 7, 2])))),
++            ("ULOP3", ins(pick([0x292, 0x892, 0xa92]), rng, [(87, 15)] + bits(rng, (72, range(256)), (81, range(8))))),
++            ("USHF", ins(pick([0x299, 0x899]), rng, bits(rng, (73, range(4)), (75, B2), (76, B2), (80, B2)))),
++            ("ULEA", ins(pick([0x291, 0x891]), rng, bits(rng, (75, range(32)), (81, [7, 7, 1]), (80, B2), (73, B2)))),
++            ("USEL", ins(pick([0x287, 0x887]), rng, bits(rng, (87, [7, 0, 1, 8, 15])))),
++            ("UISETP", ins(pick([0x28c, 0x88c, 0xa8c]), rng,
++                           bits(rng, (73, B2), (74, range(3)), (76, range(8)), (81, range(8)), (84, range(8)),
++                                (87, [7, 0, 1, 15])))),
++            ("UIMAD", ins(pick([0x2a4, 0x8a4, 0xaa4]), rng, [(81, 7), (87, 15)] + bits(rng, (73, B2), (75, B2)))),
++            ("UPRMT", ins(pick([0x296, 0x896]), rng)),
++            ("UMOV", ins(pick([0x882, 0xc82]), rng)),
++    ]):
++        g = rng.choice([7, 7, 0, 1])
++        yield name, (w & ~(0xF << 12)) | g << 12 | 1 << 91
++    w = 0xab9 | 7 << 12 | rng.randint(0, 20) << 16 | rng.choice([0, 3, 24]) << 54
++    width = rng.choice([0, 1, 2, 3, 4, 5])
++    w |= (rng.randint(0, 0x3ff) * 8 + (rng.randint(0, 7) if width < 2 else rng.choice([0, 2]) if width < 4 else 0)) << 38
++    if width == 5:
++        w &= ~(1 << 16)
++    yield "ULDC", w | width << 73
++
++
++def check(n, cases, family, seed, bugs=(), verbose=False):
++    rng = random.Random(seed)
++    stats = defaultdict(lambda: defaultdict(int))
++    examples = {}
++    for _ in range(n):
++        for fam, w in families(rng):
++            if family and fam != family:
++                continue
++            try:
++                words, ub = lower_py.lower(w, bugs)
++            except lower_py.Fail:
++                stats[fam]["refused"] += 1
++                continue
++            low = xdiff.Lowering(words, ub)
++            for _c in range(cases):
++                s = rng.getrandbits(32)
++                o = xdiff.run_case(w, low, s)
++                stats[fam][o.kind] += 1
++                if o.kind in ("mismatch", "undefined") and fam not in examples:
++                    examples[fam] = (w, s, o)
++    if verbose or True:
++        for fam, k in sorted(stats.items()):
++            print(f"  {fam:6} " + ", ".join(f"{a} {b}" for a, b in sorted(k.items())))
++    for fam, (w, s, o) in examples.items():
++        print(f"  {fam}: {o.kind} {o.detail} --words \"{xdiff.fmt_insn(w)}\" seed {s}: "
++              + "; ".join(f"{a} sm86 {b:08x} lowered {c:08x}" for a, b, c in o.diffs[:3]))
++    return stats, examples
++
++
++def make_cache(folder: Path, programs: int, seed: int):
++    """A shader-cache folder of synthetic NVN2 compute programs (in/<id>.in as runtime/gfx_shader.c in_store writes
++    them), each a run of the generated instructions, for an end-to-end run of xdiff.py with fake_xlate.py."""
++    import hashlib
++    import struct
++    rng = random.Random(seed)
++    (folder / "in").mkdir(parents=True, exist_ok=True)
++    for n in range(programs):
++        insns = [w for _, w in families(rng) if rng.random() < 0.3]
++        code = b"".join(w.to_bytes(16, "little") for w in insns)
++        control = bytearray(census.CONTROL_SIZE)
++        struct.pack_into("<I", control, 0, census.NVN2_MAGIC)
++        struct.pack_into("<I", control, 0x38, len(code))
++        answers = bytes(16)
++        data = struct.pack("<6I", census.IN_MAGIC, 1, 5, len(code), 0, len(answers)) + answers + bytes(control) + code
++        (folder / "in" / f"{hashlib.sha256(data).hexdigest()}.in").write_bytes(data)
++
++
++def single(a):
++    import isa
++    from state import random_state
++    w = sum(int(x.removeprefix("0x"), 16) << (32 * k) for k, x in enumerate(a.words.split()))
++    words, ub = lower_py.lower(w, a.bug)
++    print(f"sm86 {xdiff.fmt_insn(w)} {sm86.mnemonic(w & 0xFFF)}  urbase {ub}")
++    for x in words:
++        d = isa.decode(x)
++        print(f"  {x:016x} {d.emitter if d else '?'} " + (" ".join(f"{k}={v}" for k, v in d.f.items()) if d else ""))
++    rng = random.Random(a.seed)
++    bad = 0
++    for c in range(a.cases):
++        s = rng.getrandbits(32)
++        o = xdiff.run_case(w, xdiff.Lowering(words, ub), s)
++        if o.kind != "ok":
++            bad += 1
++            print(f"  case {c} seed {s}: {o.kind} {o.detail} {xdiff.inputs_of(w, random_state(random.Random(s)))}")
++            for n, x, y in o.diffs:
++                print(f"    {n}: sm86 {x:08x} lowered {y:08x}")
++    print(f"{a.cases - bad}/{a.cases} agree")
++    return 1 if bad else 0
++
++
++def main(argv=None):
++    ap = argparse.ArgumentParser()
++    ap.add_argument("--n", type=int, default=150)
++    ap.add_argument("--cases", type=int, default=6)
++    ap.add_argument("--family", default="")
++    ap.add_argument("--seed", type=int, default=1)
++    ap.add_argument("-v", action="store_true")
++    ap.add_argument("--words", help="one SM86 instruction (four hex words): lower it with lower_py and run it verbosely")
++    ap.add_argument("--bug", action="append", default=[], help="inject a known bug into lower_py (i2f-bit12)")
++    ap.add_argument("--make-cache", type=Path, help="write a synthetic shader-cache folder (for fake_xlate.py runs)")
++    ap.add_argument("--programs", type=int, default=200)
++    a = ap.parse_args(argv)
++    if a.words:
++        return single(a)
++    if a.make_cache:
++        make_cache(a.make_cache, a.programs, a.seed)
++        print(f"{a.programs} programs in {a.make_cache / 'in'}")
++        return 0
++    print("references against the transcribed lowering:")
++    stats, ex = check(a.n, a.cases, a.family.upper(), a.seed, verbose=a.v)
++    clean = not ex
++    print("I2F with the patch 0064 bug injected (signed flag in bit 12):")
++    s2, ex2 = check(max(a.n // 3, 20), a.cases, "I2F", a.seed + 1, bugs=("i2f-bit12",))
++    caught = "I2F" in ex2
++    s3, ex3 = check(max(a.n // 3, 20), a.cases, "I2FP", a.seed + 2, bugs=("i2f-bit12",))
++    caught_fp = "I2FP" in ex3
++    print(f"result: references agree: {'yes' if clean else 'NO'}; injected I2F bug caught: {'yes' if caught else 'NO'}"
++          f"; I2FP: {'yes' if caught_fp else 'NO'}")
++    return 0 if clean and caught and caught_fp else 1
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/tests/xdiff/sm86.py b/tests/xdiff/sm86.py
+new file mode 100644
+index 0000000..a785f2f
+--- /dev/null
++++ b/tests/xdiff/sm86.py
+@@ -0,0 +1,646 @@
++"""Reference semantics of the SM86 (Ampere) ALU, conversion and move instructions the game's shaders use, for one
++thread. execute(word, state) runs one 128-bit instruction (bits 0-127 as an int) on a state.State.
++
++Field layout (the SM70+ encoding): opcode 0-11 (form 9-11: 1 B and C registers, 2 C immediate, 3 C constant, 4 B
++immediate, 5 B constant, 6 B uniform, 7 C uniform), guard 12-15, Rd 16-23, Ra 24-31, B register 32-39 or immediate
++32-63 or constant (byte offset 38-53, bank 54-58) or uniform register 32-37, C register 64-71, modifiers from 72,
++scheduling from 105. These positions are the ones tools/xlate/AmpereLowering.cs reads too (no public SM86 reference
++exists to take them from), so a lowering that misreads an SM86 field the same way is invisible here; what this
++checks is everything after the read: the Maxwell fields the lowering writes (decoded with the translator's own
++decoder, isa.py), the operand routing, and the semantics of the Maxwell sequence a lowering emits.
++
++Unsupported raises state.Unsupported (the case is skipped and counted as not modelled)."""
++
++from __future__ import annotations
++
++import fp
++from fp import M32, s32
++from state import RZ, PT, URZ, Unsupported
++
++# opcode (bits 0-11) -> mnemonic, for reports; the base (bits 0-8) names the family.
++FAMILY = {
++    0x002: "MOV", 0x082: "UMOV", 0x0B9: "ULDC", 0x0BB: "ULDC", 0x021: "FADD", 0x020: "FMUL", 0x023: "FFMA",
++    0x009: "FMNMX", 0x108: "MUFU", 0x007: "SEL", 0x008: "FSEL", 0x107: "FRND", 0x00B: "FSETP", 0x00C: "ISETP",
++    0x00A: "FSET", 0x045: "I2FP", 0x106: "I2F", 0x105: "F2I", 0x010: "IADD3", 0x024: "IMAD", 0x025: "IMAD.WIDE",
++    0x027: "IMAD.HI", 0x012: "LOP3", 0x017: "IMNMX", 0x019: "SHF", 0x011: "LEA", 0x016: "PRMT", 0x109: "POPC",
++    0x100: "FLO", 0x101: "BREV", 0x013: "IABS", 0x01A: "SGXT", 0x03E: "F2FP", 0x01C: "PLOP3", 0x003: "P2R",
++    0x004: "R2P", 0x090: "UIADD3", 0x0A4: "UIMAD", 0x0A5: "UIMAD.WIDE", 0x092: "ULOP3", 0x099: "USHF",
++    0x091: "ULEA", 0x087: "USEL", 0x08C: "UISETP", 0x096: "UPRMT", 0x09C: "UPLOP3", 0x0BD: "UFLO", 0x0BE: "UBREV",
++    0x0BF: "UPOPC", 0x083: "UP2UR", 0x043: "F2IP", 0x03C: "HMMA", 0x03A: "MOVM", 0x030: "HADD2", 0x032: "HMUL2",
++    0x031: "HFMA2", 0x040: "HMNMX2", 0x034: "HSETP2", 0x060: "TEX", 0x161: "TEX", 0x166: "TLD", 0x163: "TLD4",
++    0x16C: "TXD", 0x16F: "TXQ", 0x169: "TMML", 0x16A: "TMML", 0x170: "TXQ", 0x181: "LDG", 0x186: "STG",
++    0x182: "LDC", 0x184: "LDS", 0x188: "STS", 0x187: "STL", 0x183: "LDL", 0x18C: "ATOMS",
++    0x1A8: "ATOMG", 0x18E: "RED", 0x189: "SHFL", 0x19B: "SULD", 0x197: "SUST", 0x19F: "SURED", 0x121: "ALD",
++    0x122: "AST", 0x126: "IPA", 0x005: "CS2R", 0x119: "S2R", 0x1C3: "S2UR", 0x127: "ISBEWR", 0x123: "ISBERD",
++    0x149: "BRX", 0x158: "BRX", 0x15B: "KILL", 0x14D: "EXIT", 0x147: "BRA", 0x144: "CALL", 0x150: "RET",
++    0x1C2: "R2UR", 0x006: "VOTE", 0x1A1: "MATCH", 0x1C4: "REDUX", 0x022: "FSWZADD", 0x11D: "BAR",
++    0x192: "MEMBAR", 0x118: "NOP", 0x11A: "DEPBAR", 0x145: "BSSY", 0x141: "BSYNC", 0x142: "BREAK",
++    0x148: "WARPSYNC", 0x1AB: "ERRBAR", 0x03B: "LDSM",
++}
++
++
++def mnemonic(op):
++    return FAMILY.get(op & 0x1FF, f"op{op:03x}")
++
++
++def is_uniform(op):
++    return (0x080 <= (op & 0x1FF) <= 0x0BF and op != 0x886) or op == 0x9C3
++
++
++class Insn:
++    def __init__(self, w: int, st, uniform=False):
++        self.w, self.st, self.uniform = w, st, uniform
++
++    def bits(self, o, n):
++        return (self.w >> o) & ((1 << n) - 1)
++
++    def bit(self, o):
++        return (self.w >> o) & 1
++
++    @property
++    def op(self):
++        return self.bits(0, 12)
++
++    @property
++    def form(self):
++        return self.bits(9, 3)
++
++    # registers of the instruction's datapath (uniform twins read and write uniform registers)
++    def rd(self, n):
++        if self.uniform:
++            return 0 if n in (RZ, URZ) else self.st.UR(n)
++        return self.st.R(n)
++
++    def wr(self, n, v):
++        if self.uniform:
++            if n not in (RZ, URZ):
++                self.st.setUR(n, v)
++        else:
++            self.st.setR(n, v)
++
++    def pr(self, field4):
++        """A 4-bit predicate operand (index, negate in bit 3)."""
++        v = self.st.UP(field4 & 7) if self.uniform else self.st.P(field4 & 7)
++        return v != bool(field4 & 8)
++
++    def pw(self, n, v):
++        (self.st.setUP if self.uniform else self.st.setP)(n, v)
++
++    def cbuf(self):
++        bank, off = self.bits(54, 5), self.bits(38, 16)
++        if self.bit(91) and not self.uniform:
++            raise Unsupported("constant operand indexed by a uniform register")
++        return self.st.cbuf(bank, off)
++
++    # operands -----------------------------------------------------------------------------------------------------
++    def A(self):
++        return self.rd(self.bits(24, 8))
++
++    def src(self, which):
++        """(value, abs, neg) of source 1 (B) or 2 (C) under the instruction's form."""
++        form = self.form
++        if form == 0:
++            raise Unsupported("form 0")
++        wide = form in (4, 5, 6) if which == 1 else form in (2, 3, 7)
++        if wide:
++            if form in (2, 4):
++                return self.bits(32, 32), False, False
++            if form in (3, 5):
++                return self.cbuf(), bool(self.bit(62)), bool(self.bit(63))
++            return self.st.UR(self.bits(32, 6)) if self.bits(32, 6) != URZ else 0, bool(self.bit(62)), bool(self.bit(63))
++        upper = which == 2 or form in (2, 3, 7)
++        if upper:
++            return self.rd(self.bits(64, 8)), bool(self.bit(74)), bool(self.bit(75))
++        return self.rd(self.bits(32, 8)), bool(self.bit(62)), bool(self.bit(63))
++
++    def B(self):
++        return self.src(1)[0]
++
++    def C(self):
++        return self.src(2)[0]
++
++    def second_slot(self):
++        return 2 if self.form in (2, 3, 7) else 1
++
++
++def fmod_(v, a, n):
++    return fp.neg(fp.fabs(v, a), n)
++
++
++def execute(w: int, st):
++    op = w & 0xFFF
++    uniform = False
++    if is_uniform(op):
++        if op in (0x882, 0xC82):
++            return _umov(Insn(w, st, True))
++        if op == 0xAB9:
++            return _uldc(Insn(w, st, True))
++        twin = (op & 0x1FF) - 0x80
++        w = (w & ~0x1FF) | twin
++        w &= ~(1 << 91)
++        uniform = True
++    I = Insn(w, st, uniform)
++    if not I.pr(I.bits(12, 4)):
++        return
++    op = I.op
++    fn = OPS.get(op)
++    if fn is None:
++        raise Unsupported(f"opcode {op:03x} not modelled")
++    fn(I)
++
++
++# ---- moves -----------------------------------------------------------------------------------------------------------
++def _mov(I):
++    if I.bits(72, 4) != 15:
++        raise Unsupported("MOV lane mask")
++    I.wr(I.bits(16, 8), I.B())
++
++
++def _umov(I):
++    if not I.pr(I.bits(12, 4)):
++        return
++    I.wr(I.bits(16, 8), I.bits(32, 32) if I.op == 0x882 else I.st.UR(I.bits(32, 6)))
++
++
++def _uldc(I):
++    if not I.pr(I.bits(12, 4)):
++        return
++    width, bank, off, d = I.bits(73, 3), I.bits(54, 5), I.bits(38, 16), I.bits(16, 8)
++    if width < 4:
++        size = 1 if width < 2 else 2
++        v = I.st.cbuf(bank, off, size)
++        if width & 1 and v >> (8 * size - 1):
++            v -= 1 << (8 * size)
++        I.wr(d, v)
++    elif width == 4:
++        I.wr(d, I.st.cbuf(bank, off))
++    elif width == 5:
++        if d != URZ:
++            I.wr(d, I.st.cbuf(bank, off))
++            I.wr(d + 1, I.st.cbuf(bank, off + 4))
++    else:
++        raise Unsupported("ULDC width")
++
++
++# ---- float -----------------------------------------------------------------------------------------------------------
++def _fadd(I):
++    if I.bits(81, 10):
++        raise Unsupported("FADD mode")
++    a = fmod_(I.A(), I.bit(73), I.bit(72))
++    b, ba, bn = I.src(I.second_slot())
++    r = fp.fadd(a, fmod_(b, ba, bn), I.bits(78, 2), bool(I.bit(80)))
++    I.wr(I.bits(16, 8), fp.sat(r) if I.bit(77) else r)
++
++
++FMUL_SCALE = {1: -3, 2: -2, 3: -1, 4: 0, 5: 1, 6: 2, 7: 3}
++
++
++def _fmul(I):
++    if I.bit(76) or I.bits(81, 3) or I.bits(87, 4) or I.bits(84, 3) == 0:
++        raise Unsupported("FMUL mode")
++    a = fmod_(I.A(), I.bit(73), I.bit(72))
++    b, ba, bn = I.src(1)
++    fz = bool(I.bit(80))
++    r = fp.fmul(a, fmod_(b, ba, bn), I.bits(78, 2), fz)
++    sc = FMUL_SCALE[I.bits(84, 3)]
++    if sc:   # the scale applies to the exact product before rounding
++        va, vb = fp.value(fp.ftz(a, fz)), fp.value(fp.ftz(fmod_(b, ba, bn), fz))
++        if not isinstance(va, (tuple, str)) and not isinstance(vb, (tuple, str)) and va * vb != 0:
++            r = fp.ftz(fp.pack(va * vb * fp.Fraction(2) ** sc, I.bits(78, 2)), fz)
++    I.wr(I.bits(16, 8), fp.sat(r) if I.bit(77) else r)
++
++
++def _ffma(I):
++    if I.bit(76) or I.bits(81, 10):
++        raise Unsupported("FFMA mode")
++    a = fmod_(I.A(), I.bit(73), I.bit(72))
++    b, ba, bn = I.src(1)
++    c, ca, cn = I.src(2)
++    r = fp.ffma(a, fmod_(b, ba, bn), fmod_(c, ca, cn), I.bits(78, 2), bool(I.bit(80)))
++    I.wr(I.bits(16, 8), fp.sat(r) if I.bit(77) else r)
++
++
++def _fmnmx(I):
++    if I.bits(74, 6) or I.bits(81, 6):
++        raise Unsupported("FMNMX mode")
++    fz = bool(I.bit(80))
++    a = fp.ftz(fmod_(I.A(), I.bit(73), I.bit(72)), fz)
++    b, ba, bn = I.src(I.second_slot())
++    b = fp.ftz(fmod_(b, ba, bn), fz)
++    I.wr(I.bits(16, 8), fp.fmin(a, b) if I.pr(I.bits(87, 4)) else fp.fmax(a, b))
++
++
++def _mufu(I):
++    operation = I.bits(74, 6)
++    if operation > 8 or operation in (6, 7) or I.bit(73):
++        raise Unsupported(f"MUFU {operation}")
++    if I.op == 0x908:
++        b = I.bits(32, 32)
++    else:
++        b, ba, bn = I.src(1)
++        b = fmod_(b, ba, bn)
++    x = fp.bits2f(b)
++    import math
++    if operation <= 1:   # SM70+ SIN/COS take turns
++        if not math.isfinite(x) or abs(x) > 64:
++            # The lowering multiplies by 2pi in f32 (the translator's SIN/COS take radians): an argument this far out
++            # loses its fraction of a turn there, by design, so it is not compared.
++            raise Unsupported("MUFU.SIN/COS beyond 64 turns")
++        else:
++            t = math.fmod(x, 1.0) * 2 * math.pi
++            r = math.cos(t) if operation == 0 else math.sin(t)
++    else:
++        r = fp.mufu(operation, b)
++    try:
++        bits = fp.f2bits(r)
++    except OverflowError:
++        bits = 0x7F800000 if r > 0 else 0xFF800000
++    I.wr(I.bits(16, 8), bits)
++
++
++def _frnd(I):
++    if I.bits(75, 2) != 2 or I.bits(84, 2) != 2 or I.bits(81, 3) or I.bits(86, 6):
++        raise Unsupported("FRND format")
++    b, ba, bn = I.src(1)
++    I.wr(I.bits(16, 8), fp.frnd(fmod_(b, ba, bn), I.bits(78, 2), bool(I.bit(80))))
++
++
++def _setp(I, floating):
++    if not floating and I.bit(72):
++        return _isetp_ex(I)
++    combine = I.bits(74, 2)
++    if combine > 2:
++        raise Unsupported("predicate combination")
++    a = I.A()
++    b, ba, bn = I.src(1)
++    if floating:
++        fz = bool(I.bit(80))
++        a = fp.ftz(fmod_(a, I.bit(73), I.bit(72)), fz)
++        b = fp.ftz(fmod_(b, ba, bn), fz)
++        r = fp.fcomp(I.bits(76, 4), a, b)
++    else:
++        r = fp.icomp(I.bits(76, 3), a, b, bool(I.bit(73)))
++    pc = I.pr(I.bits(87, 4))
++    I.pw(I.bits(81, 3), fp.boolop(combine, r, pc))
++    I.pw(I.bits(84, 3), fp.boolop(combine, not r, pc))
++
++
++def _isetp_ex(I):
++    """ISETP.EX: the 64-bit compare's high words; Pl (68-71) is the low words' result."""
++    cmp, combine = I.bits(76, 3), I.bits(74, 2)
++    if cmp in (0, 7) or combine == 3:
++        raise Unsupported("ISETP.EX mode")
++    a, b = I.A(), I.B()
++    low = I.pr(I.bits(68, 4))
++    signed = bool(I.bit(73))
++    eq = a == b
++    lt = fp.icomp(1, a, b, signed)
++    gt = fp.icomp(4, a, b, signed)
++    r = {1: lt or (eq and low), 2: eq and low, 3: lt or (eq and low), 4: gt or (eq and low), 5: not eq or low,
++         6: gt or (eq and low)}[cmp]
++    pc = I.pr(I.bits(87, 4))
++    I.pw(I.bits(81, 3), fp.boolop(combine, r, pc))
++    I.pw(I.bits(84, 3), fp.boolop(combine, not r, pc))
++
++
++def _fset(I):
++    if I.bits(64, 8) or I.bits(74, 2) == 3 or I.bits(81, 6):
++        raise Unsupported("FSET output mode")
++    fz = bool(I.bit(80))
++    a = fp.ftz(fmod_(I.A(), I.bit(73), I.bit(72)), fz)
++    b, ba, bn = I.src(1)
++    b = fp.ftz(fmod_(b, ba, bn), fz)
++    r = fp.boolop(I.bits(74, 2), fp.fcomp(I.bits(76, 4), a, b), I.pr(I.bits(87, 4)))
++    I.wr(I.bits(16, 8), 0x3F800000 if r else 0)
++
++
++def _sel(I, floating):
++    a = I.A()
++    b, ba, bn = I.src(1)
++    if floating:
++        a = fmod_(a, I.bit(73), I.bit(72))
++        b = fmod_(b, ba, bn)
++    I.wr(I.bits(16, 8), a if I.pr(I.bits(87, 4)) else b)
++
++
++# ---- conversions -----------------------------------------------------------------------------------------------------
++def _i2fp(I):
++    if (I.bits(64, 32) & ~(0x400 | 0xC000 | 0x08000000)) != 0x00201000:
++        raise Unsupported("I2FP format")
++    I.wr(I.bits(16, 8), fp.i2f(I.B(), bool(I.bit(74)), I.bits(78, 2)))
++
++
++def _i2f(I):
++    src, dst, sel = I.bits(84, 2), I.bits(75, 2), I.bits(60, 2)
++    if src == 3 or dst == 0:
++        raise Unsupported("I2F format")
++    if I.op == 0xB06:
++        b = I.B()
++    elif I.op == 0xD06:
++        b = I.st.UR(I.bits(32, 6)) if I.bits(32, 6) != URZ else 0
++    else:
++        b = I.rd(I.bits(32, 8))
++    signed = bool(I.bit(74))
++    if src < 2:
++        size = 8 << src
++        v = (b >> (sel * size)) & ((1 << size) - 1)
++        if signed and v >> (size - 1):
++            v -= 1 << size
++        b = v & M32
++    fmt = {1: fp.F16, 2: fp.F32, 3: fp.F64}[dst]
++    r = fp.i2f(b, signed, I.bits(78, 2), fmt)
++    d = I.bits(16, 8)
++    if dst == 3:
++        if d != RZ:
++            I.wr(d, r & M32)
++            I.wr(d + 1, r >> 32)
++    else:
++        I.wr(d, r)
++
++
++def _f2i(I):
++    dst, src = I.bits(75, 2), I.bits(84, 2)
++    if dst > 2 or src not in (1, 2):
++        raise Unsupported("F2I format")
++    if I.op == 0x905:
++        b = I.bits(32, 32)
++    else:
++        b, ba, bn = I.src(1)
++        b = fmod_(b, ba, bn) if src == 2 else b
++    srcfmt = fp.F32 if src == 2 else fp.F16
++    if src == 1:
++        b &= 0xFFFF
++    r = fp.f2i(b, I.bits(78, 2), 8 << dst, bool(I.bit(72)), bool(I.bit(80)), srcfmt)
++    I.wr(I.bits(16, 8), r)
++
++
++def _f2fp(I):
++    if I.bits(62, 2) or I.bits(73, 5) or I.bits(79, 2) or I.bits(81, 10) or I.bit(91) or I.bit(72):
++        raise Unsupported("F2FP mode")
++    lo = fp.f32_to_f16(I.B())
++    hi = (I.C() & 0xFFFF) if I.bit(78) else fp.f32_to_f16(I.A())
++    I.wr(I.bits(16, 8), hi << 16 | lo)
++
++
++# ---- integer ---------------------------------------------------------------------------------------------------------
++def _iadd3(I):
++    op = I.op
++    negA, negC, x = I.bit(72), I.bit(75), I.bit(74)
++    negB = op != 0x810 and I.bit(63) and I.form not in (2, 3)
++    a, b, c = I.A(), I.B(), I.C()
++    if I.form in (2, 3) and (I.bit(63) or negC):
++        raise Unsupported("IADD3 negation with a wide third source")
++    if x:
++        s = (a ^ (M32 if negA else 0)) + (b ^ (M32 if negB else 0)) + (c ^ (M32 if negC else 0))
++        s += int(I.pr(I.bits(87, 4))) + int(I.pr(I.bits(77, 4)))
++    else:
++        s = (a ^ (M32 if negA else 0)) + (b ^ (M32 if negB else 0)) + (c ^ (M32 if negC else 0)) + negA + negB + negC
++    I.wr(I.bits(16, 8), s)
++    c1, c2 = I.bits(81, 3), I.bits(84, 3)
++    if c1 != PT:
++        I.pw(c1, (s >> 32) & 1)
++    if c2 != PT:
++        I.pw(c2, (s >> 33) & 1)
++
++
++def _imad(I):
++    x = I.bit(74)
++    if I.bits(81, 3) != 7 or (not x and I.bits(87, 4) != 15):
++        raise Unsupported("IMAD mode")
++    a, b, c = I.A(), I.B(), I.C()
++    if I.bit(75):
++        c = (~c if x else -c) & M32
++    r = a * b + c + (int(I.pr(I.bits(87, 4))) if x else 0)
++    I.wr(I.bits(16, 8), r)
++
++
++def _imad_wide(I):
++    op = I.op
++    if I.bits(81, 3) != 7:
++        raise Unsupported("IMAD.HI/WIDE mode")
++    a = I.rd(I.bits(24, 8))
++    if op in (0x825, 0x827):
++        b = I.bits(32, 32)
++    elif op == 0xA27:
++        b = I.cbuf()
++    else:
++        b = I.rd(I.bits(64 if op == 0x625 else 32, 8))
++    if op == 0x625:
++        bank, off = I.bits(54, 5), I.bits(38, 16)
++        c = I.st.cbuf(bank, off) | I.st.cbuf(bank, off + 4) << 32
++    else:
++        cr = I.bits(64, 8)
++        c = 0 if cr == RZ else I.rd(cr) | I.rd(cr + 1) << 32
++    if I.bit(73):
++        a, b = s32(a), s32(b)
++    r = (a * b + c) & ((1 << 64) - 1)
++    d = I.bits(16, 8)
++    if op in (0x225, 0x625, 0x825):
++        if d == RZ or d & 1:
++            raise Unsupported("IMAD.WIDE pair")
++        I.wr(d, r & M32)
++        I.wr(d + 1, r >> 32)
++    else:
++        I.wr(d, r >> 32)
++
++
++def _iabs(I):
++    I.wr(I.bits(16, 8), abs(s32(I.B())))
++
++
++def _lop3(I):
++    if I.bit(80) or I.bits(87, 4) != 15:
++        raise Unsupported("LOP3 predicate mode")
++    a, b, c = I.A(), I.B(), I.rd(I.bits(64, 8))
++    lut = I.bits(72, 8)
++    r = 0
++    for k in range(8):
++        if lut >> k & 1:
++            ta = M32 if k & 4 else 0
++            tb = M32 if k & 2 else 0
++            tc = M32 if k & 1 else 0
++            r |= ~((a ^ ta) | (b ^ tb) | (c ^ tc)) & M32
++    I.wr(I.bits(16, 8), r)
++    if I.bits(81, 3) != PT:
++        I.pw(I.bits(81, 3), r != 0)
++
++
++def _imnmx(I):
++    a, b = I.A(), I.B()
++    signed = bool(I.bit(73))
++    ka, kb = (s32(a), s32(b)) if signed else (a, b)
++    I.wr(I.bits(16, 8), (a if ka <= kb else b) if I.pr(I.bits(87, 4)) else (a if ka >= kb else b))
++
++
++def _shf(I):
++    if I.bits(81, 10):
++        raise Unsupported("SHF mode")
++    typ = I.bits(73, 2)
++    wrap, right, hi = I.bit(75), I.bit(76), I.bit(80)
++    width = 64 if typ <= 1 else 32
++    signed = typ in (0, 2)
++    low, s, high = I.A(), I.B(), I.C()
++    s = s & (width - 1) if wrap else min(s, width)
++    val = high << 32 | low
++    if right:
++        if signed and high & 0x80000000:
++            val -= 1 << 64
++        r = val >> s
++    else:
++        r = val << s
++    r &= (1 << 64) - 1
++    I.wr(I.bits(16, 8), r >> 32 if hi else r & M32)
++
++
++def _lea(I):
++    op = I.op
++    a, b = I.A(), I.B()
++    shift, carry = I.bits(75, 5), I.bits(81, 3)
++    negB = op != 0x811 and I.bit(63)
++    if I.bit(72):
++        raise Unsupported("LEA negated a")
++    if not I.bit(80):
++        if I.bit(74):
++            raise Unsupported("LEA.X without .HI")
++        if carry != PT and negB:
++            raise Unsupported("LEA carry with negated b")
++        s = ((a << shift) & M32) + ((-b) & M32 if negB else b)
++        I.wr(I.bits(16, 8), s)
++        if carry != PT:
++            I.pw(carry, s >> 32 & 1)
++        return
++    if carry != PT:
++        raise Unsupported("LEA.HI carry out")
++    high = I.rd(I.bits(64, 8))
++    if I.bits(64, 8) == RZ:
++        v = s32(a) if I.bit(73) else a
++        h = (v >> (32 - shift)) & M32 if shift else (M32 if (I.bit(73) and v < 0) else 0)
++    else:
++        h = ((high << 32 | a) << shift) >> 32 & M32
++    if I.bit(74):
++        h += int(I.pr(I.bits(87, 4)))
++    I.wr(I.bits(16, 8), h + ((-b) & M32 if negB else b))
++
++
++def _prmt(I):
++    if I.bits(72, 4) or I.bits(76, 15):
++        raise Unsupported("PRMT mode")
++    a, sel, c = I.A(), I.B(), I.C()
++    src = c << 32 | a
++    r = 0
++    for k in range(4):
++        n = sel >> (4 * k) & 15
++        byte = src >> (8 * (n & 7)) & 0xFF
++        if n & 8:
++            byte = 0xFF if byte & 0x80 else 0
++        r |= byte << (8 * k)
++    I.wr(I.bits(16, 8), r)
++
++
++def _popc(I):
++    b, _, inv = I.src(1)
++    I.wr(I.bits(16, 8), bin((~b if inv else b) & M32).count("1"))
++
++
++def _flo(I):
++    b, _, inv = I.src(1)
++    b = (~b if inv else b) & M32
++    if I.bit(73) and b & 0x80000000:
++        b = ~b & M32
++    if b == 0:
++        r = M32
++    else:
++        r = b.bit_length() - 1
++        if I.bit(74):
++            r = 31 - r
++    I.wr(I.bits(16, 8), r)
++
++
++def _brev(I):
++    b = I.rd(I.bits(32, 8))
++    I.wr(I.bits(16, 8), int(f"{b:032b}"[::-1], 2))
++
++
++def _sgxt(I):
++    n = I.bits(32, 32)
++    a = I.A()
++    if n == 0:
++        r = 0
++    else:
++        v = a & ((1 << n) - 1) if n < 32 else a
++        if I.bit(73) and n < 32 and v >> (n - 1) & 1:
++            v -= 1 << n
++        r = v
++    I.wr(I.bits(16, 8), r)
++
++
++def _plop3(I):
++    lut = I.bits(64, 3) | I.bits(72, 5) << 3
++    lut2 = I.bits(16, 8)
++    a, b = I.pr(I.bits(87, 4)), I.pr(I.bits(77, 4))
++    cf = I.bits(68, 4)
++    if I.bit(67) and not I.uniform:   # C names a uniform predicate
++        c = I.st.UP(cf & 7) != bool(cf & 8)
++    else:
++        c = I.pr(cf)
++    k = a << 2 | b << 1 | c
++    for dest, table in ((I.bits(81, 3), lut), (I.bits(84, 3), lut2)):
++        if dest != PT:
++            I.pw(dest, table >> k & 1)
++
++
++def _p2r(I, to_reg):
++    mask = I.bits(32, 32)
++    if mask > 0x7F or I.bits(64, 32) & ~0x3000:
++        raise Unsupported("P2R/R2P mode")
++    sh = 8 * I.bits(76, 2)
++    pv = I.st.UP if I.uniform else I.st.P
++    if to_reg:
++        a = I.A()
++        bits = sum(int(pv(k)) << k for k in range(7))
++        m = mask << sh
++        I.wr(I.bits(16, 8), (a & ~m) | ((bits << sh) & m))
++    else:
++        v = I.A() >> sh
++        for k in range(7):
++            if mask >> k & 1:
++                I.pw(k, v >> k & 1)
++
++
++OPS = {}
++for ops, fn in [
++    ((0x202, 0x802, 0xA02, 0xC02), _mov),
++    ((0x221, 0x421, 0x621, 0x821, 0xA21, 0xC21, 0xE21), _fadd),
++    ((0x220, 0x420, 0x620, 0x820, 0xA20, 0xC20), _fmul),
++    ((0x223, 0x423, 0x623, 0x823, 0xA23, 0xC23, 0xE23), _ffma),
++    ((0x209, 0x409, 0x609, 0x809, 0xA09, 0xC09), _fmnmx),
++    ((0x308, 0x908, 0xB08, 0xD08), _mufu),
++    ((0x307, 0xB07), _frnd),
++    ((0x20B, 0x40B, 0x60B, 0x80B, 0xA0B, 0xC0B), lambda I: _setp(I, True)),
++    ((0x20C, 0x40C, 0x60C, 0x80C, 0xA0C, 0xC0C), lambda I: _setp(I, False)),
++    ((0x20A, 0x40A, 0x60A, 0x80A, 0xA0A, 0xC0A), _fset),
++    ((0x207, 0x807, 0xA07, 0xC07), lambda I: _sel(I, False)),
++    ((0x208, 0x808, 0xA08, 0xC08), lambda I: _sel(I, True)),
++    ((0x245, 0x845, 0xA45, 0xC45), _i2fp),
++    ((0x306, 0xB06, 0xD06), _i2f),
++    ((0x305, 0x905, 0xB05, 0xD05), _f2i),
++    ((0x23E, 0x43E, 0x83E, 0xA3E, 0xC3E), _f2fp),
++    ((0x210, 0x410, 0x610, 0x810, 0xA10, 0xC10), _iadd3),
++    ((0x224, 0x424, 0x624, 0x824, 0xA24, 0xC24, 0xE24), _imad),
++    ((0x225, 0x227, 0x625, 0x825, 0x827, 0xA27), _imad_wide),
++    ((0x213, 0xA13, 0xC13), _iabs),
++    ((0x212, 0x812, 0xA12, 0xC12), _lop3),
++    ((0x217, 0x817, 0xA17, 0xC17), _imnmx),
++    ((0x219, 0x419, 0x619, 0x819, 0xA19, 0xC19), _shf),
++    ((0x211, 0x811, 0xA11, 0xC11), _lea),
++    ((0x216, 0x416, 0x616, 0x816, 0xA16, 0xC16), _prmt),
++    ((0x309, 0xD09), _popc),
++    ((0x300, 0xD00), _flo),
++    ((0x301,), _brev),
++    ((0x81A,), _sgxt),
++    ((0x81C,), _plop3),
++    ((0x803,), lambda I: _p2r(I, True)),
++    ((0x804,), lambda I: _p2r(I, False)),
++]:
++    for o in ops:
++        OPS[o] = fn
+diff --git a/tests/xdiff/state.py b/tests/xdiff/state.py
+new file mode 100644
+index 0000000..5bca928
+--- /dev/null
++++ b/tests/xdiff/state.py
+@@ -0,0 +1,103 @@
++"""Machine state shared by the SM86 and Maxwell reference interpreters: one thread's registers and predicates, the
++uniform file (SM86) and the constant banks."""
++
++from __future__ import annotations
++
++import random
++import struct
++
++RZ, PT, URZ, UPT = 255, 7, 63, 7
++
++
++class Unsupported(Exception):
++    """An instruction or form the reference interpreter does not model; the case is skipped, not counted as a mismatch."""
++
++
++class State:
++    def __init__(self):
++        self.r = [0] * 256
++        self.p = [False] * 8
++        self.ur = [0] * 64
++        self.up = [False] * 8
++        self.cc = 0               # Maxwell condition code carry (IADD.CC / IADD.X)
++        self.seed = 0             # constant bank words are a function of (seed, bank, word offset): copies agree
++        self.bank_alias = {}      # Maxwell bank -> SM86 bank it holds (17 -> 24, AmpereLowering Bank)
++
++    def copy(self):
++        s = State()
++        s.r, s.p, s.ur, s.up, s.cc, s.seed = self.r[:], self.p[:], self.ur[:], self.up[:], self.cc, self.seed
++        s.bank_alias = dict(self.bank_alias)
++        return s
++
++    # registers
++    def R(self, n):
++        return 0 if n == RZ else self.r[n]
++
++    def setR(self, n, v):
++        if n != RZ:
++            self.r[n] = v & 0xFFFFFFFF
++
++    def UR(self, n):
++        return 0 if n == URZ else self.ur[n]
++
++    def setUR(self, n, v):
++        if n != URZ:
++            self.ur[n] = v & 0xFFFFFFFF
++
++    def P(self, n):
++        return True if n == PT else self.p[n]
++
++    def setP(self, n, v):
++        if n != PT:
++            self.p[n] = bool(v)
++
++    def UP(self, n):
++        return True if n == UPT else self.up[n]
++
++    def setUP(self, n, v):
++        if n != UPT:
++            self.up[n] = bool(v)
++
++    def word(self, bank, index):
++        bank = self.bank_alias.get(bank, bank)
++        return random_word(random.Random(f"{self.seed}:{bank}:{index}"))
++
++    def cbuf(self, bank, offset, size=4):
++        """size bytes at a byte offset (little endian, any alignment, zero-extended)."""
++        data = b"".join(self.word(bank, i).to_bytes(4, "little") for i in range(offset >> 2, (offset + size + 3) >> 2))
++        return int.from_bytes(data[offset & 3:(offset & 3) + size], "little")
++
++
++# Values that find conversion and sign bugs: zeros, ones, sign bits, half and byte boundaries, float specials.
++INT_EDGES = [0, 1, 2, 0xFFFFFFFF, 0xFFFFFFFE, 0x7FFFFFFF, 0x80000000, 0x80000001, 0xFFFF, 0x8000, 0x7FFF, 0xFFFF8000,
++             0xFF, 0x80, 0x7F, 0xFFFFFF80, 0x10000, 31, 32, 33, 63, 64, 0x12345678, 0xDEADBEEF]
++F32_EDGES = [0x00000000, 0x80000000, 0x3F800000, 0xBF800000, 0x3F000000, 0x40490FDB, 0x7F800000, 0xFF800000, 0x7FC00000,
++             0x00000001, 0x807FFFFF, 0x00800000, 0x7F7FFFFF, 0x4B000000, 0x4B000001, 0x3EFFFFFF, 0x3FC00000, 0xC0200000,
++             0x4F000000, 0xCF000000, 0x4F800000, 0x477FE000, 0x477FF000, 0x33800000, 0x38800000]
++
++
++def random_word(rng: random.Random):
++    k = rng.random()
++    if k < 0.25:
++        return rng.choice(INT_EDGES)
++    if k < 0.5:
++        return rng.choice(F32_EDGES)
++    if k < 0.75:   # an ordinary float in a few decades around 1
++        x = rng.uniform(-1, 1) * 10 ** rng.randint(-3, 4)
++        return struct.unpack("<I", struct.pack("<f", x))[0]
++    if k < 0.85:   # a small integer, either sign
++        return rng.randint(-300, 300) & 0xFFFFFFFF
++    return rng.getrandbits(32)
++
++
++def random_state(rng: random.Random):
++    s = State()
++    s.seed = rng.getrandbits(48)
++    s.r = [random_word(rng) for _ in range(256)]
++    s.r[RZ] = 0
++    s.p = [rng.random() < 0.5 for _ in range(7)] + [True]
++    s.ur = [random_word(rng) for _ in range(64)]
++    s.ur[URZ] = 0
++    # uniform predicates start false in every lowered program (AmpereLowering Run: Mov32i(RUP, 0))
++    s.up = [False] * 7 + [True]
++    return s
+diff --git a/tests/xdiff/xdiff.py b/tests/xdiff/xdiff.py
+new file mode 100644
+index 0000000..3711ee0
+--- /dev/null
++++ b/tests/xdiff/xdiff.py
+@@ -0,0 +1,326 @@
++"""Differential test of the SM86 lowering over the game's own shader instructions.
++
++For each instruction form the game's shaders use (census.py, from the runtime's stored translation inputs), a few
++real instructions of that form are lowered by `nx2navi_xlate --lower` (tools/xlate/Program.cs LowerFile) and run on
++random but valid inputs twice: the SM86 instruction by the SM86 reference (sm86.py), and the Maxwell words the
++lowering emitted by the Maxwell reference (maxwell.py, fields decoded by the translator's own decoder, isa.py). Every
++guest register, uniform register, predicate and uniform predicate must come out the same. Mismatches are clustered
++by family, form and the output that differs, and ranked by the number of shaders whose code holds that form.
++
++  python tests/xdiff/xdiff.py --cache <shader-cache> [--xlate EXE] [--shaders N] [--opcode X] [--cases K]
++                              [--per-form M] [--out build/xdiff] [--seed S] [--jobs J]
++  python tests/xdiff/xdiff.py --words "w0 w1 w2 w3" [...]    one instruction, verbose (a minimal repro)
++  python tests/xdiff/xdiff.py --selftest                      no translator needed: checks the checker
++
++--opcode takes a mnemonic (I2F, IADD3, ...) or a 3-digit hex opcode (306). Writes <out>/report.txt and report.json.
++This stage checks the lowering (SM86 -> Maxwell). The translator's Maxwell -> SPIR-V step is not executed here:
++its FTZ, F2I range and NaN behaviour are the SPIR-V stage's subject (see report "not covered")."""
++
++from __future__ import annotations
++
++import argparse
++import concurrent.futures
++import json
++import os
++import random
++import subprocess
++import sys
++import tempfile
++import time
++from collections import defaultdict
++from pathlib import Path
++
++HERE = Path(__file__).resolve().parent
++sys.path.insert(0, str(HERE))
++ROOT = HERE.parents[1]
++
++import census  # noqa: E402
++import fp  # noqa: E402
++import maxwell  # noqa: E402
++import sm86  # noqa: E402
++from state import RZ, Unsupported, random_state  # noqa: E402
++
++DEFAULT_XLATE = ROOT / "build" / "xlate" / ("nx2navi_xlate.exe" if os.name == "nt" else "nx2navi_xlate")
++SCRATCH_FROM = 237   # R237-R254: the lowering's uniform predicate state and scratch registers
++FLOAT_RESULT = {"FADD", "FMUL", "FFMA", "FMNMX", "MUFU", "FRND", "FSEL"}
++HALF_RESULT = {"F2FP"}
++TOLERANT = {"MUFU"}
++
++
++def words_of(w: int):
++    return [(w >> (32 * k)) & 0xFFFFFFFF for k in range(4)]
++
++
++def fmt_insn(w: int):
++    return " ".join(f"{x:08x}" for x in words_of(w))
++
++
++# ---- lowering ------------------------------------------------------------------------------------------------------
++class Lowering:
++    def __init__(self, words=None, urbase=None, spill=False, error=None):
++        self.words, self.urbase, self.spill, self.error = words, urbase, spill, error
++
++
++def lower(xlate: Path, w: int, tmpdir: Path) -> Lowering:
++    fd, path = tempfile.mkstemp(suffix=".txt", dir=tmpdir)
++    try:
++        with os.fdopen(fd, "w") as f:
++            f.write(fmt_insn(w) + "\n")
++        cmd = [sys.executable, str(xlate)] if xlate.suffix == ".py" else [str(xlate)]   # .py: fake_xlate.py
++        p = subprocess.run(cmd + ["--lower", path], capture_output=True, text=True)
++    finally:
++        os.unlink(path)
++    if p.returncode:
++        return Lowering(error=(p.stderr.strip().splitlines() or ["--lower failed"])[-1])
++    out, urbase, spill = [], None, False
++    for line in p.stdout.splitlines():
++        t = line.split()
++        if not t:
++            continue
++        if t[0] == "urbase":
++            urbase = int(t[1])
++        elif t[0] == "local":
++            spill = True
++        else:
++            out.append(int(t[0], 16))
++    return Lowering(out, urbase, spill)
++
++
++# ---- one case --------------------------------------------------------------------------------------------------------
++class Outcome:
++    def __init__(self, kind, detail="", diffs=None):
++        self.kind, self.detail, self.diffs = kind, detail, diffs or []   # kind: ok mismatch undefined unsupported
++
++
++def same_value(fam, a, b):
++    if fam in TOLERANT:
++        return fp.close(a, b)
++    if fam in HALF_RESULT:
++        return all(((a >> s) & 0xFFFF) == ((b >> s) & 0xFFFF) or
++                   (fp.is_nan((a >> s) & 0xFFFF, fp.F16) and fp.is_nan((b >> s) & 0xFFFF, fp.F16)) for s in (0, 16))
++    return fp.same(a, b, fam in FLOAT_RESULT)
++
++
++def run_case(w: int, low: Lowering, seed: int) -> Outcome:
++    rng = random.Random(seed)
++    st0 = random_state(rng)
++    ref = st0.copy()
++    try:
++        sm86.execute(w, ref)
++    except Unsupported as e:
++        return Outcome("unsupported", f"sm86: {e}")
++    if low.spill:
++        return Outcome("unsupported", "spill mode (registers near R237)")
++    ub = low.urbase
++    mx = st0.copy()
++    mx.bank_alias = {17: 24}   # AmpereLowering Bank: c24 is bound as c17
++    for k in range(63):
++        if ub + k < SCRATCH_FROM:
++            mx.r[ub + k] = st0.ur[k]
++    try:
++        maxwell.run(low.words, mx)
++    except Unsupported as e:
++        return Outcome("unsupported", f"maxwell: {e}")
++    except maxwell.Undefined as e:
++        return Outcome("undefined", str(e))
++    fam = sm86.mnemonic(w & 0xFFF)
++    diffs = []
++    for r in range(min(ub, SCRATCH_FROM)):
++        if not same_value(fam, ref.r[r], mx.r[r]):
++            diffs.append((f"R{r}", ref.r[r], mx.r[r]))
++    for k in range(63):
++        if ub + k < SCRATCH_FROM and not same_value(fam, ref.ur[k], mx.r[ub + k]):
++            diffs.append((f"UR{k}", ref.ur[k], mx.r[ub + k]))
++    for k in range(7):
++        if ref.p[k] != mx.p[k]:
++            diffs.append((f"P{k}", int(ref.p[k]), int(mx.p[k])))
++        upm = bool(mx.r[238] >> k & 1)
++        if ref.up[k] != upm:
++            diffs.append((f"UP{k}", int(ref.up[k]), int(upm)))
++    return Outcome("mismatch" if diffs else "ok", diffs=diffs)
++
++
++def inputs_of(w: int, st):
++    """The values an instruction's register fields name (for repros)."""
++    regs = [(w >> 24) & 0xFF, (w >> 32) & 0xFF, (w >> 64) & 0xFF]
++    out = [f"R{r}={st.r[r]:08x}" for r in dict.fromkeys(regs) if r != RZ]
++    out.append("P=" + "".join("1" if st.p[k] else "0" for k in range(7)))
++    return " ".join(out)
++
++
++# ---- the run ---------------------------------------------------------------------------------------------------------
++def matches_opcode(spec, w):
++    if not spec:
++        return True
++    op = w & 0xFFF
++    specs = [s.strip().upper() for s in spec.split(",")]
++    return any(s == sm86.mnemonic(op) or (len(s) == 3 and all(c in "0123456789ABCDEF" for c in s) and int(s, 16) == op)
++               for s in specs)
++
++
++def main(argv=None):
++    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
++    ap.add_argument("--cache", type=Path, help="a shader-cache folder (its in/*.in and shader-cache.pack)")
++    ap.add_argument("--xlate", type=Path, default=DEFAULT_XLATE)
++    ap.add_argument("--shaders", type=int, default=0, help="read only the first N distinct programs (0: all)")
++    ap.add_argument("--opcode", default="", help="mnemonic(s) or hex opcode(s), comma separated")
++    ap.add_argument("--cases", type=int, default=12, help="random input sets per instruction")
++    ap.add_argument("--per-form", type=int, default=3, help="distinct real instructions per form")
++    ap.add_argument("--all-forms", action="store_true", help="also forms the SM86 reference does not model")
++    ap.add_argument("--out", type=Path, default=ROOT / "build" / "xdiff")
++    ap.add_argument("--seed", type=int, default=1)
++    ap.add_argument("--jobs", type=int, default=8)
++    ap.add_argument("--words", help="one SM86 instruction as four hex words (w0 = bits 0-31): run it verbosely")
++    ap.add_argument("--case", type=int, help="with --words: run only the case of this seed (as a report repro names)")
++    ap.add_argument("--selftest", action="store_true")
++    a = ap.parse_args(argv)
++    if a.selftest:
++        import selftest
++        return selftest.main([])
++    if not a.xlate.is_file():
++        sys.exit(f"no translator at {a.xlate} (--xlate)")
++    tmpdir = Path(tempfile.mkdtemp(prefix="xdiff-"))
++    if a.words:
++        ws = [int(x.removeprefix("0x"), 16) for x in a.words.split()]
++        w = sum(x << (32 * k) for k, x in enumerate(ws))
++        return single(a, w, tmpdir)
++    if not a.cache or not a.cache.is_dir():
++        sys.exit("--cache <shader-cache folder> is needed")
++    t0 = time.monotonic()
++    table, ids, ninsn = census.forms(census.programs(a.cache, a.shaders or None))
++    print(f"census: {len(ids)} programs, {ninsn} instructions, {len(table)} forms ({time.monotonic() - t0:.1f} s)",
++          flush=True)
++    rng = random.Random(a.seed)
++    todo = []   # (form key, word)
++    for key, e in table.items():
++        w0 = e["insns"][0]
++        if not matches_opcode(a.opcode, w0):
++            continue
++        if not a.all_forms and (w0 & 0xFFF) not in sm86.OPS and not sm86.is_uniform(w0 & 0xFFF):
++            continue
++        picks = e["insns"] if len(e["insns"]) <= a.per_form else rng.sample(e["insns"], a.per_form)
++        todo += [(key, w) for w in picks]
++    print(f"lowering {len(todo)} instructions of {len({k for k, _ in todo})} forms", flush=True)
++    with concurrent.futures.ThreadPoolExecutor(a.jobs) as pool:
++        lows = dict(zip((w for _, w in todo), pool.map(lambda kw: lower(a.xlate, kw[1], tmpdir), todo)))
++    results = defaultdict(lambda: defaultdict(list))   # form key -> kind -> [(word, seed, outcome)]
++    for key, w in todo:
++        low = lows[w]
++        if low.error:
++            results[key]["refused"].append((w, 0, Outcome("refused", low.error)))
++            continue
++        for c in range(a.cases):
++            seed = rng.getrandbits(32)
++            o = run_case(w, low, seed)
++            results[key][o.kind].append((w, seed, o))
++    report(a, table, ids, ninsn, results, lows, time.monotonic() - t0)
++    return 0
++
++
++def single(a, w, tmpdir):
++    low = lower(a.xlate, w, tmpdir)
++    print(f"sm86 {fmt_insn(w)}  {sm86.mnemonic(w & 0xFFF)}")
++    if low.error:
++        print(f"lowering refused: {low.error}")
++        return 1
++    import isa
++    for x in low.words:
++        d = isa.decode(x)
++        print(f"  {x:016x}  {d.emitter if d else '?'}  " + (" ".join(f"{k}={v}" for k, v in d.f.items()) if d else ""))
++    print(f"  urbase {low.urbase}{'  spill mode' if low.spill else ''}")
++    bad = 0
++    rng = random.Random(a.seed)
++    seeds = [a.case] if a.case is not None else [rng.getrandbits(32) for _ in range(a.cases)]
++    for c, seed in enumerate(seeds):
++        o = run_case(w, low, seed)
++        if o.kind != "ok":
++            bad += 1
++            st = random_state(random.Random(seed))
++            print(f"  case {c} seed {seed}: {o.kind} {o.detail} inputs {inputs_of(w, st)}")
++            for name, want, got in o.diffs:
++                print(f"    {name}: sm86 {want:08x}  lowered {got:08x}")
++    print(f"{len(seeds) - bad}/{len(seeds)} cases agree")
++    return 1 if bad else 0
++
++
++def report(a, table, ids, ninsn, results, lows, elapsed):
++    a.out.mkdir(parents=True, exist_ok=True)
++    clusters = defaultdict(lambda: {"forms": set(), "shaders": set(), "cases": 0, "example": None})
++    per_form = []
++    totals = defaultdict(int)
++    for key, kinds in results.items():
++        e = table[key]
++        fam = sm86.mnemonic(key & 0xFFF)
++        row = {"form": f"{key:032x}", "family": fam, "opcode": f"{key & 0xFFF:03x}", "shaders": len(e["shaders"]),
++               "uses": e["count"]}
++        for kind, items in kinds.items():
++            row[kind] = len(items)
++            totals[kind] += len(items)
++            if kind == "ok":
++                continue
++            for w, seed, o in items:
++                what = o.detail
++                if kind == "mismatch":
++                    what = "differs: " + "/".join(sorted({d[0].rstrip("0123456789") for d in o.diffs}))
++                c = clusters[(fam, f"{key & 0xFFF:03x}", kind, what)]
++                c["forms"].add(key)
++                c["shaders"] |= e["shaders"]
++                c["cases"] += 1
++                if c["example"] is None:
++                    st = random_state(random.Random(seed))
++                    c["example"] = {"insn": fmt_insn(w), "seed": seed, "inputs": inputs_of(w, st),
++                                    "diffs": [(n, f"{x:08x}", f"{y:08x}") for n, x, y in o.diffs[:4]],
++                                    "lowered": [f"{x:016x}" for x in (lows[w].words or [])][:24]}
++        per_form.append(row)
++    ranked = sorted(clusters.items(), key=lambda kv: (-len(kv[1]["shaders"]), -kv[1]["cases"]))
++    lines = [f"xdiff: SM86 lowering against the SM86 reference, {time.strftime('%Y-%m-%d %H:%M')}",
++             f"translator {a.xlate} (id {read_id(a.xlate)}), cache {a.cache}",
++             f"{len(ids)} programs, {ninsn} instructions, {len(table)} forms; tested {len(per_form)} forms, "
++             f"cases: " + ", ".join(f"{k} {v}" for k, v in sorted(totals.items())) + f"; {elapsed:.0f} s", "",
++             "Discrepancies: the lowered code computes something else (mismatch) or something the translator cannot",
++             "mean (undefined); ranked by the shaders whose code holds an affected form:"]
++    bad = [kv for kv in ranked if kv[0][2] in ("mismatch", "undefined")]
++    for n, ((fam, op, kind, what), c) in enumerate(bad, 1):
++        ex = c["example"]
++        lines.append(f"{n:3}. {fam:10} {op} {kind:9} {what}: {len(c['shaders'])} shaders, {len(c['forms'])} forms, "
++                     f"{c['cases']} cases")
++        lines.append(f"     repro: python tests/xdiff/xdiff.py --words \"{ex['insn']}\" --case {ex['seed']}"
++                     f"   inputs {ex['inputs']}")
++        for d in ex["diffs"]:
++            lines.append(f"     {d[0]}: sm86 {d[1]}  lowered {d[2]}")
++    if not bad:
++        lines.append("  none")
++    for title, kind in (("Lowering refusals (the translator rejects these shaders)", "refused"),
++                        ("Not compared (a reference does not model the form or input)", "unsupported")):
++        rows = [kv for kv in ranked if kv[0][2] == kind]
++        lines += ["", f"{title}:"]
++        for (fam, op, _, what), c in rows[:60]:
++            lines.append(f"  {fam:10} {op} {what}: {len(c['shaders'])} shaders, {len(c['forms'])} forms "
++                         f"(e.g. {c['example']['insn']})")
++        if len(rows) > 60:
++            lines.append(f"  ... {len(rows) - 60} more in report.json")
++        if not rows:
++            lines.append("  none")
++    fam_cov = defaultdict(set)
++    for k, e in table.items():
++        if (k & 0xFFF) not in sm86.OPS and not sm86.is_uniform(k & 0xFFF):
++            fam_cov[sm86.mnemonic(k & 0xFFF)] |= e["shaders"]
++    lines += ["", "Not covered (no SM86 reference yet), by shaders: " +
++              ", ".join(f"{f} {len(s)}" for f, s in sorted(fam_cov.items(), key=lambda kv: -len(kv[1])))]
++    (a.out / "report.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
++    js = {"clusters": [{"family": fam, "opcode": op, "kind": kind, "what": what, "shaders": len(c["shaders"]),
++                        "forms": len(c["forms"]), "cases": c["cases"], "example": c["example"]}
++                       for (fam, op, kind, what), c in ranked],
++          "forms": sorted(per_form, key=lambda r: -r["shaders"]), "totals": totals}
++    (a.out / "report.json").write_text(json.dumps(js, indent=1), encoding="utf-8")
++    print("\n".join(lines[:40]))
++    print(f"report: {a.out / 'report.txt'}")
++
++
++def read_id(xlate: Path):
++    p = xlate.with_name("nx2navi_xlate.id")
++    return p.read_text().strip()[:12] if p.is_file() else "?"
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+-- 
+2.56.0
+
