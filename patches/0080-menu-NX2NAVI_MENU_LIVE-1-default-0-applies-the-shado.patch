@@ -1,0 +1,291 @@
+From c817500e43933cead867392b5c3753c2b8976ac9 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 15:38:17 -0500
+Subject: [PATCH] menu: NX2NAVI_MENU_LIVE=1 (default 0) applies the shadow
+ range row in the running game (the cascade distances on the patch page) and
+ makes the menu's Save button the only write of nx2navi.ini (a note shows
+ unsaved changes); cfg_live tells the rows which settings still take effect
+ only after a restart
+
+---
+ runtime/cfg.c              | 18 ++++++++++++++++--
+ runtime/cfg.h              |  3 +++
+ runtime/host.h             |  1 +
+ runtime/resolution.c       | 13 +++++++++++--
+ runtime/ui/menu.cpp        | 22 +++++++++++++++++++---
+ runtime/ui/option_rows.cpp | 26 +++++++++++++++++++-------
+ runtime/ui/option_rows.h   |  6 +++++-
+ runtime/ui_text.c          |  1 +
+ runtime/ui_text.h          |  1 +
+ 9 files changed, 76 insertions(+), 15 deletions(-)
+
+diff --git a/runtime/cfg.c b/runtime/cfg.c
+index b300888..5f1b835 100644
+--- a/runtime/cfg.c
++++ b/runtime/cfg.c
+@@ -45,7 +45,7 @@ static const char *const known[] = {
+     "FLIGHT_SPIKE_MS", "FLIGHT_THUMBS", "FLUSH_SPAN", "FOV", "FOV_PATCH", "FG_HUDLESS_SHOW", "FPS60", "FPS_LIMIT", "FRAMEGEN", "FREEZE_IDLE", "FREE_CORES",
+     "FULLSCREEN", "FXAA", "GAME_ASPECT", "GAME_RES", "GPA", "GPA_EMPTY", "GPA_TWIN", "GPL", "GPL_DRAW_BUILD", "GPU", "GPU_INDEX", "GPU_NAME", "HDR", "HDR_GAME_NITS", "HDR_HUE",
+     "HDR_PEAK_NITS", "HDR_UI_NITS", "HIGHFPS_FIX", "INPUT", "INPUT_RECORD", "INPUT_SCRIPT", "LANG", "LIB_PREBUILD",
+-    "LIB_PREBUILD_KEEP", "LIB_PREBUILD_THREADS", "LOCALE", "LOD_GUARD", "LSTICK_DEADZONE", "MARK_BURST", "MARK_CHORD", "MARK_HOLD_MS", "MARK_RING", "MEMORY", "MENU_LANG", "MENU_SOUND_VOLUME", "MENU_TEST",
++    "LIB_PREBUILD_KEEP", "LIB_PREBUILD_THREADS", "LOCALE", "LOD_GUARD", "LSTICK_DEADZONE", "MARK_BURST", "MARK_CHORD", "MARK_HOLD_MS", "MARK_RING", "MEMORY", "MENU_LANG", "MENU_LIVE", "MENU_SOUND_VOLUME", "MENU_TEST",
+     "MENU_CURSOR", "MENU_CURSOR_LOG", "MENU_TEST_DIR", "MENU_TEST_SET", "MINIMAL_LAYOUT", "MIRROR_GAP", "MODS_DIR", "MODS_DISABLED", "MODS_ORDER", "MODS_REBUILD", "MOTION", "MOTION_PAD", "MOTION_SOCK", "MOUSE_MODE", "MOUSE_DIRECT_PATCH", "MOUSE_SENS", "MOVIE_HOST", "MOVIE_PACE",
+     "MVOBJ_ALL", "MVOBJ_BANKS", "MVOBJ_EQUAL", "MVOBJ_EXACT", "MVOBJ_EXEC", "MVOBJ_NOC4", "MVOBJ_ONLY", "MVOBJ_TIMES", "MVPREV_CHECK", "MVPREV_GROW", "MVPREV_SKIP", "MVPREV_TRUST", "MV_CHECK",
+     "MV_SURVEY",
+@@ -86,7 +86,7 @@ static const struct { const char *key, *section; } sections[] = {
+     {"MOTION", "input"}, {"MOTION_PAD", "input"}, {"MOTION_SOCK", "input"}, {"RUMBLE_STRENGTH", "input"}, {"RUMBLE_CURVE", "input"}, {"RUMBLE_TRIGGERS", "input"},
+     {"PAD_LAYOUT", "input"}, {"PROMPTS", "input"}, {"STICK_DEADZONE", "input"}, {"LSTICK_DEADZONE", "input"}, {"RSTICK_DEADZONE", "input"},
+     {"STICK_SENS", "input"},
+-    {"MENU_CURSOR", "input"}, {"MOUSE_MODE", "input"}, {"MOUSE_SENS", "input"}, {"WALK_KEY", "input"}, {"WALK_SCALE", "input"}, {"INPUT_RECORD", "input"},
++    {"MENU_CURSOR", "input"}, {"MENU_LIVE", "input"}, {"MOUSE_MODE", "input"}, {"MOUSE_SENS", "input"}, {"WALK_KEY", "input"}, {"WALK_SCALE", "input"}, {"INPUT_RECORD", "input"},
+     {"BIND_A", "input"}, {"BIND_B", "input"}, {"BIND_X", "input"}, {"BIND_Y", "input"}, {"BIND_LCLICK", "input"},
+     {"BIND_RCLICK", "input"}, {"BIND_L", "input"}, {"BIND_R", "input"}, {"BIND_ZL", "input"}, {"BIND_ZR", "input"},
+     {"BIND_PLUS", "input"}, {"BIND_MINUS", "input"}, {"BIND_LEFT", "input"}, {"BIND_UP", "input"},
+@@ -158,6 +158,7 @@ static const CfgMeta metas[] = {
+     {"MOUSE_SENS", "1", "0..10", LIVE}, {"MENU_CURSOR", "1", "0|1", LIVE},
+     {"WALK_KEY", "none", NULL, LIVE}, {"WALK_SCALE", "0.51", "0.2..0.9", LIVE},
+     {"MENU_LANG", "", "en|ru|pt-BR|zh-Hans", LIVE},
++    {"MENU_LIVE", "0", "0|1", LIVE},   // cfg_live: rows that take effect at once, and the menu's Save button
+     {"AMIIBO_DIR", "", NULL, LIVE},
+     // Discord Rich Presence (discord_rpc.c): off by default, the Menu tab of the settings menu switches it. The
+     // application's id and art key default to discord_app.h's NX2NAVI_DISCORD_*_DEFAULT.
+@@ -437,6 +438,19 @@ const char *cfg_default(const char *key) {
+     return m ? m->def : NULL;
+ }
+ 
++// NX2NAVI_MENU_LIVE=1: these read-at-start rows are applied in the running game too (ui/menu.cpp says how).
++static const char *const LIVE_WITH_MENU_LIVE[] = {"SHADOW_RANGE"};
++
++int cfg_live(const char *key) {
++    const CfgMeta *m = cfg_meta(key);
++    if (!m) return 1;
++    if (m->live) return 1;
++    if (!cfg_bool("NX2NAVI_MENU_LIVE")) return 0;
++    for (size_t i = 0; i < sizeof LIVE_WITH_MENU_LIVE / sizeof *LIVE_WITH_MENU_LIVE; i++)
++        if (!strcmp(LIVE_WITH_MENU_LIVE[i], m->key)) return 1;
++    return 0;
++}
++
+ const CfgMeta *cfg_meta_at(int i) { return i >= 0 && (size_t)i < sizeof metas / sizeof *metas ? &metas[i] : NULL; }
+ 
+ const char *cfg_value(const char *name) {
+diff --git a/runtime/cfg.h b/runtime/cfg.h
+index 7a1085d..14f70a9 100644
+--- a/runtime/cfg.h
++++ b/runtime/cfg.h
+@@ -48,6 +48,9 @@ void cfg_each_active(void (*cb)(const char *key, const char *value, int from_env
+ typedef struct { const char *key, *def, *values; int live; } CfgMeta;
+ // The row of key (prefix and case ignored); NULL for a key the menu does not show.
+ const CfgMeta *cfg_meta(const char *key);
++// The setting takes effect in the running game: its row is live, or NX2NAVI_MENU_LIVE=1 applies it there (cfg.c
++// LIVE_WITH_MENU_LIVE). 1 for a key without a row.
++int cfg_live(const char *key);
+ // The i-th row (0-based, table order); NULL past the last.
+ const CfgMeta *cfg_meta_at(int i);
+ // What key reads when the player has not set it: the device profile's value (the Steam Deck's), else the row's default;
+diff --git a/runtime/host.h b/runtime/host.h
+index aa74fd5..7747f59 100644
+--- a/runtime/host.h
++++ b/runtime/host.h
+@@ -277,6 +277,7 @@ void wide_present(void);                                    // each present: DLS
+ int wide_available(void);                                  // the generated C has the widescreen sets
+ uint64_t wide_heap_extra_kib(void);                        // the texture heap's growth for the widescreen picture
+ void res_init(void);                                       // after rt_patches_init: the patch page and the sets
++void res_shadow_range_live(void);                           // NX2NAVI_SHADOW_RANGE again, in the running game
+ float res_dlss_lod_bias(void);                             // NX2NAVI_DLSS upscaling: texture LOD bias (<= 0)
+ int res_dlss_mode(const char *mode);                       // NX2NAVI_DLSS changed while running: new scene size
+ void res_fn_hit(uint64_t addr, uint64_t x0);               // main.c fnprof_hit: catches the renderer at start
+diff --git a/runtime/resolution.c b/runtime/resolution.c
+index 34748b8..9bc212b 100644
+--- a/runtime/resolution.c
++++ b/runtime/resolution.c
+@@ -308,10 +308,17 @@ static uint64_t pack(unsigned w, unsigned h) { return (uint64_t)h << 32 | w; }
+ // NX2NAVI_SHADOW_RANGE (percent, 50 to 400; 100 = the game's): the sun's shadow cascades end at 20, 40, 80 and 160 m.
+ // Other values multiply those distances through the cascade patch set (recomp/patches-v143.txt), so the sharp first
+ // cascade reaches further and the visible steps between cascades move away from the player, at the cost of shadow
+-// texels per metre (NX2NAVI_SHADOW_SCALE pays that back).
++// texels per metre (NX2NAVI_SHADOW_SCALE pays that back). The patched code loads the distances from the page each time
++// it runs, so res_shadow_range_live (the menu, with NX2NAVI_MENU_LIVE=1) takes a new value in the running game.
+ static void res_shadow_range(void) {
+     int pct = cfg_int("NX2NAVI_SHADOW_RANGE"), set = rt_patch_set("cascade");
+-    if (pct == 100) return;
++    if (pct == 100) {
++        if (set >= 0 && rt_patch_enabled(set)) {
++            rt_patch_switch(set, 0);
++            rt_log("resolution: shadow cascades at the game's 20, 40, 80 and 160 m");
++        }
++        return;
++    }
+     if (set < 0) {
+         rt_log("resolution: the generated C has no cascade patch set; shadow_range stays 100");
+         return;
+@@ -322,6 +329,8 @@ static void res_shadow_range(void) {
+     rt_log("resolution: shadow cascades end at %g, %g, %g and %g m", d[0], d[1], d[2], d[3]);
+ }
+ 
++void res_shadow_range_live(void) { res_shadow_range(); }
++
+ void res_init(void) {
+     res_shadow_range();
+     if (!res_adjustable()) {
+diff --git a/runtime/ui/menu.cpp b/runtime/ui/menu.cpp
+index 61d14c2..94be187 100644
+--- a/runtime/ui/menu.cpp
++++ b/runtime/ui/menu.cpp
+@@ -56,6 +56,7 @@ void vk_queue_lock(void);
+ void vk_queue_unlock(void);
+ void res_sizes(unsigned out[2], unsigned scene[2]);
+ int res_adjustable(void);
++void res_shadow_range_live(void);
+ int wide_available(void);
+ const char *const *vk_color_preset(const char *name);
+ int vk_hdr_wanted(void);
+@@ -639,7 +640,9 @@ static void row_shadow_scale(void) {
+ static void row_shadow_range(void) {
+     static const char *const vals[] = {"100", "150", "200", "300"};
+     static const char *const names[] = {"160 m (1x)", "240 m (1.5x)", "320 m (2x)", "480 m (3x)"};
+-    opt_choice_list("NX2NAVI_SHADOW_RANGE", UI_MENU_SHADOW_RANGE, vals, names, 4, UI_MENU_SHADOW_RANGE_DESC);
++    if (opt_choice_list("NX2NAVI_SHADOW_RANGE", UI_MENU_SHADOW_RANGE, vals, names, 4, UI_MENU_SHADOW_RANGE_DESC) &&
++        cfg_bool("NX2NAVI_MENU_LIVE"))
++        res_shadow_range_live();   // the cascade distances on the patch page, read by the game each frame
+ }
+ 
+ static void row_gpu(void) {
+@@ -1142,13 +1145,26 @@ static void layout_menu(uint32_t w, uint32_t h, float scale) {
+         menu_art_draw(ImGui::GetWindowDrawList(), MENU_ART_GUIDE_BAR, ImVec2(win_p.x + st.WindowPadding.x, sy),
+                       ImVec2(win_p.x + win_s.x - st.WindowPadding.x, sy + fh), IM_COL32(96, 70, 36, 170));
+     }
++    // NX2NAVI_MENU_LIVE=1: changes hold in the running game at once; a Save button left of Continue writes nx2navi.ini
++    bool save_btn = cfg_bool("NX2NAVI_MENU_LIVE") != 0;
+     if (!cfg_last_save_ok()) {   // stays until a save succeeds; the settings hold for the session
+         ImGui::SetCursorPosY(y + st.FramePadding.y);
+         ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.35f, 1), "%s", menu_text(UI_MENU_SAVE_FAILED));
++    } else if (save_btn && opt_unsaved()) {
++        ImGui::SetCursorPosY(y + st.FramePadding.y);
++        ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", menu_text(UI_MENU_UNSAVED));
+     }
+-    const char *cont = menu_text(UI_MENU_CONTINUE), *quit = menu_text(UI_MENU_QUIT);
++    const char *cont = menu_text(UI_MENU_CONTINUE), *quit = menu_text(UI_MENU_QUIT), *save = menu_text(UI_MENU_SAVE);
+     float bw = fmaxf(ImGui::CalcTextSize(cont).x, ImGui::CalcTextSize(quit).x) + st.FramePadding.x * 4;
+-    ImGui::SetCursorPos(ImVec2(ImGui::GetWindowWidth() - st.WindowPadding.x - bw * 2 - st.ItemSpacing.x, y));
++    if (save_btn) bw = fmaxf(bw, ImGui::CalcTextSize(save).x + st.FramePadding.x * 4);
++    int nb = save_btn ? 3 : 2;
++    ImGui::SetCursorPos(ImVec2(ImGui::GetWindowWidth() - st.WindowPadding.x - bw * nb - st.ItemSpacing.x * (nb - 1), y));
++    if (save_btn) {
++        ImGui::BeginDisabled(!opt_unsaved());
++        if (ImGui::Button(save, ImVec2(bw, 0)) && opt_save_now()) menu_sound_play(MENU_SOUND_CURSOR);
++        ImGui::EndDisabled();
++        ImGui::SameLine();
++    }
+     if (ImGui::Button(cont, ImVec2(bw, 0))) set_open(0);
+     ImGui::SameLine();
+     if (ImGui::Button(quit, ImVec2(bw, 0))) gfx_window_request_close();
+diff --git a/runtime/ui/option_rows.cpp b/runtime/ui/option_rows.cpp
+index e8ea237..4e89ae5 100644
+--- a/runtime/ui/option_rows.cpp
++++ b/runtime/ui/option_rows.cpp
+@@ -48,7 +48,7 @@ static void desc_set(Desc &d, const char *desc, const char *key, const CfgMeta *
+         snprintf(d.text + n, sizeof d.text - n, "\n\n%s", disabled);
+     else if (cfg_from_env(key))
+         snprintf(d.text + n, sizeof d.text - n, "\n\n%s %s", menu_text(UI_MENU_SET_BY_ENV), key);
+-    else if (m && !m->live)
++    else if (m && !cfg_live(key))
+         snprintf(d.text + n, sizeof d.text - n, "\n\n%s", menu_text(UI_MENU_AFTER_RESTART));
+ }
+ 
+@@ -227,7 +227,7 @@ static int row_text(const char *key, const char *label, const char *desc, const
+     dl->AddText(font, fs, ImVec2(p.x + pad, ty), off ? kGrey : IM_COL32(240, 236, 224, 255), label, NULL, 0, &clip);
+     const char *note = disabled        ? disabled
+                      : off             ? menu_text(UI_MENU_SET_BY_ENV)
+-                     : m && !m->live ? menu_text(UI_MENU_AFTER_RESTART)
++                     : m && !cfg_live(key) ? menu_text(UI_MENU_AFTER_RESTART)
+                                      : NULL;
+     if (note) dl->AddText(font, small, ImVec2(p.x + pad, ny), off ? IM_COL32(200, 150, 90, 255) : kDim, note);
+     ImGui::PopID();
+@@ -244,8 +244,9 @@ int opt_text_row(const char *id, const char *label, const char *value, const cha
+     return row_text(id, label, desc, v, movable);
+ }
+ 
+-// ---- writing a setting: at once in memory (live settings follow), to nx2navi.ini a moment later (opt_save_tick)
+-static uint64_t g_save_at;   // plat_now_ns deadline of the pending write; 0 none
++// ---- writing a setting: at once in memory (live settings follow), to nx2navi.ini a moment later (opt_save_tick); with
++// NX2NAVI_MENU_LIVE=1 only when the menu's Save button is pressed (opt_save_now)
++static uint64_t g_save_at;   // plat_now_ns deadline of the pending write (MENU_LIVE: a change not yet saved); 0 none
+ static bool g_save_logged;
+ 
+ static void apply(const char *key, const char *value) {
+@@ -261,16 +262,27 @@ static void apply(const char *key, const char *value) {
+ 
+ void opt_save_soon(void) { g_save_at = plat_now_ns() + 400000000ull; }
+ 
+-int opt_save_tick(int force) {
+-    if (!g_save_at || (!force && plat_now_ns() < g_save_at)) return g_save_at != 0;
++static int save_now(void) {
+     g_save_at = 0;
+-    if (!cfg_save() && !g_save_logged) {
++    int ok = cfg_save();
++    if (!ok && !g_save_logged) {
+         g_save_logged = true;
+         rt_log("menu: could not write nx2navi.ini; the changed settings hold for this session");
+     }
++    return ok;
++}
++
++int opt_save_tick(int force) {
++    if (cfg_bool("NX2NAVI_MENU_LIVE")) return g_save_at != 0;   // the Save button writes
++    if (!g_save_at || (!force && plat_now_ns() < g_save_at)) return g_save_at != 0;
++    save_now();
+     return 0;
+ }
+ 
++int opt_unsaved(void) { return g_save_at != 0; }
++
++int opt_save_now(void) { return save_now(); }
++
+ // ---- rows
+ 
+ bool opt_toggle(const char *key, UiTextId label, UiTextId desc, bool inverted) {
+diff --git a/runtime/ui/option_rows.h b/runtime/ui/option_rows.h
+index 9842f4c..3dd52ba 100644
+--- a/runtime/ui/option_rows.h
++++ b/runtime/ui/option_rows.h
+@@ -83,7 +83,11 @@ int opt_bind_row(const char *key, const char *label, UiTextId desc, const char *
+ 
+ // nx2navi.ini is written a moment after the last change (a held slider would rewrite it every frame) and when the menu
+ // closes. opt_save_tick: on every frame the menu lays out; force: write now if anything is pending. 1 while a write is
+-// pending.
++// pending. NX2NAVI_MENU_LIVE=1: neither, only opt_save_now writes.
+ int opt_save_tick(int force);
++// A change not yet in nx2navi.ini; with NX2NAVI_MENU_LIVE=1 it waits for opt_save_now (the Save button).
++int opt_unsaved(void);
++// Writes nx2navi.ini now; 0 when it could not.
++int opt_save_now(void);
+ // A change made outside a row (Reset, F10): nx2navi.ini is written as after a row's change.
+ void opt_save_soon(void);
+diff --git a/runtime/ui_text.c b/runtime/ui_text.c
+index 0107c1e..d07c3bd 100644
+--- a/runtime/ui_text.c
++++ b/runtime/ui_text.c
+@@ -46,6 +46,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
+     [UI_MENU_ON] = "On", [UI_MENU_OFF] = "Off", [UI_MENU_AUTO] = "Automatic", [UI_MENU_DEFAULT_MARK] = "default",
+     [UI_MENU_AFTER_RESTART] = "after restart", [UI_MENU_SET_BY_ENV] = "set by environment variable",
+     [UI_MENU_SAVE_FAILED] = "could not save settings",
++    [UI_MENU_SAVE] = "Save", [UI_MENU_UNSAVED] = "not saved yet: Save writes nx2navi.ini",
+     [UI_MENU_VERSION] = "NX2navi %s, game %s",
+ 
+     [UI_MENU_FULLSCREEN] = "Fullscreen", [UI_MENU_FULLSCREEN_DESC] = "Fills the screen with the game; F11 toggles it.",
+diff --git a/runtime/ui_text.h b/runtime/ui_text.h
+index 94ac0e6..799401a 100644
+--- a/runtime/ui_text.h
++++ b/runtime/ui_text.h
+@@ -22,6 +22,7 @@ typedef enum {
+     UI_MENU_AFTER_RESTART,    // note on a setting that is read at start
+     UI_MENU_SET_BY_ENV,       // note on a setting an environment variable fixes
+     UI_MENU_SAVE_FAILED,
++    UI_MENU_SAVE, UI_MENU_UNSAVED,   // NX2NAVI_MENU_LIVE=1: the bottom row's Save button, the note while a change waits for it
+     UI_MENU_VERSION,          // "NX2navi %s, game %s": the port version and the game update, beside the title
+ 
+     // Screen
+-- 
+2.56.0
+

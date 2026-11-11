@@ -235,6 +235,13 @@ Bindless slots (`TexSlot`, 16 kinds x 32768) hold the game's NVN descriptors. An
 - **HDR, upscaling, frame generation.** HDR10 native swapchain (`vk_hdr.c`; play log 52-53). The game's tensor-core upscaler is replaced by decode-and-scale (`vk_tonemap.c`). FSR 1 runs when the window is larger than the picture (`vk_fsr.c`). FSR 3.1 and DLSS paths exist (`vk_ffx.cpp`, `vk_dlaa.c`, `vk_dlssg.c`), but FSR 3.1 is missing on this host (play log 32-33). Frame generation is off in Cal's ini; whether it works on Linux is not established.
 - **Saves.** A host save directory with a working copy; the game's `Commit` writes it (play log 339-342, 493). `just play` copies saves into each recording bundle.
 
+- Menu settings (runtime/ui/option_rows.cpp apply): a row's change goes into memory at once (cfg_set, cfg_version bumps) and
+  consumers that re-read cfg follow; nx2navi.ini is written by opt_save_tick 0.4 s later, or only by the Save button with
+  `NX2NAVI_MENU_LIVE=1` (patch 0080). Which rows are live: cfg.c metas `LIVE`, plus `LIVE_WITH_MENU_LIVE` under that knob
+  (cfg_live); the rest are read once at start and show "after restart". Shadow range is live-capable because the cascade
+  patch set loads its distances from the patch page (+64) on each call; render targets, shadow map sizes, swapchain
+  features, the game's language/operation mode and RomFS-served packs are fixed at boot.
+
 ## 10. Our private patches
 
 All are in `~/claude/nx2navi/patches/`, as local commits on `build`. Status comes from `~/claude/nx2navi/README.md`.
