@@ -14,4 +14,6 @@ export NX2NAVI_TEX_DESC_STRICT="${NX2NAVI_TEX_DESC_STRICT:-1}" NX2NAVI_TEX_RELEA
 export NX2NAVI_XLATE="${NX2NAVI_XLATE:-$V/xlate-rebase/nx2navi_xlate}"
 export NX2NAVI_SHADER_CACHE="${NX2NAVI_SHADER_CACHE:-$V/shader-cache-rebase}"
 export NX2NAVI_PIPELINE_CACHE="${NX2NAVI_PIPELINE_CACHE:-$V/pipeline-cache-rebase.bin}"
-exec just -f "$(dirname "$0")/../justfile" play-text "" "$@"
+# mods off by default (Cal, 2026-11-12); NX2NAVI_MODS=text runs with the text mod (just play-text)
+if [ "${NX2NAVI_MODS:-}" = text ]; then exec just -f "$(dirname "$0")/../justfile" play-text "" "$@"; fi
+exec just -f "$(dirname "$0")/../justfile" play "$@"
