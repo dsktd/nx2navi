@@ -27,3 +27,4 @@ Seeded 2026-11-12 from the tracker, ARCHITECTURE.md, README and the board; first
 | Occasional GPU device loss | #141 | play ~ | open | none | tracker #141 |
 | Boot abort (SDK Break svc 0x26) in builds made while another build ran | - | play33 | fixed (process) | rebuilt under `flock /tmp/nx2navi-build.lock` | BOARD 2026-11-12 |
 | Measuring beside a build gives 30-40 ms frames | - | lab | fixed (process) | tools/ab-cell and load-cell wait for loadavg under 6 | BOARD 2026-11-12 |
+| Red / black / rainbow rock cliffs toward Gerudo Valley in Hyrule Field (rebase) | - | play24 (e1fbd67, xlate 53afad07; dump f3781) | open | none; suspect uncleared stand-ins (upstream 0d564a2, not on rebase-upstream), test 0104 NX2NAVI_DUMMY_CLEAR=2 (magenta = stand-in) | dump f3781 pass 0259 + cube pass 0020 (rock lit R≈0.9, G,B≈0.03); tools/scenarios/field-gerudo-cliffs.dbg; ARCHITECTURE.md 6 Texture cache |

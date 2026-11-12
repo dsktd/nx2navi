@@ -1,0 +1,6 @@
+# Hyrule Field at the Gerudo Valley gate, adult, turned round to face the valley's cliffs; standing. Red/black/rainbow
+# rock (SYMPTOMS.md, dump f3781 play24). Visual cell: A/B NX2NAVI_DUMMY_CLEAR=0 vs 2 (patch 0104): magenta cliffs at 2 =
+# the rock's colour layers sample a stand-in (bindless 2D array handles that resolve to nothing); unchanged red = not.
+# yaw is the entrance's 62.18 turned by 180 (unverified that the cliffs fill the view: check the first shot).
+# base: .lab/scenarios/base-profile
+# warp: scene=HyruleField_Adult entrance=HyruleField_FrontOfGerudoValley yaw=-117.82 age=adult
