@@ -1,6 +1,6 @@
 # NX2navi on the desktop, every step inside the flake's shell. Settings by environment or on the command line:
 #   just src=~/claude/nx2navi/NX2navi ver=v111 build   (the defaults; src is a worktree of ~/claude/.bare/NX2navi.git)
-#   NX2NAVI_GPU=nvidia just run                 (NVIDIA host driver through nixGL; Mesa is the default)
+#   NX2NAVI_GPU=nvidia just run-raw                 (NVIDIA host driver through nixGL; Mesa is the default)
 #   NX2NAVI_NUP=/path/game.nup just extract     (the dump as a .nup: no keys needed; or just nup=/path/game.nup extract)
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
@@ -115,8 +115,8 @@ fog_spv := "1201517696dd2e1d9ad6735249bb9160bf2fd71a5e45b176400585a8371a5083"
 nanguard *mode:
     cd "{{src}}" && {{dev}} python3 "{{flake}}/tools/nan-guard.py" build/{{ver}}/shader-cache --sha256 {{fog_spv}} {{ if mode == "restore" { "--restore" } else { "" } }}
 
-# Play
-run *args:
+# Play the bare game with no settings (just run <name> is the entry point for test setups)
+run-raw *args:
     cd "{{src}}" && {{dev}} env {{radv}} {{wrapper}} build/{{ver}}/nx2navi {{args}}
 
 # Play under gdb, everything logged to NX2navi/build/{{ver}}/logs/run-<time>.log (a fatal error comes with the host
