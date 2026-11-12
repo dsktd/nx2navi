@@ -427,6 +427,17 @@ Patches since 0051 (README has each entry): 0052/0065 RT dedicated + trim, 0053-
 - **#138 bushes.** Not a renderer problem: the leaf cards are never drawn. The cause is in the lifted game's LOD/cull decision.
 - **#128 intro audio.** Game timing: atk's per-frame update starts voices per present, and `ostep` does not cover that path.
 
+**Upstream rebase 2026-11-12, 0.9.2** (0110: branch `rebase4` in `.lab/wt-rebase4`, play44's 65 commits onto
+origin/main a32597b, 124 upstream commits past 322d7c0; exe `play46`). All 65 kept; conflicts were context only
+(DUMP_KEY beside DUMP_REQ, joystick mapping beside the Steam pad rule, cfg rows, mesh ring's new cb argument, the
+free camera's `camavoid` in the test-script help). New upstream defaults that bear on our knobs: replay on the
+submitting thread (`REPLAY_ASYNC=0`, 0533b30), replay workers 0 (94dd340), `MIRROR_HOT=0`, lifted code -O1
+(`GUEST_OPT=1`), `SUBMIT_THREAD=1` on Linux (bfa486c: Mesa submit thread), `REG_ORDER=1` (857d22f: slot
+registrations wait until the submission is queued, `vk_backend.c`), slope depth bias scaled with the shadow map
+(58efccd/5e71cee), low-end GPU mode (mesh emulation, staged mirror uploads, VMA heap budgets; a464ffa) only with
+`LOW_END_GPU=1`. Our `POOL_IDLE_MS` lookup and `POOL_LOAD_FIT` sit beside upstream's make-time accounting
+(57a15e2 `vk_texture_pool_make_ns_take`): FIT still times the whole refresh. Translator sources unchanged: xlate-play33.
+
 ## 11. Working rules and tooling
 
 - **cfg rule.** Every key read with `cfg_value`/`cfg_bool`/`cfg_int`/`cfg_double` needs a row in the settings table in `runtime/cfg.c`, or the game stops at start with `cfg: X has no row in the settings table` (play6, fixed by 0069). `cfg_get` alone does not need one.
