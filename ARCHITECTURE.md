@@ -425,3 +425,8 @@ Upstream doc facts that bear on shadow sync (`docs/building.md` "Memory"): Linux
 - **One-shot pass:** a pass into targets never rendered before (a LUT or volume made once). Its draws wait for their pipeline instead of being skipped.
 - **c0/c1:** NVN constant banks. c0 is driver data (storage and uniform tables, group counts) filled by the back end; c1 holds the program's own constants.
 - **Patch page:** a page right after `main` (`0x7004ea0000`) that patched instructions read and the runtime writes each present (frame step, sizes, ratios).
+
+### Lab parity: run-scenario noise and upstream 0.9.0 (2026-11-12)
+- The `load-run` replay (.lab/parity/run1.sh run) is too noisy for A/B: play32 (d9c9e0a) gave 47.5 fps / 174 frames >25 ms in one run and 42.1 fps / 624 in the next. Judge running-stutter changes on standing windows or with upstream's in-run ABBA (`NX2NAVI_AB`, `just ab`).
+- Upstream 0.9.0 changed defaults that touch perf: `NX2NAVI_ANISO` game -> 16 (cfg.c), `NX2NAVI_FREEZE_IDLE` 60 -> 1800 (vk_memory.c freeze_idle), replay workers `NX2NAVI_REPLAY_WORKERS` (default 0, vk_exec.c). On our tree (play33, rebase2 b31135a) none moved the running numbers clearly; workers=4 was worse.
+- Shadow cost per 600 frames is the same on play32 and play33 (copy-in ~2.3 s, write-back ~2.7 s, table ~1.7 s): table syncs snap ~3,000 2 MiB regions each (~6 GiB of table-shadow range, vk_memory.c vk_mem_shadow_sync / snap_tregs_runs), of which ~90 are dirty and ~770 shadows are visited.
