@@ -389,6 +389,7 @@ Patches since 0051 (README has each entry): 0052/0065 RT dedicated + trim, 0053-
 - **Guest:** the game's code and its view of memory and the OS. **Host:** the Linux process and the runtime around it.
 - **Replay thread:** the host thread that turns a submitted NVN recording into Vulkan commands.
 - **Shadow:** a host-visible Vulkan copy of a CPU-visible guest pool, synced before submit and written back after the fence.
+  Cost signal: `mem: shadow at frame N` (runtime/vk_memory.c:1815). Kakariko Graveyard on rebase-upstream (play22, 2026-11-11, RADV 6900 XT, shadow on by default off NVIDIA blob) spent ~10 ms/frame there: 2372 pool syncs/frame, 9.4 MiB in and 3.2 MiB written back per frame; write-backs fault per page under the Linux write watch unless NX2NAVI_SHADOW_BULK_WRITE=1 (vk_memory.c shadow_bulk_write).
 - **Pin:** a reference-counted host copy of a texture's state that recordings point at.
 - **One-shot pass:** a pass into targets never rendered before (a LUT or volume made once). Its draws wait for their pipeline instead of being skipped.
 - **c0/c1:** NVN constant banks. c0 is driver data (storage and uniform tables, group counts) filled by the back end; c1 holds the program's own constants.
