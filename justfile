@@ -134,30 +134,6 @@ debug *args:
     # -nx: the user's ~/.gdbinit (a dashboard) would draw terminal panes into the log; no stdin: nothing to prompt
     {{dev}} env TERM=dumb {{radv}} {{wrapper}} nix shell nixpkgs#gdb -c gdb -nx -batch -q -x "{{flake}}/tools/crash.gdb" --args "build/{{ver}}/nx2navi" {{args}} < /dev/null 2>&1 | tee "$log" | grep -a -v -E "no such proc|preparation progress|PushComputeConstants"
 
-# `just play` on the combined build with the unproven switches of UNCERTAIN.md that passed the lab: the flicker fix,
-# the memory switches and the faster shadow copies; live shader reload and shot.req / dump.req are on, so Tally can
-# capture frames and swap shaders while Cal sits in a scene. Each can still be overridden from the environment.
-# The burst build (NX2NAVI_EXE=burst NX2NAVI_MARK_RING=120 NX2NAVI_MARK_BURST=120) froze the game at its first mark
-# on 2026-11-10: not for play until that is fixed.
-# NX2NAVI_MARK_RING / NX2NAVI_MARK_BURST (patch 0049) and any other NX2NAVI_ knob pass through from the environment
-# Default binary: nx2navi.play3 (patches through 0065; play2 = through 0064): live debugging without a restart, watch.req / peek.req / buf.req /
-# pick.req (NX2NAVI_WATCH_REQ=1), F5 pick, Shift+F5 crosshair, F6 shot, F12 dump, Shift+F6 broken, Shift+F12 fixed.
-try *args:
-    NX2NAVI_RUN_NAME="${NX2NAVI_RUN_NAME:-try}" NX2NAVI_EXE="${NX2NAVI_EXE:-play3}" NX2NAVI_WATCH_REQ="${NX2NAVI_WATCH_REQ:-1}" \
-    NX2NAVI_TEX_RELEASED_YIELD="${NX2NAVI_TEX_RELEASED_YIELD:-85}" \
-    NX2NAVI_ALIAS_EXTRA_MIB="${NX2NAVI_ALIAS_EXTRA_MIB:-512}" NX2NAVI_AO_ORDER="${NX2NAVI_AO_ORDER:-1}" \
-    NX2NAVI_SHADOW_NT="${NX2NAVI_SHADOW_NT:-1}" \
-    NX2NAVI_SHADER_RELOAD="${NX2NAVI_SHADER_RELOAD:-1}" NX2NAVI_DUMP_REQ="${NX2NAVI_DUMP_REQ:-1}" \
-    {{just_executable()}} -f "{{justfile()}}" play {{args}}
-
-# `just try` on nx2navi.play5 (0001-0067, mesh draws in dumps) with the translator fix 0064 (#164, signed I2F): its own translator, shader cache and pipeline cache copy
-# under build/v111 (*-i2f), so the live caches stay as they are. Every shader is translated again on first use.
-try-i2f *args:
-    NX2NAVI_RUN_NAME="${NX2NAVI_RUN_NAME:-try-i2f}" NX2NAVI_EXE="${NX2NAVI_EXE:-play5}" NX2NAVI_XLATE="${NX2NAVI_XLATE:-{{src}}/build/{{ver}}/xlate-i2f/nx2navi_xlate}" \
-    NX2NAVI_SHADER_CACHE="${NX2NAVI_SHADER_CACHE:-{{src}}/build/{{ver}}/shader-cache-i2f}" \
-    NX2NAVI_PIPELINE_CACHE="${NX2NAVI_PIPELINE_CACHE:-{{src}}/build/{{ver}}/pipeline-cache-i2f.bin}" \
-    {{just_executable()}} -f "{{justfile()}}" try {{args}}
-
 # Text mod (#170), built into NX2navi/build/{{ver}}/mods-text/text from the game's own text: Link renamed to NAME
 # (whole words, tags untouched; an empty NAME keeps the last one, saved in mods-text/name) plus every change in
 # build/{{ver}}/items.toml (`just items` makes it). Python 3.14 from nixpkgs, stdlib only: host or container.
@@ -177,40 +153,15 @@ text NAME="":
     $py ../tools/msgmod.py check --mod text --mods-dir "$out" --edits "$edits"
 
 # Make NX2navi/build/{{ver}}/items.toml: every item's name and description on the Items screen, to edit. Then
-# `just try-name` (or `just text`) builds them into the text mod.
+# `just play-text` (or `just text`) builds them into the text mod.
 items:
     cd "{{src}}" && nix shell nixpkgs#python314 -c python3 -I ../tools/itemtext.py init --export "build/{{ver}}/msg/USen" --out "build/{{ver}}/items.toml"
 
-# try-vram with the text mod: rebuilds it first (Link renamed to NAME, or the last name; items.toml applied).
-try-name NAME="" *args:
+# `just play` with the text mod: rebuilds it first (Link renamed to NAME, or the last name; items.toml applied), then plays
+# with NX2NAVI_MODS_DIR set. `just run` (runs/play.sh) is the usual entry and calls this.
+play-text NAME="" *args:
     {{just_executable()}} -f "{{justfile()}}" text "{{NAME}}"
-    NX2NAVI_RUN_NAME="${NX2NAVI_RUN_NAME:-try-name}" NX2NAVI_MODS_DIR="${NX2NAVI_MODS_DIR:-{{src}}/build/{{ver}}/mods-text}" {{just_executable()}} -f "{{justfile()}}" try-vram {{args}}
-
-# try-i2f on play11 with the VRAM hold settings (#160): render-target reuse on (off: 30 fps in Hyrule from churn;
-# on is suspected of a lighting flicker, being made safe), trim at 85%, released cap
-# 1536 MiB with LRU, live textures idle 15 s may drop. Lab 46k frames: card 84-94% vs 91-99%, 0 vs 51 trims at 95%,
-# worst frame 27 vs 98 ms, no fps cost (66.6 vs 66.2, n=5). STALE_LIVE=1 is the #149/#169 terrain fix (lab: 3974
-# tiles recovered, 0 unresolved). MARK_CHORD=off gives L3+R3 back to the game (mark with yakin's ...+Start). Any variable can be overridden from the environment.
-# RT_RECYCLE is off (2026-11-11): on play11 it gave back render targets the game took back with their content lost,
-# environment lighting flickered with camera angle and time of day (play-20261111-115322).
-# #174 texel fetch clamp: nx2navi.tld with TLD_CLAMP=1 and TEX_DESC_STRICT=1, its own translator (xlate-tld), shader
-# cache and pipeline cache copy (*-tld). Live dumps (dump.req) land in build/v111/dump as with every try.
-# Runs through try-name, so the text mod and the try-vram settings apply as on Cal's usual line.
-try-tld *args:
-    NX2NAVI_RUN_NAME="${NX2NAVI_RUN_NAME:-try-tld}" NX2NAVI_EXE="${NX2NAVI_EXE:-tld}" NX2NAVI_TLD_CLAMP="${NX2NAVI_TLD_CLAMP:-1}" \
-    NX2NAVI_TEX_DESC_STRICT="${NX2NAVI_TEX_DESC_STRICT:-1}" \
-    NX2NAVI_XLATE="${NX2NAVI_XLATE:-{{src}}/build/{{ver}}/xlate-tld/nx2navi_xlate}" \
-    NX2NAVI_SHADER_CACHE="${NX2NAVI_SHADER_CACHE:-{{src}}/build/{{ver}}/shader-cache-tld}" \
-    NX2NAVI_PIPELINE_CACHE="${NX2NAVI_PIPELINE_CACHE:-{{src}}/build/{{ver}}/pipeline-cache-tld.bin}" \
-    {{just_executable()}} -f "{{justfile()}}" try-name "" {{args}}
-
-try-vram *args:
-    NX2NAVI_RUN_NAME="${NX2NAVI_RUN_NAME:-try-vram}" NX2NAVI_EXE="${NX2NAVI_EXE:-play11}" NX2NAVI_TEX_RT_RECYCLE="${NX2NAVI_TEX_RT_RECYCLE:-1}" \
-    NX2NAVI_TEX_RT_TRIM="${NX2NAVI_TEX_RT_TRIM:-85}" NX2NAVI_TEX_RT_TRIM_PER_MIN="${NX2NAVI_TEX_RT_TRIM_PER_MIN:-0}" \
-    NX2NAVI_TEX_RELEASED_MIB="${NX2NAVI_TEX_RELEASED_MIB:-1536}" NX2NAVI_TEX_RELEASED_LRU="${NX2NAVI_TEX_RELEASED_LRU:-1}" \
-    NX2NAVI_TEX_LIVE_IDLE="${NX2NAVI_TEX_LIVE_IDLE:-900}" NX2NAVI_TEX_STALE_LIVE="${NX2NAVI_TEX_STALE_LIVE:-1}" \
-    NX2NAVI_MARK_CHORD="${NX2NAVI_MARK_CHORD:-off}" \
-    {{just_executable()}} -f "{{justfile()}}" try-i2f {{args}}
+    NX2NAVI_MODS_DIR="${NX2NAVI_MODS_DIR:-{{src}}/build/{{ver}}/mods-text}" {{just_executable()}} -f "{{justfile()}}" play {{args}}
 
 # Play casually with everything Tally needs if something goes wrong, at no measurable cost: no debugger, the log
 # teed to NX2navi/build/{{ver}}/logs/play-<time>.log, every input recorded beside it (replayable with `just replay`),
@@ -333,12 +284,12 @@ pin-desktop CPUS="8-11,24-27":
         for pid in $(pgrep -x "$name"); do taskset -apc "{{CPUS}}" "$pid" >/dev/null && echo "$name $pid -> {{CPUS}}"; done
     done
 
-# One entry point for test setups: `just run <name>` runs runs/<name>.sh (each script holds that test's settings,
-# with a header saying what it tests, its tracker item and when to delete it); no name runs the usual play setup.
-run NAME="" *args:
+# One entry point: `just run` plays with the current best settings (runs/play.sh: the rebased build, build/v111/nx2navi.play32);
+# `just run play13` is the fallback (pre-rebase build). `just run <name>` runs runs/<name>.sh; each script holds its
+# settings, with a header saying what it is. Extra arguments go to the game.
+run NAME="play" *args:
     #!/usr/bin/env sh
-    export NX2NAVI_RUN_NAME="${NX2NAVI_RUN_NAME:-{{ if NAME == "" { "play" } else { NAME } }}}"   # the log's build line names it
-    if [ -z "{{NAME}}" ]; then exec {{just_executable()}} -f "{{justfile()}}" try-name "" {{args}}; fi
+    export NX2NAVI_RUN_NAME="${NX2NAVI_RUN_NAME:-{{NAME}}}"   # the log's build line names it
     f="{{justfile_directory()}}/runs/{{NAME}}.sh"
     [ -e "$f" ] || { echo "no run '{{NAME}}'; have: $(ls "${f%/*}" | sed 's/\.sh$//' | tr '\n' ' ')"; exit 1; }
     exec sh "$f" {{args}}
