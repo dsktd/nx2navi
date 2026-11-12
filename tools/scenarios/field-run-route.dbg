@@ -1,6 +1,6 @@
-# Hyrule Field from Lake Hylia, adult; Link runs a fixed loop of the field's start positions on his own (upstream
-# routeto, runtime/debug_tools.c): Gerudo Valley, Lake Hylia, Kakariko, Lost Woods bridge, Market, Lake Hylia (~1.5 km,
-# ~2.5 min). For running-stutter cells: streaming textures and loader writes while moving, same path every run.
+# Hyrule Field from Lake Hylia, adult; Link runs a fixed 325 m triangle of open ground near the start on his own
+# (route in runtime/debug_tools.c; ~2460 frames per lap on play39, four laps listed, a 9000-frame cell covers three).
+# For running-stutter cells: streaming textures and loader writes while moving, same path every run.
 # base: .lab/scenarios/base-profile
 # warp: scene=HyruleField_Adult entrance=HyruleField_FromLakeHylia age=adult
-300:routeto FrontOfGerudoValley FromLakeHylia FrontOfKakarikoVillage FrontOfLostWoodBridge FrontOfMarket FromLakeHylia
+300:route 90 75 -35 165 0 98 90 75 -35 165 0 98 90 75 -35 165 0 98 90 75 -35 165 0 98
