@@ -1,0 +1,91 @@
+From bd779c9e38bcdbf4e789eb0b537c6d852b89e281 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Thu, 12 Nov 2026 16:27:53 -0500
+Subject: [PATCH] vk_ffx: NX2NAVI_FFX_LIB, a dlopen path for the FSR 3.1
+ ffx-api library on Linux (default libamd_fidelityfx_vk.so beside the
+ executable; absent = off as before)
+
+---
+ runtime/vk_ffx.cpp | 45 ++++++++++++++++++++++++++++++++++++++++++---
+ 1 file changed, 42 insertions(+), 3 deletions(-)
+
+diff --git a/runtime/vk_ffx.cpp b/runtime/vk_ffx.cpp
+index 65a09f5..0ebe5b6 100644
+--- a/runtime/vk_ffx.cpp
++++ b/runtime/vk_ffx.cpp
+@@ -9,6 +9,10 @@
+ // vectors go in unscaled.
+ #ifdef _WIN32
+ #include <windows.h>
++#else
++#include <dlfcn.h>
++#include <limits.h>
++#include <unistd.h>
+ #endif
+ #include <atomic>
+ #include <chrono>
+@@ -54,6 +58,20 @@ void library_path(char *path, size_t size) {
+     while (n && path[n - 1] != '\\') n--;
+     snprintf(path + n, size - n, "amd_fidelityfx_vk.dll");
+ }
++#else
++// NX2NAVI_FFX_LIB=<file> (default libamd_fidelityfx_vk.so beside the executable): a local Linux build of AMD's
++// ffx-api library (a community port of the FidelityFX SDK 1.1.4 Vulkan backend); it is not shipped with this project
++void library_path(char *path, size_t size) {
++    const char *e = getenv("NX2NAVI_FFX_LIB");
++    if (e && *e) {
++        snprintf(path, size, "%s", e);
++        return;
++    }
++    ssize_t n = readlink("/proc/self/exe", path, size - 1);
++    if (n < 0) n = 0;
++    while (n && path[n - 1] != '/') n--;
++    snprintf(path + n, size - (size_t)n, "libamd_fidelityfx_vk.so");
++}
+ #endif
+ 
+ void message(uint32_t type, const wchar_t *msg) {
+@@ -272,8 +290,22 @@ extern "C" int vk_ffx_load(void) {
+     A.ok = A.create && A.destroy && A.configure && A.query && A.dispatch;
+     rt_log("ffx: amd_fidelityfx_vk.dll %s", A.ok ? "loaded" : "lacks the API entry points: FSR 3.1 off");
+ #else
+-    // Only the Windows build loads AMD's library: there is nothing to load here
+-    rt_log("ffx: this build has no FSR 3.1 (it needs amd_fidelityfx_vk.dll, which only the Windows build loads): FSR 3.1 off");
++    char path[PATH_MAX];
++    library_path(path, sizeof path);
++    void *m = dlopen(path, RTLD_NOW | RTLD_LOCAL);
++    if (!m) {
++        rt_log("ffx: %s not found (%s): FSR 3.1 off", path, dlerror());
++        g_loaded.store(0, std::memory_order_release);
++        return 0;
++    }
++    A.lib = m;
++    A.create = (PfnFfxCreateContext)dlsym(m, "ffxCreateContext");
++    A.destroy = (PfnFfxDestroyContext)dlsym(m, "ffxDestroyContext");
++    A.configure = (PfnFfxConfigure)dlsym(m, "ffxConfigure");
++    A.query = (PfnFfxQuery)dlsym(m, "ffxQuery");
++    A.dispatch = (PfnFfxDispatch)dlsym(m, "ffxDispatch");
++    A.ok = A.create && A.destroy && A.configure && A.query && A.dispatch;
++    rt_log("ffx: %s %s", path, A.ok ? "loaded" : "lacks the API entry points: FSR 3.1 off");
+ #endif
+     g_loaded.store(A.ok, std::memory_order_release);
+     return A.ok;
+@@ -293,7 +325,14 @@ extern "C" int vk_ffx_available(void) {
+     }
+     return present;
+ #else
+-    return 0;
++    int present = g_present.load(std::memory_order_relaxed);
++    if (present < 0) {
++        char path[PATH_MAX];
++        library_path(path, sizeof path);
++        present = access(path, R_OK) == 0;
++        g_present.store(present, std::memory_order_relaxed);
++    }
++    return present;
+ #endif
+ }
+ 
+-- 
+2.56.0
+
