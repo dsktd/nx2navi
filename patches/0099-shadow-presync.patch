@@ -1,0 +1,118 @@
+From 3b34f8d1288eb32ca424ab303852e93af0d0737b Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Thu, 12 Nov 2026 08:57:34 -0500
+Subject: [PATCH] vk_memory: NX2NAVI_SHADOW_PRESYNC=1 (0: readers only) syncs
+ the device address table's shadows once a present while no submission reads
+ the table, so a load screen's writes are copied in as they come instead of in
+ the area's first frame; entering Market that frame's prologue took 561 ms
+ (310 ms write-watch query of 900,000 pages, 247 ms copying 3.5 GiB) with the
+ game's main thread waiting on the replay
+
+---
+ runtime/vk_memory.c | 47 ++++++++++++++++++++++++++++++++++++++-------
+ 1 file changed, 40 insertions(+), 7 deletions(-)
+
+diff --git a/runtime/vk_memory.c b/runtime/vk_memory.c
+index da5c842..b926751 100644
+--- a/runtime/vk_memory.c
++++ b/runtime/vk_memory.c
+@@ -1259,6 +1259,7 @@ static uint64_t s_marked, s_mark_ticks;           // pages copied in whole with
+ static uint64_t s_plain_ticks;                    // check: the time of the whole copies made without marks
+ static uint64_t s_both_cpu, s_both_gpu;           // check: bytes both sides changed, taken from the CPU / from the GPU
+ static uint64_t s_in_merge, s_in_nomirror;        // check: bytes copied in by merge_page; whole, into pools without a mirror
++static uint64_t s_pre_syncs, s_pre_ticks, s_pre_bytes;   // shadow_lock, since the last log: table syncs ahead of a reader (NX2NAVI_SHADOW_PRESYNC)
+ static uint64_t s_tab_fast, s_tab_slow, s_tab_all_ticks, s_tab_all_syncs;   // shadow_lock, since the last log: table shadows skipped by pages / synced; table time, runs
+ static uint64_t s_tab_ticks, s_tab_syncs;         // the sync for the table's readers: its time (part of s_ticks), its runs
+ static PoolRec **stab;                            // shadow_lock: the shadows in the device address table (PoolRec.stab_i)
+@@ -2061,13 +2062,16 @@ static void shadow_log(uint64_t frame) {
+            "copied in (%llu untracked), %.2f ms (queries %.2f); %.1f MiB written back of %.1f MiB the GPU may have written, %.2f ms; %llu "
+            "pages the GPU writes keep a base copy; %llu pages not written back, their pool was made again or the CPU "
+            "wrote them since; %llu written-back pages' watch bits taken, %llu of them stamped as the CPU's; table: %llu syncs "
+-           "%.2f ms, %llu shadows clean by pages, %llu synced; %llu regions snapped, %llu dirty, %llu shadows visited",
++           "%.2f ms, %llu shadows clean by pages, %llu synced; %llu regions snapped, %llu dirty, %llu shadows visited; of "
++           "them ahead of a reader: %llu syncs %.2f ms, %.1f MiB",
+            (unsigned long long)frame, (long long)s_live_n, s_live_bytes / 1048576.0, (unsigned long long)s_syncs,
+            (unsigned long long)s_queries, s_copied / 1048576.0, (unsigned long long)s_untracked, qpc_ms(s_ticks),
+            qpc_ms(s_q_ticks), s_wb_bytes / 1048576.0, s_wb_seen / 1048576.0, qpc_ms(s_wb_ticks), (unsigned long long)s_sb_pages,
+            (unsigned long long)s_stale_pages, (unsigned long long)s_rearm_pages, (unsigned long long)s_rearm_kept,
+            (unsigned long long)s_tab_all_syncs, qpc_ms(s_tab_all_ticks), (unsigned long long)s_tab_fast, (unsigned long long)s_tab_slow,
+-           (unsigned long long)s_tab_regs, (unsigned long long)s_tab_dregs, (unsigned long long)s_tab_vis);
++           (unsigned long long)s_tab_regs, (unsigned long long)s_tab_dregs, (unsigned long long)s_tab_vis,
++           (unsigned long long)s_pre_syncs, qpc_ms(s_pre_ticks), s_pre_bytes / 1048576.0);
++    s_pre_syncs = s_pre_ticks = s_pre_bytes = 0;
+     s_tab_all_syncs = s_tab_all_ticks = s_tab_fast = s_tab_slow = s_tab_regs = s_tab_dregs = s_tab_vis = 0;
+     s_syncs = s_queries = s_copied = s_untracked = s_wb_bytes = s_ticks = s_wb_seen = s_wb_ticks = s_q_ticks = 0;
+     s_stale_pages = s_rearm_pages = s_rearm_kept = 0;
+@@ -2800,10 +2804,25 @@ static int shadow_pool_pages_clean(const PoolRec *r, uint32_t epoch, int cpu) {
+     return 1;
+ }
+ 
++// NX2NAVI_SHADOW_PRESYNC (default 0 = off; 1, or ab): the table's shadows are also brought up to date while nothing
++// reads the table. Only a guest submission that binds the table syncs them, and a load screen binds none: everything
++// the loader wrote piles up for the first frame of the area. Entering Market (play34, bcd6e8c, sampled with
++// runtime-linux/prof_linux.c) that submission's prologue took 561 ms on the replay thread, 310 ms of it the write-watch
++// query that finds and re-arms about 900,000 written pages and 247 ms the copy of 3.5 GiB, with the game's main thread
++// waiting in nvnQueueSubmitCommands and the picture held. With the switch, the first prologue of a present runs the
++// table's sync when the whole present before it had none: each load-screen frame takes the pages written during it (a
++// query over clean regions is about 0.3 ms), and the area's first frame finds a frame's worth. In an area every frame
++// has a reader, so nothing is added there; a present that follows one with more than PRESYNC_DRAWS draws is left alone
++// too, so an area without a reader does not pay for copies nothing reads. The copies are the ones a reader's sync
++// would make, earlier.
++#define PRESYNC_DRAWS 256
+ void vk_mem_shadow_sync(uint64_t fence) {
+     if (!shadow_on) return;
+-    static int tab_fast = -1, tab_dirty, tab_runs;
++    static int tab_fast = -1, tab_dirty, tab_runs, presync;
+     if (tab_fast < 0) {
++        presync = rt_knob("SHADOW_PRESYNC", "0");
++        rt_log("mem: the table's shadows are %s (NX2NAVI_SHADOW_PRESYNC)",
++               presync ? "also synced once a present while nothing reads the table" : "synced for the table's readers only");
+         tab_runs = rt_knob("SHADOW_TAB_RUNS", "1") == 1;
+         rt_log("mem: the table's sync snaps its regions %s (NX2NAVI_SHADOW_TAB_RUNS)",
+                tab_runs ? "one query per run of adjacent regions" : "one query per region");
+@@ -2823,9 +2842,22 @@ void vk_mem_shadow_sync(uint64_t fence) {
+     // The callers are one at a time (vk_sync.c prologue under the submission lock, and the probe).
+     static uint32_t tab_epoch;    // the guest submission the table's shadows were last synced for
+     static uint64_t wb_fence;     // the last fence that got the write-back job
+-    int table = epoch && epoch != tab_epoch && __atomic_load_n(&stab_want, __ATOMIC_RELAXED) == epoch;
+-    if (table) {
+-        tab_epoch = epoch;
++    static uint64_t tab_frame, pre_frame;   // the present count at the last sync for a reader, and ahead of one
++    uint64_t fnow = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
++    int reader = epoch && epoch != tab_epoch && __atomic_load_n(&stab_want, __ATOMIC_RELAXED) == epoch;
++    // ahead of a reader: the present before this one went by without a sync of the table and drew little (a title, load
++    // or menu screen: the replay thread has the time), and this one has had none
++    static uint64_t draws_frame, draws_mark, draws_prev;
++    if (fnow != draws_frame) {
++        uint64_t d = vk_exec_frame.draws;   // running, or since a trace line reset it
++        draws_prev = d >= draws_mark ? d - draws_mark : d, draws_mark = d, draws_frame = fnow;
++    }
++    int ahead = !reader && epoch && fnow >= tab_frame + 2 && fnow != pre_frame && draws_prev <= PRESYNC_DRAWS &&
++                RT_KNOB_ON(presync);
++    int table = reader || ahead;
++    if (ahead) pre_frame = fnow;
++    if (reader) {
++        tab_epoch = epoch, tab_frame = fnow;
+         // What this submission's shaders store through the table goes back to guest memory at its fence, once
+         // (table_wb_cb). Asked before the copy-ins below: the sync whose copy-ins find the first such page leaves it
+         // to the next guest submission that binds the table.
+@@ -2838,7 +2870,7 @@ void vk_mem_shadow_sync(uint64_t fence) {
+     if (nstouch || (table && nstab)) {
+         plat_mutex_lock(&gen_lock);
+         for (int i = 0; i < nstouch; i++) shadow_sync_pool(stouch[i], epoch, cpu);
+-        uint64_t t1 = qpc();
++        uint64_t t1 = qpc(), copied0 = s_copied;
+         if (table && tab_dirty) {   // the regions stamped since the last table sync, and their shadows
+             uint32_t vis = ++stab_visit;
+             const uint32_t *mx = cpu ? creg_max : reg_max;
+@@ -2886,6 +2918,7 @@ void vk_mem_shadow_sync(uint64_t fence) {
+         for (int i = 0; table && i < nstab; i++)
+             if (stab[i]->mstate == MS_ON && stab[i]->acc_sub != msub) mirror_sync(stab[i]);
+         if (table) s_tab_ticks += qpc() - t1, s_tab_syncs++, s_tab_all_ticks += qpc() - t1, s_tab_all_syncs++;
++        if (ahead) s_pre_ticks += qpc() - t1, s_pre_syncs++, s_pre_bytes += s_copied - copied0;
+     }
+     s_ticks += qpc() - t0;
+     plat_mutex_unlock(&shadow_lock);
+-- 
+2.56.0
+

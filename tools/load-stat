@@ -1,0 +1,95 @@
+#!/usr/bin/env python3
+"""load-stat [--table] [--gap=N] <run.log>...: the area loads of each run, from its `present:` lines (NX2NAVI_TRACE=present).
+
+A load is a cluster of presents over 60 ms after frame 300 (presents under 90 frames apart are one cluster; the boot
+and the save's menu are before frame 300). Per load:
+  longest   the longest gap between two pictures, ms (the freeze)
+  lost      sum of (interval - 16.7 ms) over its presents above 33 ms: what the load cost beyond 60 fps
+  slow      presents above 33 ms
+  held      upstream's `the previous picture stayed for N frames, M ms` line inside it (rebase builds)
+  area      the `scene: <area> loads` line nearest before it; a cold run (load-cell COLD=west|grave, named
+            lc-<tag>-<scene>-<n>) gives one row, its first cluster from frame 600 on, as `cold <scene>`
+--gap=N: presents under N frames apart are one cluster (default 90). A teleport makes two, the hitch where the load
+starts and the area's first frames 3-6 s later: --gap=450 joins them into one row per teleport (load-cell's GAP is 900).
+--table: one row per (build, area) over all runs given: n, mean and min..max of longest and lost.
+Clusters whose longest gap is under 100 ms are left out (pipeline hitches, not loads).
+"""
+import re
+import statistics as st
+import sys
+
+
+GAP = 90
+
+
+def loads(path):
+    s = open(path, errors='replace').read()
+    b = re.search(r'build: entry=\S+ exe=(\S+) commit=(\S+)', s)
+    run = path.split('/')[-2] if '/' in path else path
+    # a build without the provenance line (before patch 0087, e.g. play13) goes by its run's name
+    build = '%s %s' % (b[1].replace('nx2navi.', ''), b[2][:14]) if b else re.sub(r'^lc-|-(west|grave)-\d+$', '', run) + ' (no build line)'
+    line = re.search(r'build: entry=.*', s)   # knob values may hold spaces (NX2NAVI_DBG_TEST): names are matched one by one
+    extra = re.findall(r'NX2NAVI_((?:POOL_|SHADOW_PRESYNC|ASTC_ARENA|ASTC_SCRATCH)[A-Z_]*=[^,\s]*)', line[0]) if line else []
+    extra = ['NX2NAVI_' + k for k in extra]
+    if extra:
+        build += ' ' + ' '.join(k.replace('NX2NAVI_', '') for k in extra)
+    pres = [(int(m[1]), float(m[2])) for m in re.finditer(r'present: frame (\d+) interval ([\d.]+) ms', s)]
+    pres = [p for p in pres if p[0] > 300 and p[1] < 5000]   # the run's last present waits for the dump
+    held = [(int(m[1]), int(m[2]), float(m[3])) for m in
+            re.finditer(r'frame (\d+): the previous picture stayed for (\d+) frames, ([\d.]+) ms', s)]
+    areas = [(int(m[2]), m[1]) for m in re.finditer(r'scene: (\S+) loads \(frame (\d+)', s)]
+    cl = []
+    for f, d in pres:
+        if d <= 60:
+            continue
+        if cl and f - cl[-1][1] < GAP:
+            cl[-1][1] = f
+        else:
+            cl.append([f, f])
+    out = []
+    for a, z in cl:
+        w = [p for p in pres if a - 5 <= p[0] <= z + 60]
+        slow = [d for _, d in w if d > 33.4]
+        h = [x for x in held if a - 5 <= x[0] <= z + 60]
+        longest = max(d for _, d in w)
+        if longest < 100:
+            continue
+        near = [n for f, n in areas if f <= z + 5]
+        out.append(dict(frame=a, longest=longest, lost=sum(d - 16.7 for d in slow), n=len(slow),
+                        held=sum(x[2] for x in h), heldf=sum(x[1] for x in h), area=near[-1] if near else '?'))
+    m = re.search(r'-(west|grave)-\d+$', run)
+    if m:   # a cold run (load-cell COLD=): the area's first frames are its first cluster after frame 600 (the hitch
+        # where the save starts loading is before it, at frames 480-540 in every build); none = no slow present
+        late = [l for l in out if l['frame'] >= 600]
+        out = [late[0] if late else dict(frame=0, longest=0.0, lost=0.0, n=0, held=0.0, heldf=0, area='')]
+        out[0]['area'] = 'cold ' + m[1]
+    return build, out
+
+
+def main():
+    global GAP
+    args = [a for a in sys.argv[1:] if a != '--table' and not a.startswith('--gap=')]
+    for a in sys.argv[1:]:
+        if a.startswith('--gap='):
+            GAP = int(a[6:])
+    cells = {}
+    for p in args:
+        build, ls = loads(p)
+        if '--table' not in sys.argv:
+            print(p.split('/')[-2], '|', build)
+        for l in ls:
+            cells.setdefault((build, l['area']), []).append(l)
+            if '--table' not in sys.argv:
+                print('   f%-6d %-22s longest %6.0f ms  lost %6.0f ms  slow %3d  held %2d fr %5.0f ms' %
+                      (l['frame'], l['area'], l['longest'], l['lost'], l['n'], l['heldf'], l['held']))
+    if '--table' in sys.argv:
+        print('%-58s %-22s %2s  %-22s %-22s %s' % ('build', 'area', 'n', 'longest ms mean (min..max)', 'lost ms mean (min..max)', 'held ms mean'))
+        for (build, area), ls in sorted(cells.items(), key=lambda kv: (kv[0][1], kv[0][0])):
+            lo, ls_ = [l['longest'] for l in ls], [l['lost'] for l in ls]
+            print('%-58s %-22s %2d  %5.0f (%5.0f..%5.0f)    %5.0f (%5.0f..%5.0f)    %5.0f' %
+                  (build, area, len(ls), st.mean(lo), min(lo), max(lo), st.mean(ls_), min(ls_), max(ls_),
+                   st.mean(l['held'] for l in ls)))
+
+
+if __name__ == '__main__':
+    main()

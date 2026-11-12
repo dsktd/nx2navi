@@ -28,3 +28,4 @@ Things that are on or available without proof they help. One line each; remove a
 | `NX2NAVI_TEX_STALE_GONE` | 0 | #160: stale bindless slots of destroyed finalized textures resolve to nothing instead of a new live entry; risk: a game draw that samples a finalized texture's slot gets a stand-in (missing texture) | `=0` |
 - NX2NAVI_TEX_LIVE_EVICT=85 (0072, play8): drops idle live mirrored textures under VRAM pressure; default on, unverified in game; 0 restores old behaviour.
 | `NX2NAVI_TEX_SAME` (upstream 42ae87b) | 1 | skips re-uploads of small textures whose bytes match; lab A/B pending (.lab/p20) | `=0` |
+| `NX2NAVI_SHADOW_PRESYNC`, `NX2NAVI_POOL_IDLE_MS` (0099, 0101, play36) | 0 in code; `1` / `8` to try | scene-entry freeze: lab-measured on cold loads and teleports (Market west, Graveyard), not yet played by Cal; an area without table readers and under 256 draws a frame would pay the presync's copies; other areas' loads untested | unset both |
