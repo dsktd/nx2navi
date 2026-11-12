@@ -172,8 +172,19 @@ def do_window(log, scen):
     w = re.findall(r'frametime: 60 s: (\d+) frames in ([\d.]+) s, mean ([\d.]+) fps, 1% low ([\d.]+) fps, over 25 ms (\d+)', s)
     full = [x for x in w[:-1] if float(x[1]) <= 61.0]
     if len(full) < 2:
-        return []
-    x = full[-1]
+        # a short run (suite standing 4200 frames = one boot window only): the present intervals from frame
+        # RESULTS_FROM_FRAME (default 2400, past the save load and settle) to the end, as one window (2026-11-12)
+        f0 = int(os.environ.get('RESULTS_FROM_FRAME', '2400'))
+        pr = [(int(m[1]), float(m[2])) for m in re.finditer(r'present: frame (\d+) interval ([\d.]+) ms', s)]
+        end = max([f for f, _ in pr] or [0]) - 120   # the final shot and dump frames are not play
+        iv = [v for f, v in pr if f0 <= f < end]
+        if len(iv) < 600:
+            return []
+        q = sorted(iv)
+        x = (None, None, '%.1f' % (1000 * len(iv) / sum(iv)), '%.1f' % (1000 / q[int(len(q) * .99)]),
+             '%.0f' % (sum(v > 25 for v in iv) * 60000 / sum(iv)))
+    else:
+        x = full[-1]
     return [row(log, scen, 'fps', [float(x[2])], 'lab-run'), row(log, scen, 'fps_1pc_low', [float(x[3])], 'lab-run'),
             row(log, scen, 'over25ms_per_min', [float(x[4])], 'lab-run')]
 
