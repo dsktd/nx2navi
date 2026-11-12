@@ -1,0 +1,128 @@
+From e1fbd678dd638faeb19ec4d324d33ec1b610ada1 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 22:07:08 -0500
+Subject: [PATCH] vk_memory: NX2NAVI_SHADOW_WB_REARM (default 1) takes the
+ write watch's bits of a shadow write-back's own stores, so the next copy-in
+ does not merge the GPU's bytes back into the shadow they came from; only
+ pages the CPU wrote (seen before the stores, or differing from the shadow
+ after) are stamped
+
+---
+ runtime/vk_memory.c | 69 ++++++++++++++++++++++++++++++++++++++++++---
+ 1 file changed, 65 insertions(+), 4 deletions(-)
+
+diff --git a/runtime/vk_memory.c b/runtime/vk_memory.c
+index 8d2362f..e4eb358 100644
+--- a/runtime/vk_memory.c
++++ b/runtime/vk_memory.c
+@@ -1588,6 +1588,36 @@ static int shadow_bulk_write(void) {
+     return on;
+ }
+ 
++// NX2NAVI_SHADOW_WB_REARM (default 1; 0 = off): a write-back's own stores (and the bulk clear above) leave its pages
++// written to the write watch, so the next snapshot stamped them in the CPU-side tables and the next copy-in merged the
++// GPU's bytes back into the shadow they came from: GPU-driven buffers (the foliage's indirect chains) went down and came
++// back up every guest submission, 13.3 GB copied in over frames 600-1800 in Kakariko Graveyard (rebase-upstream play22,
++// translator 53afad07, 2026-11-11). With it the write-back takes the watch's bits of its range afterwards (a resetting
++// query) and stamps only the pages the CPU wrote: those the watch reported before the stores, and those whose guest
++// page differs from the shadow after them (a CPU write between the stores and the query). A CPU write after the query
++// sets its bit again. The texture tables keep the stamps of the write-back's caller (gpu_written, swb_run).
++static int shadow_wb_rearm(void) {
++    static int on = -1;
++    if (on < 0) {
++        on = rt_knob("SHADOW_WB_REARM", "1") == 1;
++        rt_log("mem: shadow write-backs %s (NX2NAVI_SHADOW_WB_REARM)",
++               on ? "take the write watch's bits of their own stores, so the next copy-in skips those pages"
++                  : "leave their stores to the write watch, and the next copy-in takes those pages again");
++    }
++    return on;
++}
++static uint64_t s_rearm_pages, s_rearm_kept;   // shadow_lock: pages whose bits a write-back took, of them stamped
++
++static int page_listed(const uint64_t *p, uint64_t n, uint64_t pg) {   // p ascending
++    uint64_t lo = 0, hi = n;
++    while (lo < hi) {
++        uint64_t m = (lo + hi) / 2;
++        if (p[m] < pg) lo = m + 1;
++        else hi = m;
++    }
++    return lo < n && p[lo] == pg;
++}
++
+ // NX2NAVI_SHADOW_CHECK: the CPU wrote guest page pg after the copy-in that sgen stands for: a write-watch snapshot
+ // stamped it later, or its write-watch bit is set and no snapshot has read it yet. A write-back that moves bytes into
+ // such a page may have come after a CPU write it should have come before ("The game must not get ahead of the
+@@ -1612,7 +1642,7 @@ static int cpu_wrote_since(uint64_t pg, uint32_t sgen) {
+ // Any other such page goes whole as before: a write nothing noted, into a shadow that holds it.
+ static uint64_t shadow_write_back(uint64_t addr, uint64_t size) {
+     uint64_t moved = 0;
+-    int bulk = shadow_bulk_write();   // before the locks: its first call logs
++    int bulk = shadow_bulk_write(), rearm = shadow_wb_rearm();   // before the locks: their first calls log
+     uint64_t value = vk_sync_cb_value();   // the fence being completed; a call from elsewhere reports submitted work
+     if (!value) value = vk_sync_issued();
+     plat_mutex_lock_shared(&pool_lock);
+@@ -1624,6 +1654,21 @@ static uint64_t shadow_write_back(uint64_t addr, uint64_t size) {
+         RT_ZONE(zw, "write-back");
+         RT_ZONE_VALUE(zw, size);
+         uint64_t t0 = qpc();
++        // NX2NAVI_SHADOW_WB_REARM: the pages the CPU wrote before the stores, read before they (and the bulk clear)
++        // mark the whole range. Untracked or more than the list holds: the watch keeps its bits as without the switch.
++        static uint64_t *pre, *post;   // completion thread (shadow_lock)
++        static uint64_t cpre;
++        uint64_t plo = addr & ~(SB_PAGE - 1), phi = (addr + size + SB_PAGE - 1) & ~(SB_PAGE - 1);
++        uint64_t npg = (phi - plo) / SB_PAGE, npre = UINT64_MAX;
++        if (rearm) {
++            if (npg > cpre) {
++                free(pre), free(post);
++                pre = malloc(npg * sizeof *pre), post = malloc(npg * sizeof *post);
++                if (!pre || !post) rt_fatal("vk: out of memory for the shadow write-back's page lists");
++                cpre = npg;
++            }
++            npre = mem_written_peek(plo, phi - plo, pre, npg);
++        }
+         mem_thaw(addr, size);
+         if (bulk) plat_mem_prepare_write(addr, size);
+         for (uint64_t a = addr, end = addr + size; a < end;) {
+@@ -1638,6 +1683,22 @@ static uint64_t shadow_write_back(uint64_t addr, uint64_t size) {
+             if (late && n) s_late_pages++, s_late_bytes += n;
+             a = pe;
+         }
++        if (npre != UINT64_MAX && npre < npg) {   // the watch's bits of the range; the CPU's pages stamped again
++            uint64_t n = mem_written_pages(plo, phi - plo, post, npg), kept = 0;
++            if (n != UINT64_MAX && n) {
++                plat_mutex_lock(&gen_lock);
++                uint32_t g = ++gen_now;
++                for (uint64_t i = 0; i < n; i++) {
++                    uint64_t pg = post[i];
++                    int whole = pg >= r->import_lo && pg + SB_PAGE <= r->import_hi;
++                    if (!whole || page_listed(pre, npre, pg) ||
++                        memcmp((const void *)(uintptr_t)pg, r->smap + (pg - r->import_lo), SB_PAGE))
++                        stamp_page(pg, g), kept++;
++                }
++                plat_mutex_unlock(&gen_lock);
++                s_rearm_pages += n, s_rearm_kept += kept;
++            }
++        }
+         s_wb_bytes += moved, s_wb_seen += size, s_wb_ticks += qpc() - t0;
+         RT_ZONE_END(zw);
+     }
+@@ -1814,13 +1875,13 @@ static void shadow_log(uint64_t frame) {
+     rt_log("mem: shadow at frame %llu: %lld pools %.1f MiB; since the last: %llu pool syncs, %llu queries, %.1f MiB "
+            "copied in (%llu untracked), %.2f ms (queries %.2f); %.1f MiB written back of %.1f MiB the GPU may have written, %.2f ms; %llu "
+            "pages the GPU writes keep a base copy; %llu pages not written back, their pool was made again or the CPU "
+-           "wrote them since",
++           "wrote them since; %llu written-back pages' watch bits taken, %llu of them stamped as the CPU's",
+            (unsigned long long)frame, (long long)s_live_n, s_live_bytes / 1048576.0, (unsigned long long)s_syncs,
+            (unsigned long long)s_queries, s_copied / 1048576.0, (unsigned long long)s_untracked, qpc_ms(s_ticks),
+            qpc_ms(s_q_ticks), s_wb_bytes / 1048576.0, s_wb_seen / 1048576.0, qpc_ms(s_wb_ticks), (unsigned long long)s_sb_pages,
+-           (unsigned long long)s_stale_pages);
++           (unsigned long long)s_stale_pages, (unsigned long long)s_rearm_pages, (unsigned long long)s_rearm_kept);
+     s_syncs = s_queries = s_copied = s_untracked = s_wb_bytes = s_ticks = s_wb_seen = s_wb_ticks = s_q_ticks = 0;
+-    s_stale_pages = 0;
++    s_stale_pages = s_rearm_pages = s_rearm_kept = 0;
+     if (s_learn || s_check) shadow_table_log(frame);
+     plat_mutex_unlock(&shadow_lock);
+     if (s_check) plat_mutex_unlock_shared(&pool_lock);
+-- 
+2.56.0
+
