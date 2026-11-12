@@ -163,7 +163,7 @@ Field, HDR10 native through niri-spicy, 240 Hz panel. Since the 2026-11-08 morni
   spot (frame 1700) passes.
 - Debug and play features: shader hot-reload and on-request shots (0003), dump.req (0011), mark this moment (0015,
   F9 / L3+R3), draw lists in dumps (0017), Steam Input pad preferred (0014), projection unjitter (0012).
-- Defaults: `NX2NAVI_PIPE_SKIP=any`, `NX2NAVI_HDR=native`, `REPLAY_ASYNC=1`, `VK_RECORDER=1`, `TEX_RELEASED_MIB=3072`.
+- Defaults: `NX2NAVI_PIPE_SKIP=any`, `REPLAY_ASYNC=1`, `VK_RECORDER=1`, `TEX_RELEASED_MIB=3072`.
 - AO (#146): the occlusion trails one frame behind what moves (it runs before the frame's depth pass). `NX2NAVI_AO_ORDER=1`
   (patch 0046, off until Cal has played with it) runs it again after its event; `NX2NAVI_AO=0` (0045) turns it off.
   Event waits v3 (0016) stays off: it darkens the picture (castle slot, lab).
