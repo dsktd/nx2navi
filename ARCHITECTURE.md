@@ -268,7 +268,10 @@ are dropped because upstream now does the same natively:
   each 2 MiB region once). Our 0001/0004/0008/0010/0025/0044/0054 (page compare, spend list, diff threads,
   `SHADOW_NT`/`_GAP_KIB`/`_REWRITE`) are gone with the code they tuned.
 - Event order across queues is native (`3aa8ff5`, vk_exec.c "event order across the game's queues"): a submission
-  stops at a wait reached before its signal. `EVENT_WAITS` (0013/0016) and `AO_ORDER` (0046) are obsolete.
+  stops at a wait reached before its signal. `EVENT_WAITS` (0013/0016) and `AO_ORDER` (0046) are obsolete only with the replay on the
+  submitting thread: `evo_enabled()` turns event order off under `NX2NAVI_REPLAY_ASYNC=1` (the justfile default), so
+  play22+ replay worker-queue waits in submission order again (AO and character lighting read last frame: flicker,
+  dump f17378 play24 e1fbd67). `AO_ORDER` no longer exists in the code (dead knob in run scripts).
 - The finish wait is upstream's `exec_wait` (`9728424`): it ends at the GPU's passes, not the write-backs
   (`NX2NAVI_WB_SPLIT=0` gives the fence wait). `GPU_WAIT` (0024) and `FINISH_DEFER` (0036) are obsolete.
 - Texture memory: `NX2NAVI_TEX_RELEASED_MB` (`29d8451`) is our `TEX_RELEASED_MIB` renamed; `NX2NAVI_VMA_BLOCK_MB`
