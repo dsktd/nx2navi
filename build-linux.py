@@ -110,6 +110,8 @@ HERE = Path(__file__).resolve().parent
 # Our Linux additions (runtime-linux/), compiled beside upstream's runtime, and the per-file defines that wire them in
 # without editing the checkout: see runtime-linux/frames.c
 EXTRA_SOURCES = [HERE / 'runtime-linux' / 'frames.c']
+# The Linux sampling profiler (NX2NAVI_PROFILE), for checkouts whose perf.c has the weak prof_sampler_* hooks
+PROF_SOURCE = HERE / 'runtime-linux' / 'prof_linux.c'
 PER_FILE_DEFINES = {
     'platform/linux.c': '-Dplat_frame_capture=plat_frame_capture_stub -Dplat_fiber_new=plat_fiber_new_upstream',
     'guest_setjmp.c': '-Dplat_frame_capture=nx_frame_capture -Dlongjmp=nx_frame_resume',
@@ -217,6 +219,8 @@ def write_ninja(src, out, lift, gen, cpu, exe='nx2navi', tracy=None, rt_obj=None
     native = 'not on Linux yet' not in (runtime / 'platform' / 'linux.c').read_text(errors='replace')
     defines = {} if native else PER_FILE_DEFINES
     sources = runtime_sources(runtime) + [gen / 'modules.c'] + ([] if native else EXTRA_SOURCES)
+    if 'weak)) void prof_sampler_frame' in (runtime / 'perf.c').read_text(errors='replace'):
+        sources.append(PROF_SOURCE)
     for s in sources:
         rel = s.relative_to(runtime) if s.is_relative_to(runtime) else Path(s.name)
         o = out / 'obj' / rt_obj / rel.with_suffix('.o')

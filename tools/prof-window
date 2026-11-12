@@ -1,0 +1,145 @@
+#!/usr/bin/env python3
+"""prof-window <profile> <exe> [--frames a-b] [--thread NAME|TID] [--top N] [--per-frame] [--tree DEPTH]
+
+Report for a runtime-linux/prof_linux.c profile (NX2NAVI_PROFILE=<path>, wall-clock samples with weights): the time
+per function, inclusive (the function anywhere in the chain, once per sample) and self (the sampled Rip), for the
+samples between the presents a-1 and b (so "--frames 774-774" is the interval that ended in present 774).
+--per-frame prints one line per present of the range with its top inclusive functions; --tree prints the call tree
+from the thread's root down to DEPTH levels (children over 2% of the range).
+Symbols: `nm -n` of the exe for its own code (static functions too; <exe> may be that output saved as *.nm),
+`nm -D -n` for shared objects.
+"""
+import argparse
+import bisect
+import collections
+import subprocess
+import sys
+
+
+def nm(path, dyn):
+    """Code symbols of path, sorted; a file named *.nm is `nm -n` output made earlier. nm comes from nixpkgs if absent."""
+    if path.endswith('.nm'):
+        out = open(path, errors='replace').read()
+    else:
+        cmd = ['nm', '-n', '--defined-only'] + (['-D'] if dyn else []) + [path]
+        try:
+            out = subprocess.run(cmd, capture_output=True, text=True).stdout
+        except OSError:
+            out = subprocess.run(['nix', 'shell', 'nixpkgs#binutils', '-c'] + cmd, capture_output=True, text=True).stdout
+    a, n = [], []
+    for line in out.splitlines():
+        p = line.split()
+        if len(p) == 3 and p[1] in 'tTwW':
+            a.append(int(p[0], 16)), n.append(p[2])
+    return a, n
+
+
+class Syms:
+    def __init__(self, modules, exe):
+        self.mods = sorted(modules)
+        self.los = [m[0] for m in self.mods]
+        self.exe = exe
+        self.tabs = {}
+        self.cache = {}
+
+    def name(self, rip, caller):
+        key = (rip, caller)
+        if key in self.cache:
+            return self.cache[key]
+        r = rip - 1 if caller else rip   # a return address belongs to the call before it
+        i = bisect.bisect_right(self.los, r) - 1
+        res = '?'
+        if i >= 0 and r < self.mods[i][1]:
+            lo, hi, off, path = self.mods[i]
+            base = path.rsplit('/', 1)[-1]
+            is_exe = base.startswith('nx2navi')
+            p = self.exe if is_exe else path
+            if p not in self.tabs:
+                self.tabs[p] = nm(p, not is_exe)
+            a, n = self.tabs[p]
+            # the exe is not PIE: its symbols are absolute; a shared object's are file-relative
+            v = r if is_exe else r - lo + off
+            j = bisect.bisect_right(a, v) - 1
+            res = n[j] if j >= 0 else '%s+%#x' % (base, v)
+            if not is_exe:
+                res = '%s:%s' % (base.split('.so')[0], res if j >= 0 and v - a[j] < 1 << 20 else '%#x' % v)
+        self.cache[key] = res
+        return res
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('profile'), ap.add_argument('exe')
+    ap.add_argument('--frames'), ap.add_argument('--thread', default='replay')
+    ap.add_argument('--top', type=int, default=40), ap.add_argument('--per-frame', action='store_true')
+    ap.add_argument('--tree', type=int, default=0)
+    o = ap.parse_args()
+    mods, threads, frames, samples = [], {}, [], []
+    for line in open(o.profile, errors='replace'):
+        p = line.split()
+        if not p:
+            continue
+        if p[0] == 'module':
+            mods.append((int(p[1], 16), int(p[2], 16), int(p[3], 16), p[4]))
+        elif p[0] == 'thread':
+            threads[int(p[1])] = ' '.join(p[2:])
+        elif p[0] == 'frame':
+            frames.append((int(p[1]), int(p[2])))
+        elif p[0] == 's':
+            samples.append((int(p[1]), int(p[2]), int(p[3]), [int(x, 16) for x in p[4:]]))
+    tids = [t for t, n in threads.items() if o.thread in n or str(t) == o.thread]
+    if not tids:
+        sys.exit('no thread matches %r; threads: %s' % (o.thread, threads))
+    tid = tids[0]
+    ft = dict(frames)
+    fl = sorted(ft)
+    a, b = (int(x) for x in o.frames.split('-')) if o.frames else (fl[0] + 1, fl[-1])
+    t0, t1 = ft.get(a - 1, frames[0][1]), ft[b]
+    sy = Syms(mods, o.exe)
+    ends = [ft[f] for f in fl]
+
+    def chain(rips):
+        return [sy.name(r, k > 0) for k, r in enumerate(rips)]
+
+    incl, self_, per, tree = collections.Counter(), collections.Counter(), collections.defaultdict(collections.Counter), {}
+    total = 0
+    for t, ts, w, rips in samples:
+        if t != tid or ts <= t0 or ts - w >= t1 or not rips:
+            continue
+        w = min(ts, t1) - max(ts - w, t0)   # the part of the weight inside the range
+        total += w
+        names = chain(rips)
+        self_[names[0]] += w
+        for n in set(names):
+            incl[n] += w
+        f = fl[min(bisect.bisect_left(ends, ts), len(fl) - 1)]
+        for n in set(names):
+            per[f][n] += w
+        node = tree
+        for n in reversed(names):
+            node = node.setdefault(n, [0, {}])
+            node[0] += w
+            node = node[1]
+    print('thread %d %s, presents %d-%d: %.1f ms of samples in %.1f ms' % (tid, threads[tid], a, b, total / 1e6, (t1 - t0) / 1e6))
+    print('inclusive ms   function')
+    for n, w in incl.most_common(o.top):
+        print('%10.1f %5.1f%%  %s' % (w / 1e6, 100 * w / max(total, 1), n))
+    print('self ms        function')
+    for n, w in self_.most_common(o.top):
+        print('%10.1f %5.1f%%  %s' % (w / 1e6, 100 * w / max(total, 1), n))
+    if o.per_frame:
+        for f in fl:
+            if a <= f <= b:
+                print('present %d: %s' % (f, ', '.join('%s %.0f' % (n, w / 1e6) for n, w in per[f].most_common(14))))
+    if o.tree:
+        def walk(node, depth):
+            for n, (w, kids) in sorted(node.items(), key=lambda kv: -kv[1][0]):
+                if w < total * 0.02 or depth >= o.tree:
+                    continue
+                print('%s%.1f ms %s' % ('  ' * depth, w / 1e6, n))
+                walk(kids, depth + 1)
+        walk(tree, 0)
+
+
+if __name__ == '__main__':
+    main()
