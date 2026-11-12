@@ -1,4 +1,4 @@
-From d4d2f03d2a1c648a5038b127dc77228436eda71f Mon Sep 17 00:00:00 2001
+From 6a7985c4d28145cc1cb4b65847da0a73e7224b08 Mon Sep 17 00:00:00 2001
 From: desocketed <desocketed@users.noreply.github.com>
 Date: Wed, 11 Nov 2026 18:58:17 -0500
 Subject: [PATCH] capture: NX2NAVI_CAPTURE=<present> or NX2NAVI_CAPTURE_REQ=1
@@ -11,16 +11,16 @@ Subject: [PATCH] capture: NX2NAVI_CAPTURE=<present> or NX2NAVI_CAPTURE_REQ=1
  picture
 
 ---
- runtime/host.h       |   1 +
- runtime/main.c       |   7 +-
- runtime/vk.h         |  17 +
- runtime/vk_backend.c |  22 +-
- runtime/vk_capture.c | 999 +++++++++++++++++++++++++++++++++++++++++++
- runtime/vk_exec.c    |  32 ++
- runtime/vk_exec.h    |   3 +
- runtime/vk_memory.c  |  36 ++
- runtime/vk_texture.c |  19 +
- 9 files changed, 1132 insertions(+), 4 deletions(-)
+ runtime/host.h       |    1 +
+ runtime/main.c       |    7 +-
+ runtime/vk.h         |   17 +
+ runtime/vk_backend.c |   22 +-
+ runtime/vk_capture.c | 1020 ++++++++++++++++++++++++++++++++++++++++++
+ runtime/vk_exec.c    |   32 ++
+ runtime/vk_exec.h    |    3 +
+ runtime/vk_memory.c  |   36 ++
+ runtime/vk_texture.c |   19 +
+ 9 files changed, 1153 insertions(+), 4 deletions(-)
  create mode 100644 runtime/vk_capture.c
 
 diff --git a/runtime/host.h b/runtime/host.h
@@ -160,10 +160,10 @@ index 985123c..9d37168 100644
          vk_texture_release(t);
 diff --git a/runtime/vk_capture.c b/runtime/vk_capture.c
 new file mode 100644
-index 0000000..2574643
+index 0000000..f512fc6
 --- /dev/null
 +++ b/runtime/vk_capture.c
-@@ -0,0 +1,999 @@
+@@ -0,0 +1,1020 @@
 +// Frame capture and standalone replay of the Vulkan back end. RenderDoc captures the host's Vulkan calls and needs its
 +// layer in the process (rdoc.c); this works one level up, at the back end's interface (gfx.h GfxBackend): what the
 +// NVN front end handed the replay for one frame, and the state that frame starts from. `nx2navi --replay <dir>` runs
@@ -823,7 +823,8 @@ index 0000000..2574643
 +typedef struct { Range *r; int n; int all; } Ranges;
 +static Ranges r_skip, r_only, r_per;
 +static uint64_t draw_no, n_skipped;
-+static int rec0;   // VkExec.recorded before the draw: what it recorded goes to draws.txt
++static int rec0;
++static const VkTexImage *last_target;   // colour target 0 of the last draw recorded   // VkExec.recorded before the draw: what it recorded goes to draws.txt
 +static FILE *draws_f;
 +
 +static Ranges ranges_of(const char *name) {
@@ -872,17 +873,32 @@ index 0000000..2574643
 +        char a[17] = "-", b[17] = "-";
 +        if (vs && op != OP_DISPATCH && op != OP_DISPATCH_IND) gfx_shader_name(vs, a);
 +        if (fs && op != OP_DISPATCH && op != OP_DISPATCH_IND) gfx_shader_name(fs, b);
-+        fprintf(draws_f, "%llu %s vs %s fs %s pass %u recorded %d target %p %#llx %ux%u\n", (unsigned long long)draw_no,
++        fprintf(draws_f, "%llu %s vs %s fs %s pass %u recorded %d target %p %#llx %ux%u chmask %#x discard %d dis %d vp %d %.0f,%.0f %.0fx%.0f sc %d %d,%d %dx%d\n", (unsigned long long)draw_no,
 +                nvn_op_name((uint32_t)op), a, b, ex->pass_serial, ex->recorded - rec0, (void *)ex->color[0].image,
-+                ex->color[0].img ? (unsigned long long)ex->color[0].img->addr : 0ull, ex->pass_w, ex->pass_h);
++                ex->color[0].img ? (unsigned long long)ex->color[0].img->addr : 0ull, ex->pass_w, ex->pass_h, ex->pipe.chmask.mask, ex->pipe.raster_discard, ex->render_disabled, ex->has_vp, ex->vp[0][0], ex->vp[0][1], ex->vp[0][2], ex->vp[0][3], ex->has_scissor, ex->scissor.x, ex->scissor.y, ex->scissor.w, ex->scissor.h);
 +    }
++    if (ex->color[0].img) last_target = ex->color[0].img;
 +    if (in_ranges(&r_per, draw_no)) vk_exec_barrier(ex);   // the pass ends: a dump copies its targets now
 +    draw_no++;
 +    return 0;
 +}
 +
++// memory.c's view first: the heap grown over it, alias pages mapped, so mem_readable (texture uploads) says yes.
++static void guest_state(uint64_t a, uint64_t n) {
++    static uint64_t heap;
++    const RtGuestLayout *L = mem_layout();
++    if (a >= L->heap.base && a + n <= L->heap.base + L->heap.size) {
++        uint64_t want = (a + n - L->heap.base + 0x1fffff) & ~0x1fffffull;
++        if (want > heap && mem_set_heap_size(want, NULL) == 0) heap = want;
++    } else if (a >= L->alias.base && a + n <= L->alias.base + L->alias.size) {
++        uint64_t lo = a & ~0xfffull, hi = (a + n + 0xfff) & ~0xfffull;
++        mem_map_physical(lo, hi - lo);   // already mapped pages: refused, harmless
++    }
++}
++
 +// [a, a+n) usable at the same address: inside mem_init's reservation it is committed, elsewhere mapped.
 +static void commit(uint64_t a, uint64_t n) {
++    guest_state(a, n);
 +    uint64_t lo = a & ~0xfffull, hi = (a + n + 0xfff) & ~0xfffull;
 +    if (plat_mem_commit(lo, hi - lo)) return;
 +    for (uint64_t p = lo; p < hi; p += 0x1000) {   // partly outside: page by page
@@ -1064,6 +1080,9 @@ index 0000000..2574643
 +        case CR_SSLOT: b->sampler_register((int)r.a, (const samp_par *)(const void *)p); break;
 +        case CR_IMAGE: {
 +            const CapImg *h = (const CapImg *)(const void *)p;
++            // An image in a physical pool aliases its memory (vk_texture.c entry_of, "bound"): the pool's bytes
++            // (CR_GPUMEM) are its content, and making it here first would change which entries alias what.
++            if (nvn_gpu_only(r.a) && !getenv("NX2NAVI_REPLAY_GPU_IMAGES")) break;
 +            const VkTexImage *img = vk_texture_get(&h->t);
 +            if (img && img->format == h->format && img->width == h->width && img->height == h->height &&
 +                img->levels == h->levels && img->layers == h->layers) {
@@ -1128,7 +1147,9 @@ index 0000000..2574643
 +            b->finish();
 +            vk_sync_finish();
 +            save_buf_ranges(dir, "after");
-+            const VkTexImage *img = vk_texture_get(&pr->t);
++            // The image the frame's last draw rendered, when it is the presented texture's: vk_texture_get would
++            // first upload a mirrored texture again from its storage, whose pages the replay wrote.
++            const VkTexImage *img = last_target && last_target->addr == (uintptr_t)pr->t.mem ? last_target : vk_texture_get(&pr->t);
 +            if (draws_f && img) fprintf(draws_f, "present %p %#llx %ux%u format %d\n", (void *)img->image, (unsigned long long)img->addr, img->width, img->height, img->format);
 +            uint64_t n = 0;
 +            got = img ? img_read(img, &n) : NULL;
