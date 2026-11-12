@@ -28,6 +28,7 @@ layer, actor spawns), add it to the format (new version, old ones stay readable)
 
 - **License.** Upstream's additions forbid redistribution. Changes to upstream code are private commits on `build`, copied to `patches/`. This repo's remote is the **private** `dsktd/nx2navi`. Never make it public, and never push `build`.
 - **Cal's game runs on the host,** so container `/proc` can't see it. Treat it as running while the newest `build/v111/logs/play-*.log` was written less than 2 minutes ago.
+  - **Resources (Cal, 2026-11-12: host hard-locked during heavy lab use; "keep working, just an overuse of resources").** `lab-run` holds the build lock for the whole GPU run and rests 20 s between runs; builds take `flock /tmp/nx2navi-build.lock`, nice 19, at most 8 jobs (`-j8`), never beside a GPU run.
   - **One GPU job at a time.** Every GPU use (replays, RenderDoc replays, captures) takes the lab lock `/tmp/nx2navi-lab.lock`; two at once exhausted VRAM and lost the device (2026-11-09). `lab-run` also waits for 10 GiB free VRAM.
   - **Software runs may overlap Cal's play; GPU runs may not.** `LAB_SOFT=1 tools/lab-run ...` renders on Mesa lavapipe (llvmpipe), only lavapipe's ICD visible, pinned to cores 12-15,28-31, about 6 fps at render scale 50: good for start checks (no FATAL) and a shot, not for perf numbers or GPU-specific bugs (lavapipe's subgroup size is 8, not 32).
   - **No `lab-run` replays while he plays.** A GPU fault in a replay resets the GPU and crashes his game; `lab-run` refuses in that case.

@@ -29,6 +29,12 @@ OUT=$ROOT/.lab/$label; log=$OUT/run.log
 soft=${LAB_SOFT:-}
 [ $dry = 1 ] || [ -n "$soft" ] || {
 exec 9>/tmp/nx2navi-lab.lock; flock -w ${LAB_LOCK_WAIT:-3600} 9 || { echo "lab-run: lock busy" >&2; exit 3; }
+# No build beside a GPU run (2026-11-12: a build on all cores during back-to-back GPU runs, then the host
+# hard-locked): hold the build lock too for the whole run, and rest LAB_COOLDOWN s (default 20) after the
+# previous GPU run ended so runs never go back to back
+exec 8>/tmp/nx2navi-build.lock; flock -w ${LAB_LOCK_WAIT:-3600} 8 || { echo "lab-run: build running" >&2; exit 3; }
+last=/tmp/nx2navi-lab.last; [ -f $last ] && { rest=$(( $(stat -c %Y $last) + ${LAB_COOLDOWN:-20} - $(date +%s) )); [ $rest -gt 0 ] && sleep $rest; }
+trap 'touch $last' EXIT
 # VRAM guard (2026-11-09: two GPU jobs at once exhausted the 16 GiB card, amdgpu "Not enough memory for command
 # submission", device lost): wait until the card has room for a replay (LAB_VRAM_MIB free, default 10240)
 vram=$(ls /sys/class/drm/card*/device/mem_info_vram_used 2>/dev/null | head -1)
