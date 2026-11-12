@@ -25,7 +25,11 @@ while [ $i -lt $reps ] && [ $tries -lt $((reps * 2)) ]; do
     NX2NAVI_AB=${AB_S:-5} $knob=ab "$@" > $R/.lab/$name.out 2>&1)
   # a boot that the SDK aborts (svc 0x26 Break before the title, seen 4 of 5 on 2026-11-12) is retried
   if grep -q "the SDK aborted" $R/.lab/$name/run.log; then echo "$name boot abort, retry" >&2; i=$((i - 1)); continue; fi
-  python3 -I $R/NX2navi/tools/ab_summary.py $R/.lab/$name/run.log --skip ${SKIP:-40} | sed "s/^/$name /"
+  # the perf windows up to the dump frame only: the dump's own window (~280 ms a frame) lands on one side and read as
+  # a 13 ms B-A interval with a null knob (2026-11-12)
+  awk -v f=${FRAME:-5400} 'match($0, /perf: frame [0-9]+:/) { n = substr($0, RSTART + 12, RLENGTH - 13) + 0; if (n >= f) next } { print }' \
+    $R/.lab/$name/run.log > $R/.lab/$name/run-ab.log
+  python3 -I $R/NX2navi/tools/ab_summary.py $R/.lab/$name/run-ab.log --skip ${SKIP:-40} | sed "s/^/$name /"
 done | tee $R/.lab/ab-$tag-$sc.txt
 python3 - $R/.lab/ab-$tag-$sc.txt <<'P'
 import re, sys, statistics as st
