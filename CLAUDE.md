@@ -14,8 +14,8 @@ Shared lab board `~/claude/nx2navi/.lab/BOARD.md` (scratch, not committed): read
 - `build/v111/` holds the game binary, the shader and pipeline caches, `profile/` with Cal's saves, and `logs/` with `play-*.log` and `input-*.txt` recordings.
 - `flake.nix`, `justfile`, `build-linux.py` and `runtime-linux/` are our build glue. We edit these freely.
 - `patches/NNNN-*.patch` are copies of the private commits on `build`, each with a README entry.
-- `tools/` holds the lab tooling: `lab-run` replays, `reload-feed`, and the obsolete NaN stopgaps (see README "Obsolete stopgaps").
-- `NX2navi/tools/` is upstream's tooling. Reach for it before writing new scripts (Cal, 2026-11-11): profiling `perf_summary.py`, `prof_report.py`, `crit_path.py`, `flight_view.py`, `spin_waits.py`, `ab_summary.py`, `pgo.py`; shaders `shader_census.py`, `shader_list.py`, `xlate_smoke.py`, `check_isa.py`; game data `extract.py`, `romfs_index.py`, `make_romfs_patches.py` (zstd dictionaries), `exefs_patches.py`, `cheats.py`. Say in reports which ones you used.
+- `tools/` holds the lab tooling: `lab-run` replays, `logstat` (`just logstat A [B]`: per-build log summary and A/B diff), `reload-feed`, and the obsolete NaN stopgaps (see README "Obsolete stopgaps").
+- `NX2navi/tools/` is upstream's tooling. Reach for it before writing new scripts (Cal, 2026-11-11): profiling `perf_summary.py`, `prof_report.py`, `crit_path.py`, `flight_view.py`, `spin_waits.py`, `ab_summary.py`, `pgo.py`; shaders `shader_census.py`, `shader_list.py`, `xlate_smoke.py`, `check_isa.py`; game data `extract.py`, `romfs_index.py`, `make_romfs_patches.py` (zstd dictionaries), `exefs_patches.py`, `cheats.py`. Recipes: `just perf-summary|ab|crit|flight` (knobs in ARCHITECTURE.md section 11 "Tools"). Say in reports which ones you used.
 
 ## Hard rules
 

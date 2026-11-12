@@ -5,7 +5,7 @@ description: Troubleshoot NX2navi (Zelda OoT Switch 2 recompilation) rendering b
 
 # NX2navi rendering and shader debugging
 
-Tooling lives in `~/claude/nx2navi` (tools/, patches/, justfile). The full log of the first investigation is
+Tooling lives in `~/claude/nx2navi` (tools/, patches/, justfile; problem -> tool table in ARCHITECTURE.md section 11 "Tools"; `NX2NAVI_FLIGHT=1` + `just flight` for pictures of a spike). The full log of the first investigation is
 `NOTES-fog-nan.md`: read it before repeating anything. How the pieces fit: `ARCHITECTURE.md` section 7 (shaders,
 lowering bugs, invalid SPIR-V, window origin), section 6 "Texture cache" (wrong or missing textures), section 11
 (dump options, picks, lavapipe runs). Game dir: `NX2navi/build/v111` (logs/, shader-cache/, dump-*).

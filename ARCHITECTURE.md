@@ -196,7 +196,7 @@ Bindless slots (`TexSlot`, 16 kinds x 32768) hold the game's NVN descriptors. An
 - **VRAM knobs and what they cost.** VMA keeps part-empty 256 MiB blocks (`NX2NAVI_VMA_BLOCK_MIB`, 0077), so driver usage does not fall when allocations are freed; on RADV plain images share those blocks.
   - `TEX_RT_DEDICATED_MIB` (0052, default 4): render targets of that size and up get their own memory, so freeing them frees VRAM.
   - `TEX_RT_TRIM` (0052/0065, default 95, 85 in `try-vram`): drop released RTs above that share of the budget. The game takes many RTs straight back, so a trim is judged 32 submits later and backs off (`_COOLDOWN`, `_AGE` 240, `_PER_MIN` 6). Without the backoff it churned 14 GB/min with no gain.
-  - `TEX_RT_RECYCLE` (0075/0078, code default 0; `just try-vram` sets 1): a new RT takes the image and memory of an idle released RT of the same description instead of allocating. This is the perf lever under streaming: off, released-RT churn (count sweep destroyed 34 GiB in 46k frames) costs about 30 fps in Hyrule; on, lab card use 84-94% vs 91-99%, worst frame 27 vs 98 ms. Risk: content lost when the game takes a recycled RT back (lighting flicker with camera/time of day, play11); 0078 skips taken-back and remade keys. With 0078, a full 46k-frame Hyrule replay (l12rt) ran clean: card 13758 of 14934 MiB at f45000 vs 14360 of 15330 on play11 (l11hold), released own memory 271 vs 1436 MiB.
+  - `TEX_RT_RECYCLE` (0075/0078, `build`/play13 only: gone on rebase-upstream, where upstream `TEX_REUSE` does this; code default 0; `just try-vram` sets 1): a new RT takes the image and memory of an idle released RT of the same description instead of allocating. This is the perf lever under streaming: off, released-RT churn (count sweep destroyed 34 GiB in 46k frames) costs about 30 fps in Hyrule; on, lab card use 84-94% vs 91-99%, worst frame 27 vs 98 ms. Risk: content lost when the game takes a recycled RT back (lighting flicker with camera/time of day, play11); 0078 skips taken-back and remade keys. With 0078, a full 46k-frame Hyrule replay (l12rt) ran clean: card 13758 of 14934 MiB at f45000 vs 14360 of 15330 on play11 (l11hold), released own memory 271 vs 1436 MiB.
   - `TEX_RELEASED_YIELD` (0039/0042): the released list gives memory back above a budget share; never fired on RADV with the card full because block slack hides the frees.
   - `TEX_LIVE_EVICT` (0072, default 85, `_IDLE` 3600 / 900 in `try-vram`, `_GUARD`): drops the longest-unbound mirrored, not GPU-written, live entries above the threshold; they return from storage on next bind. `TEX_LIVE_RT_IDLE` (0076) for live RTs: dropped 47 MiB in 46k frames, worse worst frame, not adopted. Live RTs are not idle.
   - The pressure valve `TEX_VRAM_PRESSURE` never drops RTs.
@@ -367,9 +367,9 @@ are dropped because upstream now does the same natively:
 Open problems mapped onto the architecture:
 
 - **#132 performance.** The game thread is the critical path (finish wait plus 17.8 ms unzoned). Then the completion thread's compares and the replay's shadow sync and pool refresh (section 5).
-- **#146 AO flicker.** Replay ordering: the replay ignores `nvnCommandBufferWaitEvent`, so AO reads last frame's half-res depth and trails one frame behind motion (identical while nothing moves). `NX2NAVI_AO_ORDER=1` (0046, `vk_exec.c` "ambient occlusion after its event") runs the occlusion again at the signal op; `NX2NAVI_AO=0` (0045) turns it off; 0013/0016 cut submissions and darken the picture.
+- **#146 AO flicker.** Replay ordering: the replay ignores `nvnCommandBufferWaitEvent`, so AO reads last frame's half-res depth and trails one frame behind motion (identical while nothing moves). On `build`/play13 `NX2NAVI_AO_ORDER=1` (0046) runs the occlusion again at the signal op; on rebase-upstream that knob is dead and upstream's event order plus 0090 `NX2NAVI_EVO_ASYNC` replace it (section 10); `NX2NAVI_AO=0` (0045) turns it off; 0013/0016 cut submissions and darken the picture.
 - **#141 crash guard.** Driver faults in RADV `spirv_to_nir` during pipeline builds (0031/0033), plus device losses possibly tied to VRAM pressure.
-- **#149/#169 missing or stretched terrain.** Texture cache stale rule on re-initialised height tiles (section 6, `TEX_STALE_LIVE`). LimitReached map refusals are the game's own evict-and-retry signal and benign; a bigger `APP_POOL` only grows the heap, `NX2NAVI_ALIAS_EXTRA_MIB` gives alias room.
+- **#149/#169 missing or stretched terrain.** Texture cache stale rule on re-initialised height tiles (section 6; `TEX_STALE_LIVE` on `build` only, fixed upstream by finalize-own-slots on rebase-upstream). LimitReached map refusals are the game's own evict-and-retry signal and benign; a bigger `APP_POOL` only grows the heap, `NX2NAVI_ALIAS_EXTRA_MIB` gives alias room.
 - **#160 VRAM growth / #173 streaming.** Section 6, texture cache.
 - **#172 seam.** Follow-another-descriptor (`TEX_DESC_STRICT`).
 - **#168 grass.** Grass uses direct mesh draws; indirect mesh records are zero and the readback is right; cause open.
@@ -390,7 +390,24 @@ Patches since 0051 (README has each entry): 0052/0065 RT dedicated + trim, 0053-
 - **Software runs.** `LAB_SOFT=1 tools/lab-run` renders on lavapipe (mesh shaders, float64, descriptor indexing all present), about 6 fps at render scale 50, no GPU opened, may overlap Cal's play. Not for perf or GPU-specific bugs: subgroup size is 8, not 32.
 - **Replays.** Only standing-still windows measure; recordings drift and late frames are not repeatable. Castle 1500 and graveyard gate repeat within RMSE 0.07 (broken pictures 0.24+). `scenarios/` + `just regress`.
 - **Game data.** MSBT text in 1.1.1 is UTF-8, "Link" is literal (no name tag); text mods via `tools/msgmod.py` / `itemtext.py` and `NX2NAVI_MODS_DIR` (`runtime/mods.c`). Switch 2 BNTX block-linear keeps Switch 1's GOB order but orders the 16-byte units inside a GOB x/32, y/4, x/16, y/2, y; BRTI +0x34 is log2 GOB rows (`tools/modelx.py`).
-- **Upstream tools.** Reach for `NX2navi/tools/` (perf_summary, crit_path, shader_census, ...) before writing new scripts.
+- **Upstream tools.** Reach for `NX2navi/tools/` before writing new scripts; see "Tools" below.
+
+### Tools: problem -> tool (2026-11-11)
+
+All upstream analysers are portable: `runtime/perf.c`, `runtime/flight.c` and `kernel.c` crit recording build on Linux (`build-linux.py` globs `runtime/*.c`, only `prof_win.c`'s sampler is Windows-only). They need their knob at run time; none of our runs set them yet. Python ones that import numpy/PIL run only inside the dev shell (`.venv`'s numpy needs the shell's libstdc++): use the just recipes.
+
+| Problem | Tool | Input / knob |
+|---|---|---|
+| A/B of two runs per build (fps, 1% low, >25/50/100 ms per minute, >25 ms causes, shadow sync per 600 frames, stall sites) | `just logstat A [B]` (`tools/logstat`, ours) | stock log lines: `build:`, `frametime: 60 s`, `mem: shadow at frame`, `stall:` |
+| Replay drift in A/B (#132/#173) | `NX2NAVI_AB=<s>` + a knob set to `ab`, then `just ab LOG` (`ab_summary.py`) | `runtime/perf.c` `rt_ab`/`rt_knob`, `host.h` `RT_KNOB_ON`: ABBA blocks of game time in ONE run, so the scene is the same for A and B. Needs `NX2NAVI_TRACE=perf`. Only knobs tested with `RT_KNOB_ON(mode)` per use switch live; ours (`SHADOW_NT`, `SHADOW_WB_REARM`, `vk_memory.c`) test `rt_knob(..) == 1` once, so `ab` reads as off: make new knobs `RT_KNOB_ON`. |
+| Per-60-frame render-thread blocking, gpu idle, sched states | `NX2NAVI_TRACE=perf,sched`, `just perf-summary LOG a b` | `perf: frame` lines (`perf.c` perf_present), `sched:` (`kernel.c`) |
+| Which thread/wait sets each frame's length (stalls, main waiting on replay) | `NX2NAVI_CRIT=a-b NX2NAVI_TRACE=sched`, `just crit crit.bin` (`crit_path.py`) | `kernel.c` crit_frame; walks wakes back from each present |
+| Spikes with pictures | `NX2NAVI_FLIGHT=1` (ring 600, dump on >100 ms, F8, `_AT`, `_EVERY`), `just flight build/flight/<dump>` | `flight.c`; contact sheet + outlier counts |
+| Shader translation offline | `shader_census.py --translate`, `xlate_smoke.py`, `check_isa.py`, `shader_list.py` | extracted RomFS; no GPU |
+| Spin-wait loops holding virtual cores | `spin_waits.py` | ExeFS; emits patch-table lines |
+| Guest PGO | `pgo.py` (llvm-mingw, Windows build path) | not usable on our Linux link as is |
+
+Upstream doc facts that bear on shadow sync (`docs/building.md` "Memory"): Linux uses shadow copies because re-protecting imported memory invalidates amdgpu's userptr BO on every submit (~1.3 ms per 16 MiB) and importing pins pages, which drops userfaultfd write protection; upstream measured ~1 ms/frame of copies in Kokiri (RTX 4090). The write watch is userfaultfd async WP + `PAGEMAP_SCAN` (`PAGE_IS_WRITTEN`, re-armed with `PM_SCAN_WP_MATCHING`, kernel >= 6.7; https://docs.kernel.org/admin-guide/mm/pagemap.html), cheaper than soft-dirty. A table-binding submission copies the written pages of every CPU-visible pool once (`vk_exec_draw.c` ssbo_info -> `vk_mem_shadow_sync`), which upstream's 1 ms figure excludes: that is our table-sync cost. `NX2NAVI_SHADOW_CHECK=1` logs copy-in overwrite counts and costs every 60 frames.
 
 ## 12. Glossary
 
