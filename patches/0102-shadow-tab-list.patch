@@ -1,0 +1,130 @@
+From 94910e27e7f53947ff9047847df2b5cf10b059df Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Thu, 12 Nov 2026 09:41:30 -0500
+Subject: [PATCH] vk_memory: NX2NAVI_SHADOW_TAB_LIST=1 (0: old; ab) has the
+ table sync visit a list of the regions stamped or untracked since the last
+ one, kept by stamp_page_as, instead of testing every region that holds a
+ table shadow
+
+---
+ runtime/cfg.c       |  2 +-
+ runtime/vk_memory.c | 49 ++++++++++++++++++++++++++++++++++++++++-----
+ 2 files changed, 45 insertions(+), 6 deletions(-)
+
+diff --git a/runtime/cfg.c b/runtime/cfg.c
+index dd04232..68a184f 100644
+--- a/runtime/cfg.c
++++ b/runtime/cfg.c
+@@ -76,7 +76,7 @@ static const char *const known[] = {
+     "ZSTD_CHECK", "ZSTD_NATIVE",
+     "BIND_REUSE", "DYN_DELTA", "STG_ARENA", "SUBMIT_BATCH", "ASTC_GPU_DESWIZZLE", "ASTC_SCRATCH_KEEP", "ASTC_ARENA", "ASTC_BC1",
+     "TEXUP_LOG_MS", "DYN_RES", "DYN_RES_TARGET", "DYN_RES_STEP", "TEXTURE_DETAIL",
+-    "RECORDER_CORE", "RECORDER_PRIO", "REPLAY_TIME", "LOCK_TIME", "POOL_CREATE_BUDGET", "POOL_CREATE_MS", "POOL_FINI_IDLE", "POOL_LOAD_BACKLOG", "POOL_LOAD_MS", "POOL_LOAD_STEP", "POOL_LOAD_FIT", "SHADOW_RECYCLE_MB", "SHADOW_TOUCH_LOCK",
++    "RECORDER_CORE", "RECORDER_PRIO", "REPLAY_TIME", "LOCK_TIME", "POOL_CREATE_BUDGET", "POOL_CREATE_MS", "POOL_FINI_IDLE", "POOL_LOAD_BACKLOG", "POOL_LOAD_MS", "POOL_LOAD_STEP", "POOL_LOAD_FIT", "SHADOW_RECYCLE_MB", "SHADOW_TOUCH_LOCK", "SHADOW_TAB_LIST",
+     "VMA_BLOCK_MB", "SYNC_WAKE_ALL", "LOG_ASYNC", "DEVICE_LOST_AT",
+     "COOP", "COOP_BETA", "COOP_NAME", "COOP_SERVER", "COOP_PORT", "COOP_ROOM", "COOP_AUTO", "COOP_DROP",   // co-op (coop.c); the last three have no menu row
+     "COOP_PROGRESS", "COOP_ITEMS", "COOP_SONGS", "COOP_QUEST", "COOP_KEYS", "COOP_RUPEES", "COOP_AMMO",   // the room's rules (coop_game.c)
+diff --git a/runtime/vk_memory.c b/runtime/vk_memory.c
+index e98ed6b..9753ced 100644
+--- a/runtime/vk_memory.c
++++ b/runtime/vk_memory.c
+@@ -910,10 +910,31 @@ static uint32_t *gen_slot(uint64_t page_addr, int create) { return slot_in(gen_c
+ 
+ // gen_lock held exclusively; g is the newest generation handed out. back: a mirror's write-back, which leaves the
+ // CPU-side tables alone.
++// NX2NAVI_SHADOW_TAB_LIST (default 0 = old; 1, or ab): the table sync visits the regions on tlist, the ones stamped or
++// left untracked since the last table sync, instead of testing every region that holds a table shadow (about 3,000
++// per sync outdoors, ~90 of them stamped: play35 70965ce, Hyrule west). Kept in both modes, under gen_lock; a region
++// is listed once per table sync (tlist_mark). Regions a shadow joins are listed too (tab_index).
++static uint32_t *tlist, *tlist_mark;   // gen_lock
++static int ntlist, ctlist;
++static uint32_t tlist_ep = 1;
++
++static void tlist_add(uint64_t k) {
++    if (k >= (RT_ADDRESS_LIMIT >> REG_SHIFT)) return;   // SNAP_REGIONS: SNAP_SHIFT == REG_SHIFT
++    if (!tlist_mark) {
++        tlist_mark = calloc(RT_ADDRESS_LIMIT >> REG_SHIFT, sizeof *tlist_mark);
++        if (!tlist_mark) rt_fatal("vk: out of memory for the table's region list");
++    }
++    if (tlist_mark[k] == tlist_ep) return;
++    tlist_mark[k] = tlist_ep;
++    if (ntlist == ctlist) grow((void **)&tlist, &ctlist, sizeof *tlist);
++    tlist[ntlist++] = (uint32_t)k;
++}
++
+ static void stamp_page_as(uint64_t a, uint32_t g, int back) {
+     uint32_t *s = gen_slot(a, 1);
+     if (!s) return;
+     *s = g;
++    if (reg_max[a >> REG_SHIFT] != g) tlist_add(a >> REG_SHIFT);
+     reg_max[a >> REG_SHIFT] = g;
+     reg_last[a >> REG_SHIFT] = ww_ep;
+     if (back) return;
+@@ -965,6 +986,7 @@ int vk_mem_changed(uint64_t addr, uint64_t size, uint32_t since, uint32_t *now)
+ // the next query over it (at the latest the next epoch's snapshot).
+ #define SNAP_SHIFT 21
+ #define SNAP_REGIONS (RT_ADDRESS_LIMIT >> SNAP_SHIFT)
++_Static_assert(SNAP_SHIFT == REG_SHIFT, "tlist_add indexes snapshot regions by REG_SHIFT");
+ static uint32_t snap_at[SNAP_REGIONS];      // epoch of the region's last snapshot; 0 never
+ static uint8_t snap_untracked[SNAP_REGIONS];
+ static uint64_t n_snap_checks, n_snap_calls, n_snap_untracked;
+@@ -995,6 +1017,7 @@ static uint64_t snap_regions(uint64_t r0, uint64_t r1, uint32_t epoch) {
+         calls++;
+         for (uint64_t j = r; j <= k; j++) {
+             snap_at[j] = epoch, snap_untracked[j] = (uint8_t)!tracked;
++            if (!tracked) tlist_add(j);
+             if (tracked && freeze_idle && ww_ep - reg_last[j] >= (uint32_t)freeze_idle &&
+                 ww_ep - reg_tried[j] >= (uint32_t)freeze_idle) {
+                 reg_tried[j] = ww_ep;
+@@ -1552,6 +1575,9 @@ static void tab_index(PoolRec *r, int add) {
+             if (e->n == e->c) grow((void **)&e->v, &e->c, sizeof *e->v);
+             e->v[e->n++] = r;
+             treg_gen[k] = 0;
++            plat_mutex_lock(&gen_lock);
++            tlist_add(k);
++            plat_mutex_unlock(&gen_lock);
+             if (!treg_i[k]) {
+                 if (ntregs == ctregs) grow((void **)&tregs, &ctregs, sizeof *tregs);
+                 tregs[ntregs++] = (uint32_t)k;
+@@ -2865,12 +2891,21 @@ void vk_mem_shadow_sync(uint64_t fence) {
+             else
+                 for (int i = 0; i < ntregs; i++) s_queries += snap_regions(tregs[i], tregs[i], epoch);
+             s_tab_regs += (uint64_t)ntregs;
+-            for (int i = 0; i < ntregs + nsfar; i++) {
+-                uint32_t k = i < ntregs ? tregs[i] : 0;
+-                int far = i >= ntregs;
++            static int list_mode = -1;
++            if (list_mode < 0) {
++                list_mode = rt_knob("SHADOW_TAB_LIST", "0");
++                rt_log("mem: the table's sync visits %s (NX2NAVI_SHADOW_TAB_LIST)",
++                       list_mode == 2 ? "A/B: the stamped list or every region" : list_mode ? "the regions stamped since the last one, from a list" : "every region with a table shadow");
++            }
++            int use_list = RT_KNOB_ON(list_mode) && treg_i && treg_gen;
++            int nl = use_list ? ntlist : ntregs;   // what the visit stamps is not visited again (as before)
++            for (int i = 0; i < nl + nsfar; i++) {
++                uint32_t k = i < nl ? (use_list ? tlist[i] : tregs[i]) : 0;
++                int far = i >= nl;
++                if (!far && use_list && !treg_i[k]) continue;   // no table shadow there
+                 if (!far && !snap_untracked[k] && mx[k] <= treg_gen[k]) continue;
+                 if (!far) s_tab_dregs++;
+-                PoolRec **v = far ? &sfar[i - ntregs] : rsh[k].v;
++                PoolRec **v = far ? &sfar[i - nl] : rsh[k].v;
+                 int n = far ? 1 : rsh[k].n;
+                 for (int j = 0; j < n; j++) {
+                     PoolRec *r = v[j];
+@@ -2883,7 +2918,11 @@ void vk_mem_shadow_sync(uint64_t fence) {
+                     shadow_sync_pool(r, epoch, cpu), s_syncs++, s_tab_slow++;
+                 }
+             }
+-            for (int i = 0; i < ntregs; i++) treg_gen[tregs[i]] = gen_now;
++            if (use_list)   // the others have no stamp since their last visit: treg_gen still covers them
++                for (int i = 0; i < ntlist; i++) treg_gen[tlist[i]] = gen_now;
++            else
++                for (int i = 0; i < ntregs; i++) treg_gen[tregs[i]] = gen_now;
++            ntlist = 0, tlist_ep++;
+         }
+         for (int i = 0; table && !tab_dirty && i < nstab; i++) {   // the shadows the replay did not resolve
+             PoolRec *r = stab[i];
+-- 
+2.56.0
+

@@ -547,6 +547,28 @@ Needs Python 3.14 with numpy, pillow, texture2ddecoder (a uv venv; numpy needs l
 Switch 2 BNTX: the BRTI field at +0x34 is log2 of GOB rows per block (0 means 1), and inside a GOB the 16-byte
 units are ordered x/32, y/4, x/16, y/2, y (msb to lsb), unlike Switch 1.
 
+## Sampling profiler and area-load cells (2026-11-12)
+
+`perf` cannot open events in the lab container, so every exe built from 2026-11-12 on carries a wall-clock stack sampler
+(`runtime-linux/prof_linux.c`, behind upstream's `prof_sampler_*` hooks; nothing runs unless asked):
+
+```sh
+tools/lab-run ... NX2NAVI_PROFILE=$PWD/.lab/p.txt NX2NAVI_PROFILE_FRAMES=640-860   # replay thread, presents 640..859
+nix shell nixpkgs#binutils -c nm -n --defined-only NX2navi/build/v111/nx2navi.play36 > .lab/play36.nm
+tools/prof-window .lab/p.txt .lab/play36.nm --frames 703-703 --tree 12             # one present's call tree, ms
+```
+
+Each sample carries the time since the thread's previous one, so a thread asleep or inside a long kernel call is
+accounted too (waits show as `plat_cond_wait`, driver allocations as `amdgpu_bo_alloc`). `NX2NAVI_PROFILE_MAIN=1`,
+`_RENDER=1` add those threads, `_CHAINS=1` every thread (guest threads' waits may return early on the signal: timing
+can change). Without `_FRAMES` the file is written at exit, which a lab-run kill skips.
+
+`tools/load-cell <exe> <tag> <reps> [KEY=VAL...]` measures area loads: one session, the save loaded in front of the
+Market, then upstream's live teleport (`NX2NAVI_DBG_TEST` `warp`) Graveyard <-> Hyrule Field west `<reps>` times, 15 s
+apart. `COLD=west|grave` is one boot with the save's own load only (the only form play13 can run: no `DBG_TEST`).
+`tools/load-stat [--table] .lab/lc-*/run.log` prints per load the longest gap between two pictures, the time lost
+beyond 60 fps, and upstream's held-picture line; `--table` gives mean and min..max per build and area.
+
 ## Profiling with Tracy
 
 Opt-in, patch 0023. `just game tracy=1` builds `build/v111/nx2navi.tracy` (`build-linux.py --tracy --exe nx2navi.tracy`:
@@ -774,10 +796,13 @@ for a build, 30 GB for an import.
 - `0096-shadow-tab-runs.patch` (commit d9c9e0a on `rebase-upstream`, knob `NX2NAVI_SHADOW_TAB_RUNS`, default 1, 0 = one query per region): the table sync snapped `tregs` (insertion order) one 2 MiB region per write-watch query; it now sorts them (only when the set changed) and queries each run of adjacent regions once. Build nx2navi.play32 via .lab/b32.sh (built from the working tree before the commit, so its build line names 131d0f0), runs/play32.sh.
 - `0097-rebase-0.9.0-xlate-count.patch` (branch `rebase2`, worktree `.lab/wt-rebase2`, exe `play33`, translator `xlate-play33` id e8d52df6): `rebase-upstream` through 0096 rebased onto upstream 0.9.0 (fbd4067, 64 new commits); conflicts resolved by hand in vk_exec_draw.c (pipe memo epoch into DrawCtx.PM, c0_binst into DrawCtx), vk_exec.c (EVO_ASYNC signal_seen moved into op_one), nvn_api_core.c, vk_texture.c, input.c, kernel.c, flight.c, gfx_present.c, cfg.c. The patch file is the one extra commit: build_xlate.py counts 41 translator patches (upstream's 0041 CAS limit beside our 0041 texel-fetch clamp). Runtime shaders need `tools/build_shaders.py --all` in a fresh worktree.
 - `0098-pool-load-fit.patch` (commit bcd6e8c on `rebase-upstream`, knob `NX2NAVI_POOL_LOAD_FIT`, default 0 = fixed `POOL_LOAD_STEP`): while the pool is loading, each refresh's creation count is sized to the time left of `NX2NAVI_POOL_LOAD_MS` at the measured cost per entry (16-4096). Use with a longer `NX2NAVI_POOL_LOAD_MS` (e.g. 250) so an area load finishes in fewer held frames. One getter added in vk_texture.c. Build nx2navi.play34 via .lab/b34.sh. Unmeasured.
+- `0099-shadow-presync.patch` (commit 3b34f8d on `rebase-upstream`, knob `NX2NAVI_SHADOW_PRESYNC`, default 0 = readers only; 1 or `ab`): the device address table's shadows are synced only by a guest submission that binds the table, and a load screen binds none, so the area's first frame copied everything the loader wrote: 561 ms of that frame's prologue entering Market (310 ms write-watch query of ~900,000 pages, 247 ms copying 3.5 GiB), main waiting in nvnQueueSubmitCommands. With the knob, the first prologue of a present syncs the table when the whole present before it had no reader and drew at most 256 draws (title, load, menu screens): ~5 ms a frame on the idle replay thread during a load. The shadow line adds `ahead of a reader: N syncs, ms, MiB`. In `nx2navi.play36` (`.lab/bsl.sh play36`).
+- `0101-pool-idle.patch` (commit 13b8b49 on `rebase-upstream`, knob `NX2NAVI_POOL_IDLE_MS`, default 0 = off; milliseconds a present, 8 measured): the texture pool refresh runs only when a draw binds the pools; title and load screens bind none while Ocarina registers the area's textures all through the load (~25 a frame, 4,869 before Market), so the area's first draw found all of them: upstream's area-load mode with its presents left out. With the knob, the first submission of a present whose previous present had no refresh looks the newly registered slots up (entry + upload, the streaming count at a time, until the ms are up; unmapped storage again when the mapping changes), ~2 ms a frame during a load; no descriptor is written and no present is held. In `nx2navi.play36`. Numbers: ARCHITECTURE.md section 8 "Scene entry".
 
 ### Consolidation of the justfile and runs/ (#177, 2026-11-12)
 
-- `0100-shadow-touch-lock.patch` (commit 70965ce on branch `shtouch` = bcd6e8c + this, worktree `.lab/wt-shtouch`, exe `play35`, knob `NX2NAVI_SHADOW_TOUCH_LOCK`, default 0 = old, 1 or `ab`): the touched-shadow list (vk_memory.c `shadow_touch`) gets its own `touch_lock`, taken inside `shadow_lock` by every reader (`vk_mem_shadow_sync`, `shadow_forget`, reset); the replay's resolves stop waiting on `shadow_lock` while the completion thread merges write-backs. Profile play34p west standing: 2.1 of 13.5 s replay-thread time was that wait.
+- `0100-shadow-touch-lock.patch` (commit 70965ce on branch `shtouch`; measured west x3: interval B-A -0.97..-2.26 ms, mean -1.67, null -0.04..-0.09; Graveyard is at the 60 fps cap, replay -0.34..-0.53 ms vs null -0.12..+0.33 = bcd6e8c + this, worktree `.lab/wt-shtouch`, exe `play35`, knob `NX2NAVI_SHADOW_TOUCH_LOCK`, default 0 = old, 1 or `ab`): the touched-shadow list (vk_memory.c `shadow_touch`) gets its own `touch_lock`, taken inside `shadow_lock` by every reader (`vk_mem_shadow_sync`, `shadow_forget`, reset); the replay's resolves stop waiting on `shadow_lock` while the completion thread merges write-backs. Profile play34p west standing: 2.1 of 13.5 s replay-thread time was that wait.
+- `0102-shadow-tab-list.patch` (commit 94910e2 on `shtouch` after 0100, exe `play37`, knob `NX2NAVI_SHADOW_TAB_LIST`, default 0 = old, 1 or `ab`): the table sync visits a list of regions stamped or untracked since the last one (kept in `stamp_page_as`/`snap_regions`/`tab_index`) instead of testing all ~3,000 table regions. Measured: no effect (tools/ab-cell west x3, TOUCH_LOCK=1 both sides: interval B-A -0.09 ms, spread -0.20..+0.05; null -0.02, -0.24..+0.20). Keep off.
 - `just run` (no name) = `runs/play.sh`: rebased build, exe `play32` (0001-0096 on `rebase-upstream`), rebase translator/caches, text mod. `just run play13` = fallback (pre-rebase). Both end in `just play-text` -> `just play`. Any `NX2NAVI_` variable overrides; `NX2NAVI_EXE=play33 just run` tries a newer exe.
 - Removed from the justfile: `try`, `try-i2f`, `try-tld`, `try-vram`, `try-name` (their settings are inlined in `runs/play13.sh`; `try-tld`'s TLD_CLAMP exe/translator needs `NX2NAVI_EXE=tld NX2NAVI_TLD_CLAMP=1 NX2NAVI_XLATE=.../xlate-tld/nx2navi_xlate` by hand). New: `play-text` (= old try-name's job). Kept: `play`, `record`, `replay`, `debug`, `text`, `items`, lab and logstat tools.
 - Dead on rebase and no longer set by the default entry: `AO_ORDER` (0090 EVO_ASYNC replaces it), `TEX_RT_RECYCLE`, `TEX_STALE_LIVE`, `TEX_RELEASED_LRU`, and `TEX_RT_TRIM`, `TEX_RT_TRIM_PER_MIN`, `TEX_LIVE_IDLE`, `TEX_RELEASED_YIELD`, `TEX_RELEASED_MIB` (no code left in `.lab/wt-rebase/runtime`).
