@@ -55,7 +55,7 @@ LINK_LIBS = ['-lvulkan', '-lSDL3', '-lopus', '-lvpx', '-ldav1d', '-lzstd', '-lat
              '-lpthread', '-ldl']
 MODULES = ('main', 'sdk', 'subsdk0')
 RUNTIME_PATTERNS = ('*.c', '*.cpp', 'platform/*.c', 'ui/*.cpp', 'third_party/imgui/*.cpp',
-                    'third_party/imgui/backends/*.cpp')
+                    'third_party/imgui/backends/*.cpp', 'third_party/monocypher/*.c')
 
 
 def other_os(name):
@@ -200,12 +200,17 @@ def write_ninja(src, out, lift, gen, cpu, exe='nx2navi', tracy=None, rt_obj=None
             o = guest_dir / mod / (f.stem + '.o')
             lines.append(f'build {npath(o)}: cc_gen {npath(f)}')
             objs.append(o)
-    sources = runtime_sources(runtime) + [gen / 'modules.c'] + EXTRA_SOURCES
+    # A checkout whose platform/linux.c has its own frame capture (upstream since 2026-11, the stub "not on Linux yet"
+    # gone, with its own PlatJmp and an aligned plat_fiber_entry) needs neither runtime-linux/frames.c nor its defines:
+    # frames.c's NxFrame would overrun that PlatJmp.
+    native = 'not on Linux yet' not in (runtime / 'platform' / 'linux.c').read_text(errors='replace')
+    defines = {} if native else PER_FILE_DEFINES
+    sources = runtime_sources(runtime) + [gen / 'modules.c'] + ([] if native else EXTRA_SOURCES)
     for s in sources:
         rel = s.relative_to(runtime) if s.is_relative_to(runtime) else Path(s.name)
         o = out / 'obj' / rt_obj / rel.with_suffix('.o')
         lines.append(f'build {npath(o)}: cc_rt {npath(s)}')
-        extra = PER_FILE_DEFINES.get(rel.as_posix())
+        extra = defines.get(rel.as_posix())
         if extra:
             lines.append(f'  rtflags = $rtflags {extra}')
         flags = PER_FILE_FLAGS.get(rel.as_posix())
