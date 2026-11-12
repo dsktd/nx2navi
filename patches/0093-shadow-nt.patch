@@ -1,0 +1,86 @@
+From 79bac9e963becc382877d944211b49c5115f894e Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 23:04:35 -0500
+Subject: [PATCH] vk_memory: NX2NAVI_SHADOW_NT=1 (0: old memcpy) streams shadow
+ copy-ins of 4 KiB and more with non-temporal stores, as play13 ran (dropped
+ 0044); the table syncs copy ~15 MiB a frame at ~2.5 GB/s on rebase
+
+---
+ runtime/vk_memory.c | 37 ++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 36 insertions(+), 1 deletion(-)
+
+diff --git a/runtime/vk_memory.c b/runtime/vk_memory.c
+index 3350684..b8b90b5 100644
+--- a/runtime/vk_memory.c
++++ b/runtime/vk_memory.c
+@@ -11,6 +11,9 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
++#ifdef __AVX2__
++#include <immintrin.h>
++#endif
+ 
+ #include "cfg.h"
+ #include "gfx.h"
+@@ -1507,9 +1510,38 @@ static void shadow_forget(PoolRec *r) {
+     plat_mutex_unlock(&shadow_lock);
+ }
+ 
++// NX2NAVI_SHADOW_NT (default 1; 0 = plain memcpy): runs of 4 KiB and more go into the shadow with non-temporal stores,
++// with no read for ownership of lines the CPU does not read again before the GPU does. The table's syncs copy about
++// 15 MiB a frame outdoors with GPU-driven foliage, about 2.5 GB/s with memcpy (play27, 2026-11-11); play13 had the
++// same switch (our dropped 0044). shadow_copy fences its streamed stores before it returns.
++static int shadow_nt = -1;
++static int shadow_memcpy(uint8_t *d, const void *src, uint64_t n) {
++#ifdef __AVX2__
++    if (shadow_nt < 0) {
++        shadow_nt = rt_knob("SHADOW_NT", "1") == 1;
++        if (shadow_nt) rt_log("mem: shadow copies of 4 KiB and more use non-temporal stores (NX2NAVI_SHADOW_NT)");
++    }
++    if (shadow_nt && n >= 4096 && !((uintptr_t)d & 31)) {
++        const uint8_t *q = src;
++        uint64_t k = n & ~127ull;
++        for (uint64_t i = 0; i < k; i += 128) {
++            __m256i x0 = _mm256_loadu_si256((const __m256i *)(q + i)), x1 = _mm256_loadu_si256((const __m256i *)(q + i + 32));
++            __m256i x2 = _mm256_loadu_si256((const __m256i *)(q + i + 64)), x3 = _mm256_loadu_si256((const __m256i *)(q + i + 96));
++            _mm256_stream_si256((__m256i *)(d + i), x0), _mm256_stream_si256((__m256i *)(d + i + 32), x1);
++            _mm256_stream_si256((__m256i *)(d + i + 64), x2), _mm256_stream_si256((__m256i *)(d + i + 96), x3);
++        }
++        if (k < n) memcpy(d + k, q + k, n - k);
++        return 1;
++    }
++#endif
++    memcpy(d, src, n);
++    return 0;
++}
++
+ // shadow_lock held: copies guest [a, b) into the shadow; of a page with a base copy only the CPU's bytes (merge_page).
+ static void shadow_copy(PoolRec *r, uint64_t a, uint64_t b) {
+     if (w_hi && a < w_hi && b > w_lo) vk_watch("cpu->shadow", a, b - a, 0, r->smap + (w_lo - r->import_lo));
++    int streamed = 0;
+     while (a < b) {
+         uint64_t e = b;
+         uint8_t *base = NULL;
+@@ -1532,7 +1564,7 @@ static void shadow_copy(PoolRec *r, uint64_t a, uint64_t b) {
+         uint64_t t0 = s_check ? qpc() : 0;
+         int marks = (s_learn || s_check) && r->gpa_rec && !((a | e) & (SB_PAGE - 1));
+         if (marks) copy_marked(r, a, e);
+-        else memcpy(r->smap + (a - r->import_lo), (const void *)(uintptr_t)a, e - a);
++        else streamed |= shadow_memcpy(r->smap + (a - r->import_lo), (const void *)(uintptr_t)a, e - a);
+         if (s_check) {
+             *(marks ? &s_mark_ticks : &s_plain_ticks) += qpc() - t0;
+             if (r->mstate != MS_ON) s_in_nomirror += e - a;
+@@ -1541,6 +1573,9 @@ static void shadow_copy(PoolRec *r, uint64_t a, uint64_t b) {
+         s_copied += e - a;
+         a = e;
+     }
++#ifdef __AVX2__
++    if (streamed) _mm_sfence();   // the streamed copies are visible before the part is submitted
++#endif
+ }
+ 
+ // shadow_lock and gen_lock held: stamps the pool's written pages and copies those newer than its shadow. The pool's
+-- 
+2.56.0
+
