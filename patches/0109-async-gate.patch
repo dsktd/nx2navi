@@ -1,0 +1,101 @@
+From ae9998f37a77cb1b34dccfe2ec0f4e803e146954 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Thu, 12 Nov 2026 15:20:05 -0500
+Subject: [PATCH] NX2NAVI_ASYNC_GATE: async replay's submit call waits for the
+ CPU signal before the uniform snapshot
+
+---
+ runtime/cfg.c        |  3 ++-
+ runtime/vk_backend.c |  1 +
+ runtime/vk_exec.c    | 23 ++++++++++++++++++++++-
+ runtime/vk_exec.h    |  1 +
+ 4 files changed, 26 insertions(+), 2 deletions(-)
+
+diff --git a/runtime/cfg.c b/runtime/cfg.c
+index ca04785..5293dec 100644
+--- a/runtime/cfg.c
++++ b/runtime/cfg.c
+@@ -70,7 +70,7 @@ static const char *const known[] = {
+     "SVC_SLOW_MS", "STALL_MS",
+     "SHOTS_FULL", "SPEED_PROBE", "SPIN", "SPIN_HANDOFF_US", "SPLIT_DRAWS", "SPLIT_IDLE", "SPLIT_IN_PASS", "SPLIT_US", "SPV_MARK_TEST", "SPV_OVERRIDE", "STICK_DEADZONE", "STICK_SENS",
+     "SWKBD_ANSWER",
+-    "SET_AT", "SWKBD_TEST", "TAA", "DBG_TEST", "DEBUG_MENU", "MENU_TEST_DEBUG", "FSR4", "FSR4_FG", "FG4_VERSION", "FG4_SWAPCHAIN", "TEST_PAD", "TEST_PAD_AT", "TEST_PREPARE_SHADERS", "TEX_ALIAS", "DEPTH_INIT_INLINE", "DEPTH_ALIAS_LOG", "TEX_DISUSE", "TEX_DISUSE_EVICT", "TEX_GEN_UNDO", "TEX_MEMO", "TEX_VRAM_PRESSURE", "TEX_RELEASED_MB", "TEX_RELEASED_MAX", "TEX_REUSE", "TEX_SPLIT_FILL", "TEX_COMMIT_FREE_MB", "TEX_PROC_COMMIT_MB", "TEX_EVICT", "TEX_COMMIT_EVICT", "MIRROR_EVICT", "VRAM_BUDGET_MB", "TIMER_1MS", "TRACE", "TXD_TRANSPOSE", "UBO_SNAPSHOT", "EVO_TRACE", "EVO_ASYNC", "EVENT_AT_SYNC", "UPSCALER", "VK_DYN_A2C", "VK_DYN_VERTEX", "VK_NAN_PRESERVE", "VK_NOOPT", "VK_NO_FLOAT64",
++    "SET_AT", "SWKBD_TEST", "TAA", "DBG_TEST", "DEBUG_MENU", "MENU_TEST_DEBUG", "FSR4", "FSR4_FG", "FG4_VERSION", "FG4_SWAPCHAIN", "TEST_PAD", "TEST_PAD_AT", "TEST_PREPARE_SHADERS", "TEX_ALIAS", "DEPTH_INIT_INLINE", "DEPTH_ALIAS_LOG", "TEX_DISUSE", "TEX_DISUSE_EVICT", "TEX_GEN_UNDO", "TEX_MEMO", "TEX_VRAM_PRESSURE", "TEX_RELEASED_MB", "TEX_RELEASED_MAX", "TEX_REUSE", "TEX_SPLIT_FILL", "TEX_COMMIT_FREE_MB", "TEX_PROC_COMMIT_MB", "TEX_EVICT", "TEX_COMMIT_EVICT", "MIRROR_EVICT", "VRAM_BUDGET_MB", "TIMER_1MS", "TRACE", "TXD_TRANSPOSE", "UBO_SNAPSHOT", "EVO_TRACE", "EVO_ASYNC", "ASYNC_GATE", "EVENT_AT_SYNC", "UPSCALER", "VK_DYN_A2C", "VK_DYN_VERTEX", "VK_NAN_PRESERVE", "VK_NOOPT", "VK_NO_FLOAT64",
+     "VK_PRESENT", "VK_RECONVERGE", "VK_NAN_BITS", "VK_RECORDER", "VK_SSBO_ALIGN", "VK_SUBGROUP", "VK_SUBGROUP_PIN", "VK_VALIDATION", "VOLUME", "VRAM_HEADROOM", "VS_OUTS", "WATER_PROJECTIVE",
+     "WAIT_WATCH_S", "WALK_KEY", "WALK_SCALE", "WB_EXACT", "WB_FENCE_LIMIT", "WB_MERGE", "WB_NO_REUP", "WB_MERGE_MAX", "WB_PROBE", "WB_SPLIT", "WB_LAZY", "WB_LAZY_CHUNK", "WB_LAZY_TOUCH", "WINDOW_SIZE", "XLATE", "XLATE_ID", "XLATE_KEEP", "XLATE_PROCS",
+     "ZSTD_CHECK", "ZSTD_NATIVE",
+@@ -213,6 +213,7 @@ static const CfgMeta metas[] = {
+     {"SHADOW_SCALE", "1", "1..4", RESTART}, {"SHADOW_COMPARE", "1", "0|1", RESTART},   // vk_texture.c
+     {"SHADOW_BULK_WRITE", "0", "0|1", RESTART},   // vk_memory.c shadow_write_back
+     {"EVO_ASYNC", "1", "0|1", RESTART},   // vk_exec.c "ambient occlusion after its event"
++    {"ASYNC_GATE", "0", "0|1", RESTART},   // vk_exec.c vk_exec_async_gate
+     // vk_memory.c "Pages a shader stores into through the device address table"
+     {"SHADOW_TABLE_STORES", "0", "0|1", RESTART}, {"SHADOW_CHECK", "0", "0|1", RESTART},
+     {"SVC_SLOW_MS", "0", "0..60000", RESTART},   // kernel.c kern_svc: log services slower than this
+diff --git a/runtime/vk_backend.c b/runtime/vk_backend.c
+index a10c529..054ee72 100644
+--- a/runtime/vk_backend.c
++++ b/runtime/vk_backend.c
+@@ -629,6 +629,7 @@ static uint64_t vk_be_submit(const uint64_t *handles, int n) {
+         if (!it.h) rt_fatal("vk: out of memory (replay queue)");
+         memcpy(it.h, handles, sizeof *it.h * (size_t)n);
+     }
++    if (vk_exec_async_gate()) vk_exec_gate_wait(handles, n);   // NX2NAVI_ASYNC_GATE: after the CPU's signal
+     vk_usnap_take(handles, n);   // the uniform blocks as they are now: the game writes on once this returns
+     return replay_enqueue(&it);
+ }
+diff --git a/runtime/vk_exec.c b/runtime/vk_exec.c
+index 37c79f4..373d44d 100644
+--- a/runtime/vk_exec.c
++++ b/runtime/vk_exec.c
+@@ -1387,13 +1387,34 @@ static const void *gate_first_wait(const op_hdr *h) {
+     return NULL;
+ }
+ 
++// NX2NAVI_ASYNC_GATE (default 0; 1 on): the gate with the replay on its own thread (NX2NAVI_REPLAY_ASYNC). There the
++// uniform snapshot is taken in the game's submit call (vk_backend.c vk_be_submit, vk_usnap_take) and event order is
++// off, so the main queue's submission, submitted 1 to 2 ms before the game's signal, kept the uniform blocks as they
++// were before the game had written the frame: the camera's and the scene's blocks of two frames back (the game takes
++// turns between two), Link's own already new. While running, about every 4 to 11 frames the world stepped back one
++// frame with Link in place and his self-shadowing wrong (play44 026ec9f, Cal 2026-11-12, mark burst-2808: 20
++// back-steps in 120 frames, 0 with NX2NAVI_REPLAY_ASYNC=0; the perf line's "waits a CPU signal met only after the
++// submission's copies were taken" 493 over the session, 0 with the replay on the submitting thread). With the switch
++// the submit call waits for the signal (at most NX2NAVI_GATE_WAIT_MS) before the snapshot, as the synchronous replay
++// does before its copies; the replay itself stays on its own thread.
++int vk_exec_async_gate(void) {
++    static int on = -1;
++    if (on < 0) {
++        on = gfx_replay_async() && rt_knob("ASYNC_GATE", "0") == 1;
++        if (gfx_replay_async())
++            rt_log("vk: a submission that begins with a wait for the CPU's signal %s (NX2NAVI_ASYNC_GATE)",
++                   on ? "waits for it in the submit call, before its uniform snapshot" : "takes its uniform snapshot at once");
++    }
++    return on;
++}
++
+ void vk_exec_gate_wait(const uint64_t *handles, int n) {
+     static int64_t cap_ns = -1;
+     if (cap_ns < 0) {
+         int ms = cfg_int("NX2NAVI_GATE_WAIT_MS");
+         cap_ns = ms > 0 ? (int64_t)ms * 1000000 : 0;
+     }
+-    if (!cap_ns || n < 1 || !handles[0] || !gfx_submit_queue || !evo_enabled()) return;
++    if (!cap_ns || n < 1 || !handles[0] || !gfx_submit_queue || !(evo_enabled() || vk_exec_async_gate())) return;
+     const void *w = gate_first_wait(nvn_op_first(handles[0]));
+     if (!w || vk_exec_event_holds_now(w) || !vk_exec_event_cpu_known((const void *)((const p_wait_event *)w)->val)) return;
+     uint64_t t0 = kern_now_ns(), now = t0;
+diff --git a/runtime/vk_exec.h b/runtime/vk_exec.h
+index 2ab145b..025b641 100644
+--- a/runtime/vk_exec.h
++++ b/runtime/vk_exec.h
+@@ -302,6 +302,7 @@ int vk_exec_event_holds_now(const void *payload);   // an OP_WAIT_EVENT's condit
+ // vk_backend.c submit_sync, before a submission is recorded: waits for the CPU's signal when the submission begins
+ // with a wait for it (vk_exec.c "the gate").
+ void vk_exec_gate_wait(const uint64_t *handles, int n);
++int  vk_exec_async_gate(void);   // NX2NAVI_ASYNC_GATE: the gate in the game's submit call with the replay on its own thread
+ int vk_exec_event_at_sync(void);              // NX2NAVI_EVENT_AT_SYNC
+ uint64_t vk_exec_event_late_take(void);       // waits only a CPU signal after the copies would have passed, since the last call
+ // Since the last call, which resets them: waits, waits reached before their signal, those of them a later replayed
+-- 
+2.56.0
+
