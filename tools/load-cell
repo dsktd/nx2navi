@@ -36,7 +36,7 @@ if [ $exe = play13 ]; then
      NX2NAVI_TEX_STALE_LIVE=1)
 else
   c=(NX2NAVI_STALL_MS=100 NX2NAVI_SHADOW_BULK_WRITE=1 NX2NAVI_TEX_RELEASED_MB=3072
-     NX2NAVI_XLATE=${XLATE:-$B/xlate-rebase/nx2navi_xlate} NX2NAVI_SHADER_CACHE=${SC:-$P/scR} NX2NAVI_PIPELINE_CACHE=${PC:-$P/pcR.bin})
+     NX2NAVI_XLATE=${XLATE:-$(cell_xlate $exe)} NX2NAVI_SHADER_CACHE=${SC:-$P/scR} NX2NAVI_PIPELINE_CACHE=${PC:-$P/pcR.bin})
   [ -n "$script$rdbg" ] && c+=("NX2NAVI_DBG_TEST=$rdbg${rdbg:+${script:+;}}$script")   # recipe ticks come first
 fi
 for try in 1 2 3 4; do

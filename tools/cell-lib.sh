@@ -25,3 +25,6 @@ cell_scenario() {
   [ "$($R/tools/recipe $1 version)" -ge 1 ] && w="$w gd=$R/tools/scenarios/$1.dbg"
   export LAB_PROFILE_SRC=$($R/tools/recipe $1 base)
 }
+# cell_xlate <exe>: the translator the build was made for (builds.tsv xlate column dir), e.g. play41 -> xlate-play33
+cell_xlate() { local d; d=$(awk -F'\t' -v e=$1 '$1 == e { split($4, a, "/"); print a[1] }' $R/builds.tsv)
+  [ -n "$d" ] && [ -x $R/NX2navi/build/v111/$d/nx2navi_xlate ] && echo $R/NX2navi/build/v111/$d/nx2navi_xlate || echo $R/NX2navi/build/v111/xlate-rebase/nx2navi_xlate; }

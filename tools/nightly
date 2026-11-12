@@ -64,6 +64,8 @@ def default_exe():
 
 
 def significant(b):
+    if b['parent'] not in bx:
+        return None   # parent is no exe (a bad builds.tsv row, e.g. play39's '74266d8'): its change list is not a change
     ch = b['changed']
     if 'base ' in ch or 'xlate ' in ch:
         return 'base/translator change'
@@ -76,26 +78,48 @@ def significant(b):
     return None
 
 
+def run_exes():
+    """exe -> runs/<x>.sh for every runs script's default exe (NX2NAVI_EXE:-<exe>): the builds someone plays or proposes."""
+    out = {}
+    for f in sorted(glob.glob(R + '/runs/*.sh')):
+        m = re.search(r'NX2NAVI_EXE:-(\w+)', open(f).read())
+        if m:
+            out.setdefault(m[1], os.path.relpath(f, R))
+    return out
+
+
 def pick():
+    """Ranked picks (Cal, 2026-11-12), each (exe, reason, tier):
+    1 baselines: play13 and the default exe of runs/play.sh, every night;
+    2 the newest build of each active line: an exe a runs/*.sh script names (a candidate someone plays or proposes),
+      built in the last 3 days, not yet suite-tested, with no candidate descendant (play38 over play36);
+    3 untested builds with a significant change vs parent (upstream bump, translator change, a newly default-on knob),
+      newest first;
+    4 bisect midpoints queued by an earlier night (only builds a range needs).
+    Default-off knob experiments and lab variants are never picked for a suite (their knob A/B is a cell, not a suite;
+    visual cells go in .lab/nightly/cells.txt). Tiers 1-2 run before the queued cells, tiers 3-4 after."""
     done, out = tested(), []
-    add = lambda e, why: e in bx and e not in [x[0] for x in out] and out.append((e, why))
-    add('play13', 'baseline')
-    add(default_exe(), 'baseline: current default of runs/play.sh')
+    add = lambda e, why, t: e in bx and e not in [x[0] for x in out] and out.append((e, why, t))
+    add('play13', 'baseline', 1)
+    add(default_exe(), 'baseline: current default of runs/play.sh', 1)
+    cutoff = (datetime.date.today() - datetime.timedelta(days=3)).isoformat()
+    recent = sorted((e for e in order if bx[e]['date'] >= cutoff and e not in done), key=lambda e: (bx[e]['date'], order.index(e)), reverse=True)
+    rx = run_exes()
+    cand = [e for e in recent if e in rx]
+    for e in cand:   # a candidate whose descendant is also a candidate is not the newest of its line
+        newer = [d for d in rx if d in bx and d != e and e in chain(d)]
+        # a base or translator bump on the way starts a new line (play41 = play38 on upstream 0.9.1: both run)
+        if not any(not any('base/translator' in (significant(bx[x]) or '') for x in chain(d)[chain(d).index(e) + 1:]) for d in newer):
+            add(e, 'newest on its line: candidate of %s' % rx[e], 2)
+    for e in sorted((e for e in order if e not in done), key=lambda e: (bx[e]['date'], order.index(e)), reverse=True):
+        w = significant(bx[e])
+        if w:
+            add(e, 'significant change vs parent: ' + w, 3)
     q = R + '/.lab/nightly/queue.txt'
     if os.path.exists(q):
         for l in open(q).read().split('\n'):
             if l.strip() and l.strip() not in done:
-                add(l.strip(), 'bisect midpoint from an earlier night')
-    leaves = [e for e in order if e not in {b['parent'] for b in B}]
-    cutoff = (datetime.date.today() - datetime.timedelta(days=3)).isoformat()
-    for e in leaves:
-        if e not in done and bx[e]['date'] >= cutoff and 'variant' not in bx[e]['note'] and 'lab variant' not in bx[e]['note']:
-            add(e, 'newest build on its line (leaf of the parent chain)')
-    for e in order:
-        if e not in done:
-            w = significant(bx[e])
-            if w:
-                add(e, 'significant change vs parent: ' + w)
+                add(l.strip(), 'bisect midpoint from an earlier night', 4)
     return out
 
 
@@ -239,6 +263,12 @@ def prune(ranges, assume_tested=()):
         why.setdefault(a, 'bisect endpoint'); why.setdefault(b, 'bisect endpoint')
         for x in between:
             why.setdefault(x, 'inside an unresolved bisect range %s..%s' % (a, b))
+    for e in run_exes():
+        why.setdefault(e, 'named by %s' % run_exes()[e])
+    cf = R + '/.lab/nightly/cells.txt'
+    for l in (open(cf).read().split('\n') if os.path.exists(cf) else []):
+        for e in re.findall(r'\b(?:cell\.sh|visual-cell)\s+(\w+)', l):
+            why.setdefault(e, 'named by a queued cell')
     for e in cal_exes():
         why[e] = "Cal's exe (newest play log or running)"
     freed, gone, store_real, v_real = 0, [], os.path.realpath(STORE), os.path.realpath(V)
@@ -279,7 +309,7 @@ def prune(ranges, assume_tested=()):
 def summary(plan, queue, found, ran, pruned='', extra=()):
     M, day = metrics(), datetime.date.today().isoformat()
     de = default_exe()
-    L = ['# Nightly %s' % day, '', 'Picked (reason):'] + ['- %s: %s%s' % (e, w, '' if e in ran else ' (not run)') for e, w in plan]
+    L = ['# Nightly %s' % day, '', 'Picked (tier, reason):'] + ['- %s (tier %d, xlate %s): %s%s' % (e, t, bx[e]['xlate'], w, '' if e in ran else ' (not run)') for e, w, t in plan]
     L += ['', '| metric | best build | default %s | regressions vs default (beyond spread) |' % de, '|---|---|---|---|']
     for k, d in sorted(M.items()):
         if k[1].startswith('ab_'):
@@ -377,7 +407,7 @@ def extra_cells():
     done, out = [], R + '/.lab/nightly/cells-%s.log' % datetime.date.today()
     for c in todo:
         if DRY:
-            print('would run cell: ' + c); continue
+            print('  cell: ' + c); continue
         if time.time() - T0 > BUDGET - 600 or cal_playing() or not lock_wait():
             break
         with open(out, 'a') as o:
@@ -400,22 +430,28 @@ def main():
     if DRY:
         _, _, ranges = bisect(metrics())
         fit = max(1, (BUDGET - 1500) // SUITE_S + 1)   # suites started while under BUDGET - 25 min
-        line, kept = prune(ranges, assume_tested=[e for e, _ in plan[:fit]])
-        print('Tonight would test (in order, budget %d min, ~%d suites fit):' % (BUDGET // 60, fit))
-        for k, (e, w) in enumerate(plan):
-            print('  %s: %s%s' % (e, w, '' if k < fit else ' (beyond the budget: a later night)'))
+        line, kept = prune(ranges, assume_tested=[e for e, _, _ in plan[:fit]])
+        print('Tonight would test (in rank order, budget %d min, ~%d suites fit; queued cells after tier 2):' % (BUDGET // 60, fit))
+        shown = False
+        for k, (e, w, t) in enumerate(plan):
+            if t > 2 and not shown:
+                extra_cells(); shown = True
+            print('  %d. tier %d %s (xlate %s): %s%s' % (k + 1, t, e, bx[e]['xlate'], w, '' if k < fit else ' (beyond the budget: a later night)'))
+        if not shown:
+            extra_cells()
         print('Prune, once those are tested (dry run, nothing deleted): ' + line)
         print('Kept in the store: ' + '; '.join('%s (%s)' % kw for kw in kept))
-        extra_cells()
         print('\n'.join(extra))
         return
     if not quiet_host():
         return
     os.environ['CELL_REDO'] = '1'   # cells whose load average rose above the threshold during a run redo it once
-    extra += extra_cells()   # queued agent cells first: small and asked for; the suites take what budget is left
     todo = list(plan)
+    cells_run = False
     while todo:
-        e, why = todo.pop(0)
+        if not cells_run and todo[0][2] > 2:
+            extra += extra_cells(); cells_run = True   # queued cells after the baselines and line heads
+        e, why, _ = todo.pop(0)
         if time.time() - T0 > BUDGET - 1500:
             print('budget: not starting %s' % e); break
         print('nightly: %s (%s)' % (e, why), flush=True)
@@ -428,8 +464,10 @@ def main():
         q, _, _ = bisect(metrics())
         for m in q:
             if m not in ran and m not in [x[0] for x in todo]:
-                todo.append((m, 'bisect midpoint'))
-                plan.append((m, 'bisect midpoint (same night)'))
+                todo.append((m, 'bisect midpoint', 4))
+                plan.append((m, 'bisect midpoint (same night)', 4))
+    if not cells_run:
+        extra += extra_cells()
     q, found, ranges = bisect(metrics())
     queue = [x for x in q if x not in ran]
     pr, _ = prune(ranges)
