@@ -287,7 +287,7 @@ pin-desktop CPUS="8-11,24-27":
 # One entry point: `just run` plays with the current best settings (runs/play.sh: the rebased build, build/v111/nx2navi.play32);
 # `just run play13` is the fallback (pre-rebase build). `just run <name>` runs runs/<name>.sh; each script holds its
 # settings, with a header saying what it is. Extra arguments go to the game.
-run NAME="play" *args:
+run NAME="play44" *args:
     #!/usr/bin/env sh
     export NX2NAVI_RUN_NAME="${NX2NAVI_RUN_NAME:-{{NAME}}}"   # the log's build line names it
     f="{{justfile_directory()}}/runs/{{NAME}}.sh"
