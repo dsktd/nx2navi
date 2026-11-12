@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """repro-diff <a.dbg> <b.dbg>: compare two recipes v1 (a mark and the mark its repro took): area, Link's position and
 yaw, age, and every `# gd` game data value. Prints one `repro:` line (and the differing game data, at most 20) and exits
-1 when the area or age differ, Link stands over REPRO_POS_M (default 1.0) metres apart, or over REPRO_GD_MAX (default
+1 when the area or age differ, Link stands over REPRO_POS_M (default 1.0) metres apart or faces over REPRO_YAW_DEG (default 5) degrees apart, or over REPRO_GD_MAX (default
 20) game data values differ. Game data that moves with play by itself (the clock, play time, positions) is expected to
 drift a little between the mark and the repro's own mark ticks later; those count too, so keep the tolerance."""
 import math, os, sys
@@ -27,13 +27,15 @@ wa, wb = a["warp"], b["warp"]
 pa = [float(x) for x in wa.get("pos", "nan,nan,nan").split(",")]
 pb = [float(x) for x in wb.get("pos", "nan,nan,nan").split(",")]
 dist = math.dist(pa, pb)
-dyaw = abs((float(wa.get("yaw", "nan")) - float(wb.get("yaw", "nan")) + 180) % 360 - 180)
+fa, fb = (float(w.get("face", w.get("yaw", "nan"))) for w in (wa, wb))
+dyaw = abs((fa - fb + 180) % 360 - 180)
 keys = set(a["gd"]) | set(b["gd"])
 diff = sorted(k for k in keys if a["gd"].get(k) != b["gd"].get(k))
 bad = []
 if wa.get("scene") != wb.get("scene"): bad.append("area")
 if wa.get("age") != wb.get("age"): bad.append("age")
 if not dist <= float(os.environ.get("REPRO_POS_M", "1.0")): bad.append("position")
+if not dyaw <= float(os.environ.get("REPRO_YAW_DEG", "5")): bad.append("facing")
 if len(diff) > int(os.environ.get("REPRO_GD_MAX", "20")): bad.append("game data")
 print(f"repro: {'FAIL ' + ','.join(bad) if bad else 'ok'}: area {wa.get('scene')} -> {wb.get('scene')}, "
       f"position {dist:.2f} m apart, yaw {dyaw:.1f} deg, age {wa.get('age')} -> {wb.get('age')}, "

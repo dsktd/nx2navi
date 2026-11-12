@@ -1,0 +1,136 @@
+From ee7f06965234c1788877d6642e2bfe7dccefc14d Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Thu, 12 Nov 2026 13:49:03 -0500
+Subject: [PATCH] debug_tools: a mark's recipe gives Link's facing (the actor's
+ rotation matrix +0x328) as face= in its warp line; a dump.req dump gets the
+ moment's recipe as recipe.dbg; NX2NAVI_MARK_RECIPE=2 also scans the heap for
+ the facing
+
+---
+ runtime/debug_tools.c | 56 +++++++++++++++++++++++++++++++++++++++----
+ runtime/vk_dump.c     |  8 +++++++
+ 2 files changed, 60 insertions(+), 4 deletions(-)
+
+diff --git a/runtime/debug_tools.c b/runtime/debug_tools.c
+index c8d8d91..ade7c36 100644
+--- a/runtime/debug_tools.c
++++ b/runtime/debug_tools.c
+@@ -1059,11 +1059,16 @@ static int gd_write(FILE *f) {
+     return lines;
+ }
+ 
+-// The actor's +0x3c8, a float in radians, as Link's facing: NOT confirmed (2026-11-12: it read 1.578 with the save's
+-// yaw at 90, 150 and 0 alike, and the game ignored all three: Link spawns facing the same way whatever the save says).
++// Link's facing: the actor's rotation matrix, 3x3 floats row by row at +0x328 (a second copy at +0x60c), a turn about
++// the up axis: rows {cos, 0, -sin}, {0, 1, 0}, {sin, 0, cos}; yaw = atan2(m[6], m[8]). Found 2026-11-12 by routing Link
++// about (85 -> -40.5 -> -51.1 degrees). Writing it does not turn Link (the next frame rewrites it); the spawn takes the
++// facing from game data float 0x1ea93bd8 (= -yaw radians; tools/warp-save face=), which the recipe's # gd carries.
+ static int player_yaw(float *yaw) {
++    float m[9];
+     uint64_t a = dbg_supported() ? player() : 0;
+-    return a && rd(a + 0x3c8, yaw, 4) && isfinite(*yaw);
++    if (!a || !rd(a + 0x328, m, sizeof m) || !isfinite(m[6]) || !isfinite(m[8])) return 0;
++    *yaw = atan2f(m[6], m[8]);
++    return 1;
+ }
+ 
+ int dbg_mark_recipe(const char *path, const char *mark) {
+@@ -1077,7 +1082,8 @@ int dbg_mark_recipe(const char *path, const char *mark) {
+     FILE *f = fopen(path, "w");
+     if (!f) return 0;
+     fprintf(f, "# recipe v1\n# %s\n# mark: %s\n# base: .lab/scenarios/base-profile\n", rt_build_line(), mark);
+-    fprintf(f, "# warp: scene=%s pos=%.4f,%.4f,%.4f yaw=%.3f", area, p[0], p[1], p[2], has_yaw ? yaw * 57.29578f : 0.0f);
++    fprintf(f, "# warp: scene=%s pos=%.4f,%.4f,%.4f", area, p[0], p[1], p[2]);
++    if (has_yaw) fprintf(f, " face=%.3f", yaw * 57.29578f);
+     if (has_age) fprintf(f, " age=%s", young & 1 ? "child" : "adult");
+     fputc('\n', f);
+     int best = -1;
+@@ -1106,10 +1112,13 @@ int dbg_mark_recipe(const char *path, const char *mark) {
+ }
+ 
+ // NX2NAVI_MARK_RECIPE=2: the game data's sections and the player actor raw, for finding their layout
++static void facing_scan(FILE *f, float y);
+ void dbg_mark_probe(FILE *f) {
+     uint64_t m = gmd(), a = player();
+     fprintf(f, "gmd %#llx player %#llx\n", (unsigned long long)m, (unsigned long long)a);
+     if (a) hex_line(f, "actor", a, 0x1000);
++    float y;
++    if (player_yaw(&y)) fprintf(f, "yaw %f\n", y), facing_scan(f, y);
+     for (int k = 0; m && k < 40; k++) {
+         uint64_t sec = m + (uint64_t)k * 0x60, table = rd_ptr(sec + 0x20), entries = rd_ptr(sec + 0x18);
+         uint32_t count = 0, size = 0;
+@@ -1128,6 +1137,45 @@ void dbg_mark_probe(FILE *f) {
+     }
+ }
+ 
++// NX2NAVI_MARK_RECIPE=2: where else the heap holds Link's facing (the actor's matrix is rewritten each frame from it):
++// 3x3 / 3x4 rotation matrices, quaternions about up, and the angle, within 1e-3, the first 200 of each.
++static void facing_scan(FILE *f, float y) {
++    const RtGuestLayout *l = mem_layout();
++    const RtRange ranges[2] = {l->heap, l->alias};
++    float c = cosf(y), s = sinf(y), qs = sinf(y / 2), qc = cosf(y / 2);
++    int hits[4] = {0};
++    #define NEAR(a, b) (fabsf((a) - (b)) < 1e-3f)
++    for (int r = 0; r < 2; r++) {
++        uint64_t a = ranges[r].base, end = ranges[r].base + ranges[r].size;
++        while (a < end) {
++            RtMemoryInfo mi;
++            if (mem_query(a, &mi) || !mi.size) break;
++            uint64_t stop = mi.base + mi.size < end ? mi.base + mi.size : end;
++            if (!mi.state || (mi.perm & 3) != 3) { a = stop; continue; }
++            while (a < stop) {
++                uint64_t n = stop - a < (16u << 20) ? stop - a : (16u << 20);
++                if (mem_read_hold(a, n)) {
++                    const float *v = (const float *)(uintptr_t)a;
++                    for (uint64_t i = 0; i + 12 <= n / 4; i++) {
++                        if (NEAR(v[i], c) && NEAR(v[i + 2], -s) && fabsf(v[i + 1]) < 1e-3f) {
++                            int k = NEAR(v[i + 6], s) ? 0 : NEAR(v[i + 8], s) ? 1 : -1;
++                            if (k >= 0 && hits[k]++ < 200) fprintf(f, "facing %s %#llx\n", k ? "m34" : "m33", (unsigned long long)(a + i * 4));
++                        }
++                        if (fabsf(v[i]) < 1e-3f && fabsf(v[i + 2]) < 1e-3f && ((NEAR(v[i + 1], qs) && NEAR(v[i + 3], qc)) || (NEAR(v[i + 1], -qs) && NEAR(v[i + 3], -qc))) && hits[2]++ < 200)
++                            fprintf(f, "facing quat %#llx\n", (unsigned long long)(a + i * 4));
++                        if ((fabsf(v[i] - y) < 1e-4f || fabsf(v[i] - y * 57.29578f) < 1e-2f) && fabsf(y) > 0.05f && hits[3]++ < 200)
++                            fprintf(f, "facing angle %#llx %f\n", (unsigned long long)(a + i * 4), v[i]);
++                    }
++                    mem_read_release();
++                }
++                a += n;
++            }
++        }
++    }
++    #undef NEAR
++    fprintf(f, "facing hits m33 %d m34 %d quat %d angle %d\n", hits[0], hits[1], hits[2], hits[3]);
++}
++
+ // ---- NX2NAVI_DBG_TEST="<tick>:flag <hash hex> <0|1>;<tick>:speed <factor>;<tick>:find <value> <size>;
+ // <tick>:next <mode> <value>;<tick>:setfirst <value>;<tick>:holdfirst <value>;<tick>:show [<hash hex>];
+ // <tick>:warp <area> [<start position>];<tick>:event <name>;<tick>:text <game data text's name>;
+diff --git a/runtime/vk_dump.c b/runtime/vk_dump.c
+index 25b0e1b..09e81a4 100644
+--- a/runtime/vk_dump.c
++++ b/runtime/vk_dump.c
+@@ -36,6 +36,7 @@
+ #include <string.h>
+ 
+ #include "cfg.h"
++#include "debug_tools.h"
+ #include "host.h"
+ #include "nvn_api.h"
+ #include "vk.h"
+@@ -1573,6 +1574,13 @@ void vk_dump_present(uint64_t frame) {
+         snprintf(dir, sizeof dir, "%s/f%llu", base_dir, (unsigned long long)dump_frame);
+         open_files();
+         rt_log("vk_dump: dump.req: frame %llu goes to %s", (unsigned long long)dump_frame, dir);
++        const char *mr = cfg_get("NX2NAVI_MARK_RECIPE");   // the moment's recipe beside the dump (boot.c moment_recipe)
++        if (!mr || atoi(mr) > 0) {
++            char path[600], what[80];
++            snprintf(path, sizeof path, "%s/recipe.dbg", dir);
++            snprintf(what, sizeof what, "dump.req, frame %llu", (unsigned long long)dump_frame);
++            dbg_mark_recipe(path, what);
++        }
+         return;
+     }
+     if (frame != dump_frame) return;
+-- 
+2.56.0
+

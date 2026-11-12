@@ -2,4 +2,4 @@
 # The repro round-trip cell's seed (tools/repro-cell): Hyrule Field in front of the Market, adult, a set yaw. The cell
 # reproduces this, marks, reproduces that mark and compares the two marks (area, position, game data, shot).
 # base: .lab/scenarios/base-profile
-# warp: scene=HyruleField_Adult entrance=HyruleField_FrontOfMarket yaw=150 age=adult
+# warp: scene=HyruleField_Adult entrance=HyruleField_FrontOfMarket face=150 age=adult

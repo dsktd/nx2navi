@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""warp-save <profile-dir> scene=<name> [entrance=<index|name>] [pos=x,y,z] [yaw=<deg>] [age=child|adult] [slot=<n>]
+"""warp-save <profile-dir> scene=<name> [entrance=<index|name>] [pos=x,y,z] [yaw=<deg>] [face=<deg>] [age=child|adult] [slot=<n>]
 
 Teleport by save edit: rewrites progress.sav in a profile COPY so loading it puts Link in that scene at that spot.
 Refuses Cal's live profile. Edits every slot_*/progress.sav (or only slot=<n>) under <profile>/save/<uid>/.
 scene: a tools/scenes.toml name, matched case/space/underscore-insensitively, with the age suffix tried
 (scene="lost woods" age=child -> LostWood_Child). entrance: index or name in the scene's StartPos list (default 0);
-pos/yaw override it. NOTE 2026-11-12: the game ignores the yaw keys on load (yaw 0/90/150 spawn Link facing the same
-way); position is applied exactly. age defaults from the scene suffix, else the save's own. time= is not supported yet.
+pos/yaw override it. yaw= writes Player_Rot_For_Map/0xa4aee8cd only, which the spawn IGNORES (2026-11-12): kept so
+old scenarios keep their view. face=<deg> turns Link: the spawn takes his facing from float 0x1ea93bd8 (= -face in
+radians); face is the recipes' convention (the actor's matrix, atan2(m[6], m[8]); 0xa4aee8cd = 180 - face). age defaults from the scene suffix, else the save's own. time= is not supported yet.
 gd=<recipe file>: also writes the recipe's `# gd <kind> <hash> <value hex>` lines (a mark's game data, recipe v1) into
 the save: each into the pair of that hash in the save's section of that kind (the save holds the game data's kinds in
 order, each section opened by a pair {0, kind}); values of kinds kept inline (bool 0, int 2, float 4, enum 6, uint 20)
@@ -18,7 +19,7 @@ String64/Vector3 values are offsets to the data. Keys used: 0x1d6189da current s
 + 0x960ad56a, 0xc884818d, 0x8773f02d (Vector3, all hold Link's position), Player_Rot_For_Map + 0xa4aee8cd (float
 yaw, degrees), Sequence_IsChildhood (bool).
 """
-import glob, os, re, struct, sys, tomllib
+import glob, math, os, re, struct, sys, tomllib
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mm3 import mm3
 
@@ -28,6 +29,7 @@ K_SCENE = 0x1D6189DA
 K_POS = [mm3("Player_Pos_For_Map"), 0x960AD56A, 0xC884818D, 0x8773F02D]
 K_YAW = [mm3("Player_Rot_For_Map"), 0xA4AEE8CD]
 K_CHILD = mm3("Sequence_IsChildhood")
+K_FACE = 0x1EA93BD8   # float, kind 4: -facing in radians, what the spawn turns Link to
 
 
 def die(msg):
@@ -41,7 +43,7 @@ def parse(args):
         if not v: die(f"bad argument {a!r}")
         spec[k] = v
     for k in spec:
-        if k not in ("scene", "entrance", "pos", "yaw", "age", "slot", "time", "gd"): die(f"unknown key {k}")
+        if k not in ("scene", "entrance", "pos", "yaw", "age", "slot", "time", "gd", "face"): die(f"unknown key {k}")
     if "time" in spec: die("time= is not supported yet")
     if "scene" not in spec: die("scene= is required")
     return spec
@@ -97,7 +99,7 @@ def apply_gd(b, gd):
     return changed, len(gd) - len(seen)
 
 
-def edit(path, scene, pos, yaw, child, gd=None):
+def edit(path, scene, pos, yaw, child, gd=None, face=None):
     b = bytearray(open(path, "rb").read())
     if b[:4] != b"\x04\x03\x02\x01": die(f"{path}: not a progress.sav")
     if gd:
@@ -116,7 +118,9 @@ def edit(path, scene, pos, yaw, child, gd=None):
         o = struct.unpack_from("<I", b, slot(h))[0]
         struct.pack_into("<3f", b, o, *pos)
     for h in K_YAW:
-        struct.pack_into("<f", b, slot(h), yaw)
+        struct.pack_into("<f", b, slot(h), yaw if face is None else (360.0 - face) % 360.0 - 180.0)
+    if face is not None:
+        struct.pack_into("<f", b, slot(K_FACE), -math.radians(face))
     if child is not None:
         struct.pack_into("<I", b, slot(K_CHILD), int(child))
     tmp = path + ".warp"
@@ -136,13 +140,14 @@ def main():
     if ent is None and "pos" not in spec: die(f"{name}: no entrance {e!r}: {[x[0] for x in ents]}")
     pos = tuple(map(float, spec["pos"].split(","))) if "pos" in spec else tuple(ent[1:4])
     yaw = float(spec["yaw"]) if "yaw" in spec else (ent[4] if ent else 0.0)
+    face = float(spec["face"]) if "face" in spec else None
     age = spec.get("age") or {"child": "child", "adult": "adult"}.get(scenes[name]["age"])
     child = None if age is None else age == "child"
     pat = f"slot_{int(spec['slot']):02d}" if "slot" in spec else "slot_*"
     files = sorted(glob.glob(os.path.join(prof, "save", "*", pat, "progress.sav")))
     if not files: die(f"no {pat}/progress.sav under {prof}/save")
     gd = read_gd(spec["gd"]) if "gd" in spec else None
-    for f in files: edit(f, name, pos, yaw, child, gd)
+    for f in files: edit(f, name, pos, yaw, child, gd, face)
     print(f"warp-save: {name} entrance {ent[0] if ent else '-'!r} pos {pos} yaw {yaw} age {age or 'kept'}, {len(files)} slot(s)")
 
 

@@ -474,6 +474,7 @@ Upstream doc facts that bear on shadow sync (`docs/building.md` "Memory"): Linux
 Bug reports and lab scenarios are **recipes**, never save states or Cal's saves (save states are infeasible:
 DESIGN-savestate.md). A recipe is a text file whose first line is the format version (`# recipe v1`; a file without
 one is v0, the hand-written `tools/scenarios/*.dbg` of 2026-11-12), so old marks stay readable when the format grows.
+- **dump.req** dumps get `recipe.dbg` in the dump folder (vk_dump.c, same knob; patch 0107).
 - **Written by the runtime** at every mark (F9, L3+R3, `mark.req`, the test script's `<tick>:mark`) and every `shot.req`:
   `logs/mark-<present>.dbg` / `logs/shot-<present>.dbg` beside the shot (`NX2NAVI_MARK_DIR` elsewhere; knob
   `NX2NAVI_MARK_RECIPE`, default 1, 0 off, 2 also `.probe` = raw game data sections + player actor for layout work).
@@ -481,14 +482,21 @@ one is v0, the hand-written `tools/scenarios/*.dbg` of 2026-11-12), so old marks
   mark number, so sessions never overwrite each other's.
 - **v1 content**: `# build:` line; `# mark:`; `# base:` the neutral base profile; `# warp: scene=<Sequence_CurrentBanc>
   pos=x,y,z yaw=<deg> age=adult|child` (Link's exact place: actor +0x31c position, restored exactly by the save;
-  **facing is NOT restored**: the game ignores the save's yaw keys (Player_Rot_For_Map, 0xa4aee8cd) on load: saves
-  edited to yaw 0, 90 and 150 all spawned Link facing the same way, actor bytes identical; the yaw written is the
-  actor's +0x3c8, which read 1.578 in all three and is unconfirmed; so `warp-save yaw=` turns nobody, scenarios that
-  rely on it, e.g. field-gerudo-cliffs, face the default way); `# near:` the nearest named start position (for the live `warp`); free camera as
+  the game ignores the save's yaw keys on load (Player_Rot_For_Map, 0xa4aee8cd: saves at yaw 0, 90 and 150 spawned
+  Link the same way). **Facing** shows in the actor's rotation matrix, 3x3 floats at **+0x328** (copy at +0x60c), rows
+  {cos,0,-sin},{0,1,0},{sin,0,cos}, face = atan2(m[6], m[8]) (routing Link about: 85 -> -40.5 -> -51.1 deg), but writing
+  it does not turn him (rewritten next frame). The spawn takes the facing from game data **float 0x1ea93bd8 = -face in
+  radians** (0xa4aee8cd follows as 180 - face but alone turns nobody): a recipe restores it through its `# gd` lines
+  and `tools/warp-save face=<deg>` (patch 0107 writes `face=` in the `# warp:` line). `yaw=` keeps its old, inert
+  meaning so the suite scenarios keep their view. Heap scan (NX2NAVI_MARK_RECIPE=2 `facing` lines): 7 quaternions and
+  dozens of matrices hold the same turn; none is reached by a pointer from the actor. The actor's +0x3c8 (1.578
+  always) is not the facing); `# near:` the nearest named start position (for the live `warp`); free camera as
   `1:freecam 1 0 <speed>` + `2:camset x y z yaw pitch` (new absolute command) when it was on, else "game's own";
   `<tick>:speed` when not 1; `# gd <kind> <hash> <value>` for every scalar and `# gda <kind> <hash> <count> i:v...` for
-  every 4-byte array of the game data (flags, counters, items, health, magic, rupees, the clock if it is game data:
-  the clock's key is not identified yet); `# not captured:` actors, RNG, Link's motion/action, sound, bool arrays,
+  every 4-byte array of the game data (flags, counters, items, health, magic, rupees, but **not the time of day**: the only steadily
+  running game data are uint 0xe53eb6d1 (+~1.5/s, honoured from the save) and 0xe573f564 (+~1.5/s, play time?);
+  setting 0xe53eb6d1 to 0 or 720 left Hyrule Field equally at night (grey mean 0.534 both), so the clock is held outside
+  the game data (environment state; next: a find/next memory search across a dusk)); `# not captured:` actors, RNG, Link's motion/action, sound, bool arrays,
   vectors, texts.
 - **Game data layout** (1.1.1, manager **[main+0x4c7e180], section kind*0x60: +0x10 count, +0x18 entries, +0x20
   {hash,index} table, +0x2c its size). The kinds ARE the save's sections (progress.sav: pairs {hash,u32} from 0x28 up to
