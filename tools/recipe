@@ -1,0 +1,31 @@
+#!/usr/bin/env python3
+"""recipe <name> [key]: read tools/scenarios/<name>.dbg (see tools/scenarios/README) and print hash=, warp=, base=, dbg=
+(dbg: the NX2NAVI_DBG_TEST string), or only the one value with [key]. `recipe init-base` makes the neutral base profile
+.lab/scenarios/base-profile once, by reading (never writing) Cal's live profile; after that it is fixed."""
+import hashlib, os, shutil, sys
+
+R = os.path.expanduser('~/claude/nx2navi')
+if sys.argv[1:2] == ['init-base']:
+    d = R + '/.lab/scenarios/base-profile'
+    if os.path.exists(d):
+        sys.exit('scenario: %s exists (fixed; remove it by hand to remake)' % d)
+    shutil.copytree(R + '/NX2navi/build/v111/profile', d, ignore=shutil.ignore_patterns('instance.lock', 'temp'))
+    print(d)
+    sys.exit()
+f = '%s/tools/scenarios/%s.dbg' % (R, sys.argv[1])
+t = open(f).read()
+v = {'hash': hashlib.sha256(t.encode()).hexdigest()[:8], 'warp': '', 'base': '', 'dbg': ''}
+cmds = []
+for l in t.split('\n'):
+    l = l.strip()
+    if l.startswith('# warp:'):
+        v['warp'] = l[7:].strip()
+    elif l.startswith('# base:'):
+        v['base'] = os.path.join(R, l[7:].strip())
+    elif l and not l.startswith('#'):
+        cmds.append(l)
+v['dbg'] = ';'.join(cmds)
+if len(sys.argv) > 2:
+    print(v[sys.argv[2]])
+else:
+    print('\n'.join('%s=%s' % kv for kv in v.items()))

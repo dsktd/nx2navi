@@ -10,7 +10,13 @@
   results-add status <scenario> <run.log>...   run_status: how many runs crashed, lost the device or never started (status != ok)
   results-add row <run.log> <scenario> <metric> <mean> <min> <max> <n> <tool> [note]
 
-Columns: date, entry, exe, commit, xlate, scenario, metric, mean, min, max, n, tool, source, knobs, status. A row whose
+  results-add cal <play log>...                Cal's own sessions (build/v111/logs/play-*.log): fps, 1% low, >25 ms/min over
+                                               all full 60 s windows, scenario `cal-play`, tool `cal`; knobs note names the
+                                               SYMPTOMS.md rows that cite the build
+
+Columns: date, entry, exe, commit, xlate, scenario, metric, mean, min, max, n, tool, source, knobs, status, env (tools/host-env
+hash: Mesa, kernel, vbios, GPU clocks, RADV env; .lab/env/<hash>.txt), cache (warm|cold|mixed: shader+pipeline cache at
+the run's start, from the cell's <run dir>/cell.txt), recipe (tools/scenarios/<name>.dbg hash the run started from). A row whose
 (entry, scenario, metric, source) is already there is skipped, so a re-run or backfill is harmless. n=1 rows are
 indicative (a single run). Appends with one write; never rewrites the file.
 """
@@ -18,7 +24,7 @@ import datetime, os, re, statistics as st, subprocess, sys
 
 R = os.path.expanduser('~/claude/nx2navi')
 TSV = R + '/results.tsv'
-HEAD = 'date entry exe commit xlate scenario metric mean min max n tool source knobs status'.split()
+HEAD = 'date entry exe commit xlate scenario metric mean min max n tool source knobs status env cache recipe'.split()
 BORING = re.compile(r'NX2NAVI_(ALIAS_EXTRA_MIB|GPU_WAIT|MARK_CHORD|NVIDIA|RUN_NAME|TRACE|REPLAY_ASYNC|TEX_DESC_STRICT|'
                     r'VK_RECORDER|PIPE_SKIP|AB|DUMP\w*|INPUT\w*|PROFILE\w*|MODS_DIR|XLATE|\w*CACHE\w*|HDR\w*|LIVE\w*)$')
 
@@ -79,8 +85,30 @@ def emit(rows):
     print('results.tsv: %d row(s) appended' % out.count('\n'), file=sys.stderr)
 
 
-def row(log, scen, metric, vals, tool, note='', date=None, knobs=None):
+def cell(log):
+    f = os.path.join(os.path.dirname(os.path.abspath(log)), 'cell.txt')   # written by ab-cell/load-cell/suite-run
+    return dict(l.split('=', 1) for l in open(f).read().split('\n') if '=' in l) if os.path.exists(f) else {}
+
+
+ENVS = {}
+
+
+def host_env(log):
+    if log not in ENVS:
+        import importlib.machinery, importlib.util
+        ld = importlib.machinery.SourceFileLoader('hostenv', R + '/tools/host-env')
+        m = importlib.util.module_from_spec(importlib.util.spec_from_loader('hostenv', ld))
+        ld.exec_module(m)
+        ENVS[log] = m.env(log)[0]
+    return ENVS[log]
+
+
+def row(log, scen, metric, vals, tool, note='', date=None, knobs=None, logs=None):
     b = build(log)
+    c = [cell(l) for l in (logs or [log])]
+    caches = {x.get('cache', '') for x in c} - {''}
+    cache = 'mixed' if len(caches) > 1 else (caches.pop() if caches else '')
+    recipe = ' '.join(sorted({x.get('recipe', '') for x in c} - {''}))
     src = os.path.relpath(os.path.dirname(os.path.abspath(log)), R)
     d = date or datetime.date.fromtimestamp(os.path.getmtime(log)).isoformat()
     k = ' '.join(x for x in (b['knobs'] if knobs is None else knobs, note) if x)
@@ -88,7 +116,7 @@ def row(log, scen, metric, vals, tool, note='', date=None, knobs=None):
     tag = os.environ.get('RESULTS_TAG', '')   # 'suite', 'suite nightly': tools/suite and tools/nightly set it
     tool = (tag + ' ' + tool).strip()
     return [d, b['entry'], b['exe'], b['commit'], b['xlate'], scen, metric, f(st.mean(vals)), f(min(vals)), f(max(vals)),
-            len(vals), tool, src, k, 'ok']
+            len(vals), tool, src, k, 'ok', host_env(log), cache, recipe]
 
 
 SCEN = {'west': 'field-west-standing', 'grave': 'graveyard-standing', 'mid': 'field-mid-standing'}
@@ -158,7 +186,7 @@ def agg(logs, scen, series, tool, note=''):
         n = note
         if os.environ.get('RESULTS_NOTE') == 'noisy' and (max(vals) - min(vals)) > .15 * max(abs(st.mean(vals)), 1e-9):
             n = (n + ' noisy').strip()
-        rows.append(row(logs[0], scen, metric, vals, tool, n))
+        rows.append(row(logs[0], scen, metric, vals, tool, n, logs=logs))
     return rows
 
 
@@ -220,6 +248,28 @@ def do_status(scen, logs):
     return [r]
 
 
+def do_cal(logs):
+    sym = open(R + '/SYMPTOMS.md').read().split('\n') if os.path.exists(R + '/SYMPTOMS.md') else []
+    rows = []
+    for l in logs:
+        s = open(l, errors='replace').read()
+        if not re.search(r'build: entry=', s[:60000]):
+            continue
+        w = re.findall(r'frametime: 60 s: (\d+) frames in ([\d.]+) s, mean ([\d.]+) fps, 1% low ([\d.]+) fps, over 25 ms (\d+)', s)
+        full = [x for x in w if float(x[1]) <= 61.0]
+        if len(full) < 2:
+            continue
+        exe = build(l)['exe']
+        hit = [r.split('|')[1].strip()[:40] for r in sym if r.startswith('| ') and re.search(r'\b%s\b' % re.escape(exe), r)]
+        note = 'symptoms: ' + '; '.join(hit) if hit else ''
+        for i, metric in ((2, 'fps'), (3, 'fps_1pc_low'), (4, 'over25ms_per_min')):
+            r = row(l, 'cal-play', metric, [float(x[i]) for x in full], 'cal', note)
+            r[10] = len(full)
+            r[12] = os.path.relpath(l, R)
+            rows.append(r)
+    return rows
+
+
 def main():
     a = sys.argv[1:]
     if not a:
@@ -232,6 +282,8 @@ def main():
         emit(do_window(a[1], a[2]))
     elif a[0] in ('windows', 'shadow', 'vram'):
         emit({'windows': do_windows, 'shadow': do_shadow, 'vram': do_vram}[a[0]](a[1], a[2:]))
+    elif a[0] == 'cal':
+        emit(do_cal(a[1:]))
     elif a[0] == 'status':
         emit(do_status(a[1], a[2:]))
     elif a[0] == 'row':

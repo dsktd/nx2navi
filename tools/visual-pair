@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# visual-pair <A.png> <B.png> <scenario> <A label> <B label> [kind] : store one visual A/B pair for review by eye, never a
+# blocker (ARCHITECTURE.md 11). Copies both full-res shots to .lab/visual/<date>/<B exe>-<scenario>-<A|B>.png (+ thumbs),
+# scores the pair (tools/visual-score: per-tile mean abs delta in linear light, scenario mask, 95th percentile tile),
+# writes the diff heatmap, and appends one row to visual.tsv. Labels are "<exe>[ knobs]"; kind: ab (default) or
+# parent (parent|child shots of the suite). Status: auto-same below the calibrated threshold, flagged above;
+# cal-good / cal-bad come from the review view (/results/ page). Pairs are kept whatever the build store prunes.
+R=$HOME/claude/nx2navi
+a=$1 b=$2 scen=$3 la=$4 lb=$5 kind=${6:-ab}
+[ -f "$a" ] && [ -f "$b" ] || { echo "visual-pair: missing shot ($a, $b)" >&2; exit 1; }
+py=$(nix build --no-link --print-out-paths --impure --expr \
+  '(builtins.getFlake "nixpkgs").legacyPackages.x86_64-linux.python3.withPackages (p: [p.numpy p.pillow])' 2>/dev/null | tail -1)
+exec "$py/bin/python3" -I $R/tools/visual-score store "$a" "$b" "$scen" "$la" "$lb" "$kind"

@@ -15,13 +15,14 @@ $R/tools/store-build verify $exe || [ $? = 2 ] || exit 8   # overwritten build r
 log=$(ls -t $B/logs/play-*.log | head -1)
 [ $(( $(date +%s) - $(stat -c %Y $log) )) -lt 180 ] && { echo "CAL BACK"; exit 9; }
 gap=${GAP:-900} first=${FIRST:-600}
+. $R/tools/cell-lib.sh
 west="scene=HyruleField_Adult entrance=HyruleField_FrontOfMarket yaw=180 age=adult"
 grave='scene=Graveyard_Adult entrance=GraveYard_KakarikoSide age=adult'
 name=lc-$tag; w=$west; rec=.lab/parity/load-west.txt; script=""; frame=1500
 case ${COLD:-} in
-  west) name=lc-$tag-west-$reps;;                       # reps is the run's number here
-  grave) name=lc-$tag-grave-$reps; w=$grave; rec=lab-profile-flicker/load-slot01.txt;;
-  *) t=$first
+  west) name=lc-$tag-west-$reps; cell_scenario field-west-standing;;   # reps is the run's number here
+  grave) name=lc-$tag-grave-$reps; w=$grave; rec=lab-profile-flicker/load-slot01.txt; cell_scenario graveyard-standing;;
+  *) cell_scenario field-west-standing; t=$first
      for ((i = 0; i < reps; i++)); do
        script+="$t:warp Graveyard_Adult GraveYard_KakarikoSide;"; t=$((t + gap))
        script+="$t:warp HyruleField_Adult HyruleField_FrontOfMarket;"; t=$((t + gap))
@@ -36,10 +37,10 @@ if [ $exe = play13 ]; then
 else
   c=(NX2NAVI_STALL_MS=100 NX2NAVI_SHADOW_BULK_WRITE=1 NX2NAVI_TEX_RELEASED_MB=3072
      NX2NAVI_XLATE=${XLATE:-$B/xlate-rebase/nx2navi_xlate} NX2NAVI_SHADER_CACHE=${SC:-$P/scR} NX2NAVI_PIPELINE_CACHE=${PC:-$P/pcR.bin})
-  [ -n "$script" ] && c+=("NX2NAVI_DBG_TEST=$script")
+  [ -n "$script$rdbg" ] && c+=("NX2NAVI_DBG_TEST=$rdbg${rdbg:+${script:+;}}$script")   # recipe ticks come first
 fi
-for try in 1 2 3; do
-  l0=$(cut -d" " -f1 /proc/loadavg)
+for try in 1 2 3 4; do
+  l0=$(cell_wait); cache=$(cell_cache ${SC:-$P/scR} ${PC:-$P/pcR.bin})   # waits like ab-cell (load under LOAD_MAX)
   [ "$(ls -t $B/logs/play-*.log | head -1)" != "$log" ] && { echo "CAL BACK"; exit 9; }
   (cd $R && LAB_EXE=nx2navi.$exe LAB_TIMEOUT=${LAB_TIMEOUT:-$((frame / 25 + 120))} taskset -c 0-7,16-23 tools/lab-run --warp "$w" $rec $frame $name \
     NX2NAVI_ALIAS_EXTRA_MIB=512 NX2NAVI_GPU_WAIT=0 NX2NAVI_MARK_CHORD=off NX2NAVI_NVIDIA=0 NX2NAVI_MODS_DIR=$B/mods-text \
@@ -47,6 +48,8 @@ for try in 1 2 3; do
     NX2NAVI_TRACE=perf,present NX2NAVI_RUN_NAME=$name "${c[@]}" "$@" > $R/.lab/$name.out 2>&1)
   # other load on the machine during the run (a build beside it made 30-40 ms frames and 4x the lost time, 2026-11-12)
   echo "loadavg $l0 -> $(cut -d" " -f1 /proc/loadavg) (1 min, before -> after; the run itself is about 3-5)" >> $R/.lab/$name.out
+  cell_note $name $cache "$rhash" $l0
+  cell_redo $name && continue
   # a boot that the SDK aborts before the title (seen 2026-11-12) is retried
   grep -q "the SDK aborted" $R/.lab/$name/run.log || break
   echo "$name boot abort, retry" >&2

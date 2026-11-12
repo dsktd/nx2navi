@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NX2navi visual review</title>
+<style>
+:root{--bg:#fff;--fg:#1d2330;--mut:#6b7385;--line:#d9dde6;--a:#2f6fdb;--ok:#2a9d5c;--bad:#c94545;--card:#f6f7fa}
+@media (prefers-color-scheme:dark){:root{--bg:#14171d;--fg:#e4e7ee;--mut:#8f97a8;--line:#2b303b;--a:#6ea0ff;--ok:#4cc585;--bad:#e56b6b;--card:#1b1f27}}
+body{margin:0;padding:16px;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,sans-serif;max-width:1200px;margin:auto}
+h1{font-size:20px}.mut{color:var(--mut)}a{color:var(--a)}
+.pair{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:8px;margin:12px 0}
+.view{position:relative;width:100%;overflow:hidden;cursor:ew-resize;user-select:none}.view img{width:100%;display:block}
+.view .top{position:absolute;inset:0;overflow:hidden}.view .top img{width:auto;height:100%;max-width:none}
+.sbs{display:grid;grid-template-columns:1fr 1fr;gap:4px}.sbs img{width:100%}
+button{font:inherit;padding:3px 10px;border:1px solid var(--line);border-radius:4px;background:var(--bg);color:var(--fg);cursor:pointer}
+.good{border-color:var(--ok)}.bad{border-color:var(--bad)}input{font:inherit;width:40%;background:var(--bg);color:var(--fg);border:1px solid var(--line)}
+</style></head><body>
+<h1>Visual review</h1>
+<p class="mut">Pairs from visual.tsv. Default list: <b>flagged</b> (diff score above the scenario's calibrated threshold). Never a blocker. Modes: slider (drag), flip (click), side by side, heatmap. <a href="./">results</a></p>
+<p>Show <select id="f"><option value="flagged">flagged</option><option value="all">all</option><option value="auto-same">auto-same</option><option value="cal-good">cal-good</option><option value="cal-bad">cal-bad</option></select></p>
+<div id="list"></div>
+<script>
+const tsv=t=>{const l=t.trim().split('\n').map(x=>x.split('\t'));const h=l.shift()||[];return l.map(r=>Object.fromEntries(h.map((k,i)=>[k,r[i]||''])))};
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const src=p=>p.replace(/^\.lab\/visual\//,'visual/');
+let P=[];
+function draw(){const f=document.getElementById('f').value,L=document.getElementById('list');
+  const v=P.filter(p=>f==='all'||p.status===f).sort((a,b)=>b.score-a.score);
+  L.innerHTML=v.length?'':'<p class="mut">none</p>';
+  for(const p of v){const d=document.createElement('div');d.className='pair';
+    d.innerHTML=`<b>#${esc(p.id)} ${esc(p.scenario)}</b> <span class="mut">${esc(p.date)} ${esc(p.kind)}: ${esc(p.a)} | ${esc(p.b)}; score ${esc(p.score)}; ${esc(p.status)} ${esc(p.note)}</span>
+    <div><button data-m="slider">slider</button> <button data-m="flip">flip</button> <button data-m="sbs">side by side</button> <button data-m="heat">heatmap</button></div>
+    <div class="stage"></div>
+    <div><input placeholder="note"> <button class="good">good</button> <button class="bad">bad</button> <span class="msg mut"></span></div>`;
+    const st=d.querySelector('.stage'),A=src(p.a_png),B=src(p.b_png),H=src(p.heat_png);
+    const mode=m=>{if(m==='sbs')st.innerHTML=`<div class="sbs"><img src="${A}"><img src="${B}"></div>`;
+      else if(m==='heat')st.innerHTML=`<div class="sbs"><img src="${B}"><img src="${H}"></div>`;
+      else if(m==='flip'){st.innerHTML=`<div class="view"><img src="${A}"></div><span class="mut">showing A: click to flip</span>`;
+        let s=0;st.querySelector('.view').onclick=()=>{s^=1;st.querySelector('img').src=s?B:A;st.querySelector('span').textContent='showing '+(s?'B':'A')+': click to flip'}}
+      else{st.innerHTML=`<div class="view"><img src="${B}"><div class="top" style="width:50%"><img src="${A}"></div></div><span class="mut">left A, right B: drag</span>`;
+        const v=st.querySelector('.view'),t=v.querySelector('.top'),ti=t.querySelector('img');
+        const fit=()=>ti.style.height=v.clientHeight+'px';v.querySelector('img').onload=fit;
+        const mv=e=>{const r=v.getBoundingClientRect();t.style.width=Math.max(0,Math.min(100,(e.clientX-r.left)/r.width*100))+'%'};
+        v.onpointerdown=e=>{v.setPointerCapture(e.pointerId);mv(e);v.onpointermove=mv};v.onpointerup=()=>v.onpointermove=null}};
+    d.querySelectorAll('[data-m]').forEach(b=>b.onclick=()=>mode(b.dataset.m));mode('slider');
+    const send=s=>fetch('review',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:p.id,status:s,note:d.querySelector('input').value})})
+      .then(r=>r.text().then(t=>{d.querySelector('.msg').textContent=r.ok?'saved '+s:t;if(r.ok)p.status=s}));
+    d.querySelector('.good').onclick=()=>send('cal-good');d.querySelector('.bad').onclick=()=>send('cal-bad');
+    L.appendChild(d)}}
+fetch('visual.tsv').then(r=>r.ok?r.text():'').then(t=>{P=tsv(t);draw()});document.getElementById('f').onchange=draw;
+</script></body></html>

@@ -1,0 +1,1 @@
+threshold 0.016   # 1.5x the largest same-build repeat score (6 pairs 0.0076-0.0108, 2026-11-12)

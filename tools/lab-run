@@ -104,7 +104,8 @@ elif [[ -z $prof && -n $soft ]]; then
   prof=$OUT/profile; mkdir -p "$prof"; cp -a "$live"/. "$prof"/ || exit 4
   envs+=("NX2NAVI_PROFILE_DIR=$prof"); echo "lab-run: soft, profile copy in $prof"
 elif [[ -z $prof && -n $warp ]]; then
-  prof=$OUT/profile; mkdir -p "$prof"; cp -a "$live"/. "$prof"/ || exit 4
+  # LAB_PROFILE_SRC: a fixed base profile (tools/scenario, .lab/scenarios/base-profile) instead of the live one
+  prof=$OUT/profile; mkdir -p "$prof"; cp -a "${LAB_PROFILE_SRC:-$live}"/. "$prof"/ || exit 4
   envs+=("NX2NAVI_PROFILE_DIR=$prof"); echo "lab-run: warp, profile copy in $prof"
 elif [[ -z $prof ]]; then echo "lab-run: no bundle for ${rec##*/}; using the live profile (saves restored after)" >&2; fi
 if [[ -n $warp ]]; then

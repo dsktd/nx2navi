@@ -1,0 +1,102 @@
+#!/usr/bin/env python3
+"""visual-score (run through tools/visual-pair, which supplies numpy + pillow):
+  store <A.png> <B.png> <scenario> <A label> <B label> <kind>   copy, thumb, score, heatmap, append to visual.tsv
+  score <A.png> <B.png> [scenario]                               print the score only (calibration)
+Score: both shots to linear light, |A-B| averaged over RGB, mean per 32x32 tile, tiles under the scenario's mask
+(tools/scenarios/<scenario>.mask: lines `x0 y0 x1 y1` in fractions of the frame: sky, water, HUD clock) left out; the
+score is the 95th percentile tile (a few particles do not flag a pair, a changed object does). THRESHOLD from the
+null-knob / same-build repeat calibration (ARCHITECTURE.md 11)."""
+import datetime, os, re, sys
+import numpy as np
+from PIL import Image
+
+R = os.path.expanduser('~/claude/nx2navi')
+TSV = R + '/visual.tsv'
+HEAD = 'id date scenario recipe kind a b a_png b_png heat_png score status note'.split()
+THRESHOLD = 0.020   # default; a scenario's .mask line `threshold <x>` overrides (calibration: ARCHITECTURE.md 11)
+TILE = 32
+
+
+def lin(p):
+    x = np.asarray(Image.open(p).convert('RGB'), dtype=np.float32) / 255
+    return np.where(x <= 0.04045, x / 12.92, ((x + 0.055) / 1.055) ** 2.4)
+
+
+def score(a, b, scen=''):
+    A, B = lin(a), lin(b)
+    if A.shape != B.shape:
+        return 1.0, None
+    d = np.abs(A - B).mean(axis=2)
+    h, w = d.shape[0] // TILE, d.shape[1] // TILE
+    t = d[:h * TILE, :w * TILE].reshape(h, TILE, w, TILE).mean(axis=(1, 3))
+    keep = np.ones_like(t, dtype=bool)
+    mf = '%s/tools/scenarios/%s.mask' % (R, scen)
+    if scen and os.path.exists(mf):
+        for l in open(mf):
+            if l.startswith('threshold'):
+                continue
+            v = [float(x) for x in l.split('#')[0].split()]
+            if len(v) == 4:
+                keep[int(v[1] * h):int(np.ceil(v[3] * h)), int(v[0] * w):int(np.ceil(v[2] * w))] = False
+    s = float(np.percentile(t[keep], 95)) if keep.any() else 0.0
+    return s, (t, keep)
+
+
+def threshold(scen):
+    mf = '%s/tools/scenarios/%s.mask' % (R, scen)
+    for l in (open(mf) if scen and os.path.exists(mf) else []):
+        if l.startswith('threshold'):
+            return float(l.split()[1])
+    return THRESHOLD
+
+
+def heat(tk, size, out):
+    t, keep = tk
+    v = np.clip(t / (THRESHOLD * 4), 0, 1)   # blue = 0, red = 4x the default threshold
+    rgb = np.stack([v, np.clip(1 - abs(v - .5) * 2, 0, 1) * .6, 1 - v], axis=2) * np.where(keep, 1, .25)[..., None]
+    Image.fromarray((rgb * 255).astype(np.uint8)).resize(size, Image.NEAREST).save(out)
+
+
+def store(a, b, scen, la, lb, kind):
+    day = datetime.date.today().isoformat()
+    d = '%s/.lab/visual/%s' % (R, day)
+    os.makedirs(d, exist_ok=True)
+    tag = re.sub(r'[^\w.-]', '_', lb.split()[0])
+    sides = ('A', 'B') if kind == 'ab' else ('parent', 'child')
+    n = 1
+    while os.path.exists('%s/%s-%s-%s%s.png' % (d, tag, scen, sides[0], '' if n == 1 else '.%d' % n)):
+        n += 1
+    sfx = '' if n == 1 else '.%d' % n
+    paths = []
+    for src, side in zip((a, b), sides):
+        im = Image.open(src).convert('RGB')
+        p = '%s/%s-%s-%s%s.png' % (d, tag, scen, side, sfx)
+        im.save(p)
+        im.thumbnail((480, 270)); im.save(p[:-4] + '.thumb.png')
+        paths.append(p)
+    s, tk = score(a, b, scen)
+    hp = '%s/%s-%s-heat%s.png' % (d, tag, scen, sfx)
+    if tk:
+        heat(tk, Image.open(a).size, hp)
+    st = 'flagged' if s > threshold(scen) else 'auto-same'
+    rec = ''
+    sf = '%s/tools/scenarios/%s.dbg' % (R, scen)
+    if os.path.exists(sf):
+        import hashlib
+        rec = hashlib.sha256(open(sf).read().encode()).hexdigest()[:8]
+    rows = open(TSV).read().split('\n')[1:] if os.path.exists(TSV) else []
+    i = 1 + max([int(r.split('\t')[0]) for r in rows if r.strip()] or [0])
+    rel = lambda p: os.path.relpath(p, R)
+    line = '\t'.join(str(x) for x in (i, day, scen, rec, kind, la, lb, rel(paths[0]), rel(paths[1]), rel(hp), '%.4f' % s, st, ''))
+    with open(TSV, 'a') as f:
+        if not rows:
+            f.write('\t'.join(HEAD) + '\n')
+        f.write(line + '\n')
+    print('visual pair %d: %s vs %s, %s, score %.4f: %s' % (i, la, lb, scen, s, st))
+
+
+if __name__ == '__main__':
+    if sys.argv[1] == 'score':
+        print('%.4f' % score(sys.argv[2], sys.argv[3], sys.argv[4] if len(sys.argv) > 4 else '')[0])
+    else:
+        store(*sys.argv[2:8])

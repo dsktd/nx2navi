@@ -3,21 +3,23 @@
 # it targets, so rows compare across builds. Runs on the GPU (lab lock via lab-run, one job at a time); meant for
 # tools/nightly, not for iteration (iteration = one targeted ab-cell/load-cell). reps default 3 (SUITE_REPS).
 # Rows land in results.tsv with the tool tag `suite` (`suite nightly` from nightly). `just suite <exe>`; SUITE_DRY=1 prints
-# the plan and runs nothing. About 40 min at 3 reps (GPU time: ~2 min a standing/running run, ~1.5 min a cold load).
+# the plan and runs nothing. About 25 min at 3 reps: 10 boots (2026-11-12: the cold-load cells were dropped, the
+# standing runs ARE cold loads of the same warp, so step 3 reads their logs; was 16 boots, ~40 min).
+# Every run starts from its tools/scenarios recipe (SCENARIO_RECIPES=1: fixed base profile, recipe hash per row).
 #  1 field-west standing: fps, 1% low             (ab-cell NULL knob runs: standing window)
 #  2 graveyard standing: fps, 1% low, >25 ms/min  (spread over the reps)
-#  3 cold load longest gap + lost ms, west and graveyard   (load-cell COLD=)
+#  3 cold load longest gap + lost ms, west and graveyard   (load-stat on the standing runs' logs: same warp + save load)
 #  4 running: >25 ms frames/min from the scripted replay .lab/parity/load-run.txt, noted `noisy` while spread > 15%
 #  5 replay ms (ab-cell replay_A_ms) + shadow sync ms/frame at field-west
 #  6 VRAM + live textures after a fixed 4-round teleport loop (load-cell, one run)
-#  7 fixed-position shots (the standing runs' final.png) kept in .lab/suite/<exe>/ and diffed against the parent build's
-#    (builds.tsv); RMSE listed in .lab/suite/<exe>/shots.txt, flagged for Cal's review above 0.07 (the replay repeat bound)
+#  7 fixed-position shots (the standing runs' final.png) kept in .lab/suite/<exe>/ and paired with the parent build's
+#    (builds.tsv) by tools/visual-pair: visual.tsv row, heatmap, auto-same or flagged (never pass/fail)
 R=$HOME/claude/nx2navi; B=$R/NX2navi/build/v111
 exe=$1 reps=${2:-${SUITE_REPS:-3}}
 [ -n "$exe" ] || { sed -n 2,3p $0; exit 2; }
 grep -q "^$exe	" $R/builds.tsv 2>/dev/null || { echo "no builds.tsv row for $exe: tools/builds-add first"; exit 8; }
 $R/tools/store-build verify $exe || exit 1   # the exe must be the stored one (build/store, ARCHITECTURE.md 11)
-export RESULTS_TAG="${RESULTS_TAG:-suite}"
+export RESULTS_TAG="${RESULTS_TAG:-suite}" SCENARIO_RECIPES=1
 out=$R/.lab/suite/$exe; mkdir -p $out
 plan() { echo "suite $exe x$reps: $*"; [ -n "$SUITE_DRY" ] || "$@"; }
 tag=su-$exe
@@ -32,22 +34,24 @@ for sc in west grave; do
   [ $sc = west ] && $R/tools/results-add shadow $scen $logs
   cp $R/.lab/ab-$tag-$sc-1/final.png $out/shot-$sc.png 2>/dev/null
 done
-for sc in west grave; do
-  for i in $(seq $reps); do plan env COLD=$sc $R/tools/load-cell $exe $tag $i || [ -n "$SUITE_DRY" ] || exit $?; done
-  [ -n "$SUITE_DRY" ] || $R/tools/results-add status "load cold $sc" $(for i in $(seq $reps); do echo $R/.lab/lc-$tag-$sc-$i/run.log; done)
+for sc in west grave; do   # cold loads: the standing runs' own save loads (load-stat reads ab-*-<sc>-<i> as a cold run)
+  l=$(for i in $(seq $reps); do echo $R/.lab/ab-$tag-$sc-$i/run.log; done)
+  [ -n "$SUITE_DRY" ] && { echo "  results-add load + status 'load cold $sc' over the standing runs"; continue; }
+  $R/tools/results-add load $l
+  $R/tools/results-add status "load cold $sc" $l
 done
 plan env RESULTS_NOTE=noisy $R/tools/suite-run $exe $tag-run $reps
 plan $R/tools/load-cell $exe $tag-loop 4
 if [ -z "$SUITE_DRY" ]; then
   $R/tools/results-add vram teleport-loop-4 $R/.lab/lc-$tag-loop/run.log
-  # shots vs the parent build's
+  # shots vs the parent build's: a visual pair each (tools/visual-pair), for Cal's eyes only when flagged
   parent=$(awk -F'\t' -v e=$exe '$1 == e { print $6 }' $R/builds.tsv)
   : > $out/shots.txt
-  for f in $out/shot-*.png; do
-    p=$R/.lab/suite/$parent/$(basename $f)
-    [ -f "$p" ] || { echo "$(basename $f): no shot of parent $parent yet" >> $out/shots.txt; continue; }
-    d=$(nix shell nixpkgs#imagemagick -c magick compare -metric RMSE "$f" "$p" null: 2>&1 | sed 's/.*(\(.*\))/\1/')
-    echo "$(basename $f) vs $parent: RMSE $d $(awk -v d="$d" 'BEGIN { print (d > 0.07) ? "FLAG: for Cal to review" : "same" }')" >> $out/shots.txt
+  for sc in west grave; do
+    scen=field-west-standing; [ $sc = grave ] && scen=graveyard-standing
+    p=$R/.lab/suite/$parent/shot-$sc.png
+    [ -f "$p" ] || { echo "shot-$sc: no shot of parent $parent yet" >> $out/shots.txt; continue; }
+    $R/tools/visual-pair "$p" $out/shot-$sc.png $scen "$parent" "$exe" parent >> $out/shots.txt
   done
   cat $out/shots.txt
 fi

@@ -1,0 +1,9 @@
+Suite scenarios (ARCHITECTURE.md 11): one recipe per scenario, so every run starts the same whatever Cal's save holds.
+  # base: <path>        the neutral base profile (copied per run by lab-run LAB_PROFILE_SRC; never Cal's live profile)
+  # warp: <warp-save args>  the save edit (scene, start position, yaw, age): the scene loads straight from the save
+  <tick>:<cmd>          upstream NX2NAVI_DBG_TEST commands (runtime/debug_tools.c test_script): flag <hash> <0|1>,
+                        find/next/setfirst/holdfirst, freecam/camgo/camreset, speed, event; ticks from Link's first frame
+tools/recipe <name> prints `hash=`, `warp=`, `base=`, `dbg=`; the hash (sha256 of the file, 8 hex) goes in results.tsv
+column `recipe`. Time of day is NOT pinned yet: no save key name found (mm3 guesses of *Time*/*DayTime* miss in
+progress.sav, 2026-11-12); finding it needs find/next runs on the GPU (value changes as the clock runs). Items: not needed
+by these perf scenarios (no direct give command upstream; memory search would be the way).

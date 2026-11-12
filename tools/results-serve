@@ -1,0 +1,50 @@
+#!/usr/bin/env python3
+"""results-serve [port]: the results page server (service ~/claude/.services/results, 127.0.0.1 only, behind the proxy at
+/results/). Serves its www dir (results.tsv, builds.tsv, SYMPTOMS.md, visual.tsv, visual/ = .lab/visual, review.html) and
+one write: POST review (form or JSON: id, status cal-good|cal-bad, note) sets a visual.tsv row's status and note; cal-bad
+also appends a SYMPTOMS.md row linking the pair and its builds, so the rework is queued."""
+import fcntl, http.server, json, os, re, sys, urllib.parse
+
+R = os.path.expanduser('~/claude/nx2navi')
+VT = R + '/visual.tsv'
+
+
+def review(i, status, note):
+    if status not in ('cal-good', 'cal-bad', 'flagged', 'auto-same'):
+        return 400, 'bad status'
+    note = re.sub(r'[\t\n|]', ' ', note)[:300]
+    with open(VT + '.lock', 'w') as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        rows = [l.split('\t') for l in open(VT).read().split('\n') if l]
+        h = rows[0]
+        hit = next((r for r in rows[1:] if r[0] == str(i)), None)
+        if not hit:
+            return 404, 'no pair %s' % i
+        hit += [''] * (len(h) - len(hit))
+        old = hit[h.index('status')]
+        hit[h.index('status')], hit[h.index('note')] = status, note
+        open(VT + '.tmp', 'w').write(''.join('\t'.join(r) + '\n' for r in rows))
+        os.rename(VT + '.tmp', VT)
+        if status == 'cal-bad' and old != 'cal-bad':
+            g = dict(zip(h, hit))
+            line = '| Visual change in %s: %s vs %s (pair %s, score %s)%s | - | %s | open | none | visual.tsv pair %s: %s, %s |\n' % (
+                g['scenario'], g['a'], g['b'], g['id'], g['score'], (': ' + note) if note else '', g['b'].split()[0], g['id'],
+                g['b_png'], g['heat_png'])
+            open(R + '/SYMPTOMS.md', 'a').write(line)
+    return 200, 'ok'
+
+
+class H(http.server.SimpleHTTPRequestHandler):
+    def do_POST(self):
+        if not self.path.rstrip('/').endswith('review'):
+            return self.send_error(404)
+        n = int(self.headers.get('Content-Length') or 0)
+        body = self.rfile.read(min(n, 4096)).decode(errors='replace')
+        d = json.loads(body) if body.startswith('{') else {k: v[0] for k, v in urllib.parse.parse_qs(body).items()}
+        code, msg = review(d.get('id', ''), d.get('status', ''), d.get('note', ''))
+        self.send_response(code); self.send_header('Content-Type', 'text/plain'); self.end_headers()
+        self.wfile.write(msg.encode())
+
+
+if __name__ == '__main__':
+    http.server.ThreadingHTTPServer(('127.0.0.1', int(sys.argv[1]) if len(sys.argv) > 1 else 8434), H).serve_forever()
