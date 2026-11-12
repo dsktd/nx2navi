@@ -10,7 +10,7 @@ i=0
 while [ $i -lt $reps ]; do
   i=$((i + 1)); name=$tag-$i
   l0=$(cell_wait); cache=$(cell_cache ${SC:-$P/scR} ${PC:-$P/pcR.bin})
-  (cd $R && LAB_EXE=nx2navi.$exe LAB_TIMEOUT=400 taskset -c 0-7,16-23 tools/lab-run --warp "$w" .lab/parity/load-run.txt 5400 $name \
+  (cd $R && LAB_EXE=nx2navi.$exe LAB_TIMEOUT=400 taskset -c ${LAB_CPUS:-$(taskset -cp $$ | cut -d: -f2 | tr -d " ")} tools/lab-run --warp "$w" .lab/parity/load-run.txt 5400 $name \
     NX2NAVI_ALIAS_EXTRA_MIB=512 NX2NAVI_GPU_WAIT=0 NX2NAVI_MARK_CHORD=off NX2NAVI_NVIDIA=0 NX2NAVI_MODS_DIR=$B/mods-text \
     NX2NAVI_REPLAY_ASYNC=1 NX2NAVI_TEX_DESC_STRICT=1 NX2NAVI_VK_RECORDER=1 NX2NAVI_SHADOW_NT=1 NX2NAVI_PIPE_SKIP=any \
     NX2NAVI_TRACE=perf,present NX2NAVI_RUN_NAME=$name NX2NAVI_SHADOW_BULK_WRITE=1 NX2NAVI_TEX_RELEASED_MB=3072 \
