@@ -339,4 +339,6 @@ run NAME="" *args:
     #!/usr/bin/env sh
     export NX2NAVI_RUN_NAME="${NX2NAVI_RUN_NAME:-{{ if NAME == "" { "play" } else { NAME } }}}"   # the log's build line names it
     if [ -z "{{NAME}}" ]; then exec {{just_executable()}} -f "{{justfile()}}" try-name "" {{args}}; fi
-    exec sh "{{justfile_directory()}}/runs/{{NAME}}.sh" {{args}}
+    f="{{justfile_directory()}}/runs/{{NAME}}.sh"
+    [ -e "$f" ] || { echo "no run '{{NAME}}'; have: $(ls "${f%/*}" | sed 's/\.sh$//' | tr '\n' ' ')"; exit 1; }
+    exec sh "$f" {{args}}
