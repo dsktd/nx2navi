@@ -72,6 +72,9 @@ lowering bugs, invalid SPIR-V, window origin), section 6 "Texture cache" (wrong 
 
 ## Rules
 
+- **Cite the build.** Every finding, tracker note and report about a symptom names the build line it was seen on
+  (`entry= exe= commit=` from the log's first `[host] build:` line, or the dump's `build.txt`; ARCHITECTURE.md 11).
+  Never compare symptoms across two different build lines without saying so.
 - **Never write the live shader cache outside the reload loop** (backed up, temp + rename, restored after). Use a
   private copy of the cache for anything else. **No hardlinked build copies** (`cp -al` of the cache or build dir:
   an in-place write corrupts both).

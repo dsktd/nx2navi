@@ -5,7 +5,8 @@ Reads only: the newest NX2navi/build/<ver>/logs/play-*.log. Every memory sample 
 .lab/play-watch/<session>.csv so growth can be analysed afterwards.
 
 Events (stdout, one line each):
-  session   a new play log appeared
+  session   a new play log appeared (with its build line: entry, exe, commit, translator)
+  build     the runtime's build line, once per session
   mark      Cal marked a moment; printed with the memory state at that time
   growth    live textures crossed another GiB
   budget    VRAM use crossed 95% of the budget, went over it, or the released list ran dry
@@ -59,6 +60,7 @@ class Session:
         self.name = os.path.basename(path)[5:-4]
         self.fh = open(path, errors="replace")  # noqa: SIM115 (followed for the whole session)
         self.state = {}
+        self.build = None  # "entry=... exe=... commit=..." from the runtime's first line (patch 0087)
         self.first_live = None
         self.next_gib = None
         self.flags = set()
@@ -94,6 +96,10 @@ class Session:
 
     def line(self, text):
         s = self.state
+        if self.build is None and "[host] build: " in text:
+            self.build = " ".join(text.split("[host] build: ", 1)[1].split()[:4])
+            emit("build", f"{os.path.basename(self.path)}: {self.build}")
+            return
         m = VRAM.search(text)
         if m:
             frame, _blocks, alloc, n_live, live, _n_rel, released, mirrors = map(int, m.groups())
@@ -196,7 +202,8 @@ def main():
                 session.next_gib = (session.first_live // 1024 + 1) * 1024
                 session.samples = session.samples[-1:]
             session.last_status = time.time()
-            emit("session", f"watching {os.path.basename(path)}; {session.summary()}")
+            build = session.build or "no build line (exe before patch 0087)"
+            emit("session", f"watching {os.path.basename(path)} ({build}); {session.summary()}")
         if session and not session.poll():
             emit("ended", f"{os.path.basename(session.path)} stopped growing; last state: {session.summary()}")
             stale = session.path

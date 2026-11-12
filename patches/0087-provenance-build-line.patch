@@ -1,0 +1,256 @@
+From 6a754f93ebd3ff52b72637b994318c7c2a0c0f44 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 19:09:23 -0500
+Subject: [PATCH] provenance: the first log line names the build (entry, exe,
+ commit, translator, every NX2NAVI_* setting), and build.txt holds it beside
+ every dump, flight dump, RenderDoc capture, shots folder, mark ring and
+ requested shot (shot-<n>.build.txt); input recordings carry it in their
+ header, so a symptom is never filed against the wrong build
+
+---
+ runtime/boot.c       |   8 ++-
+ runtime/flight.c     |   1 +
+ runtime/host.h       |   5 ++
+ runtime/input.c      |   2 +-
+ runtime/main.c       |   1 +
+ runtime/provenance.c | 116 +++++++++++++++++++++++++++++++++++++++++++
+ runtime/rdoc.c       |   1 +
+ runtime/vk_dump.c    |   1 +
+ 8 files changed, 133 insertions(+), 2 deletions(-)
+ create mode 100644 runtime/provenance.c
+
+diff --git a/runtime/boot.c b/runtime/boot.c
+index 0ea24f6..c4f9277 100644
+--- a/runtime/boot.c
++++ b/runtime/boot.c
+@@ -272,7 +272,7 @@ static void series_shot(const tex_t *t, const int crop[4], uint64_t n) {
+             step = (unsigned long long)(ws * 1e6), next = lo;
+         else if (!e || sscanf(e, "%llu-%llu:%llu", &lo, &hi, &step) != 3 || !step) hi = 0;
+         dir = cfg_get("NX2NAVI_SHOTS_DIR") ? cfg_get("NX2NAVI_SHOTS_DIR") : ".";
+-        if (hi) plat_file_mkdir_p(dir);
++        if (hi) plat_file_mkdir_p(dir), rt_build_note(dir);
+         parsed = 1;
+     }
+     // NX2NAVI_SHADER_RELOAD=1 (test): a file shot.req beside the shader cache folder asks for this present, full size,
+@@ -333,6 +333,11 @@ static void series_shot(const tex_t *t, const int crop[4], uint64_t n) {
+         gfx_shader_beside_cache(name, path, sizeof path);
+     }
+     rt_write_png(path, out, ow, oh);
++    if (req) {   // shot-<n>.png -> shot-<n>.build.txt: the build it was seen on
++        char note[PLAT_PATH_MAX + 16];
++        snprintf(note, sizeof note, "%.*s.build.txt", (int)(strlen(path) > 4 ? strlen(path) - 4 : 0), path);
++        rt_build_note_file(note);
++    }
+     if (req_file) plat_file_delete(req_path);
+     if (req) rt_log("boot: shot: present %llu written to %s", (unsigned long long)n, path);
+     free(out);
+@@ -376,6 +381,7 @@ static void mark_ring_write(void *arg) {
+         f++;
+     }
+     plat_file_mkdir_p(m->dir);
++    rt_build_note(m->dir);
+     for (uint64_t g = m->first; all && g < f; g++) {
+         uint8_t *px = all + one * (size_t)(g - m->first);
+         if (!px[3]) continue;
+diff --git a/runtime/flight.c b/runtime/flight.c
+index 85f3320..247c5d5 100644
+--- a/runtime/flight.c
++++ b/runtime/flight.c
+@@ -238,6 +238,7 @@ static void dump_main(void *arg) {
+         free(j);
+         return;
+     }
++    rt_build_note(j->dir);
+     uint8_t *have = calloc((size_t)j->n, 1);
+     int n_thumbs = 0;
+     if (thumbs_on && have) {
+diff --git a/runtime/host.h b/runtime/host.h
+index 65b453d..8511202 100644
+--- a/runtime/host.h
++++ b/runtime/host.h
+@@ -22,6 +22,11 @@ void rt_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));   // "[
+ void rt_logf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+ void rt_vlogf(const char *fmt, va_list ap);
+ void rt_log_raw(const char *p, size_t n);
++// provenance.c: "build: entry=<NX2NAVI_RUN_NAME> exe=<name> commit=<git> xlate=<dir/id> knobs=<NX2NAVI_*, sorted>", first
++// in the log; rt_build_note writes it as <dir>/build.txt, rt_build_note_file to a path (beside dumps, shots, marks)
++const char *rt_build_line(void);
++void rt_build_note(const char *dir);
++void rt_build_note_file(const char *path);
+ const char *rt_log_path(void);                  // the log file, NULL when this run writes none
+ void rt_log_sync(void);                         // writes the queued log lines now; later lines are written as they are made
+ enum { RT_TRACE_SVC = 1, RT_TRACE_HOSTCALL = 2, RT_TRACE_IPC = 4, RT_TRACE_FS = 8, RT_TRACE_GFX = 16, RT_TRACE_PERF = 32,
+diff --git a/runtime/input.c b/runtime/input.c
+index e2a47a6..7f6f3eb 100644
+--- a/runtime/input.c
++++ b/runtime/input.c
+@@ -210,7 +210,7 @@ static void rec_apply(uint64_t b, const int32_t sl[2], const int32_t sr[2]) {
+         rec = path && *path ? fopen(path, "w") : NULL;
+         rec_state = rec ? 1 : -1;
+         if (path && *path && !rec) rt_log("input: cannot open NX2NAVI_INPUT_RECORD %s", path);
+-        if (rec) { fprintf(rec, "# Recorded input (NX2NAVI_INPUT_RECORD); frame = 60 Hz ticks of game time, @ms = world clock.\n"); atexit(rec_flush_all);
++        if (rec) { fprintf(rec, "# Recorded input (NX2NAVI_INPUT_RECORD); frame = 60 Hz ticks of game time, @ms = world clock.\n# %s\n", rt_build_line()); atexit(rec_flush_all);
+                    rt_log("input: recording to %s", path); }
+     }
+     if (rec_state != 1) return;
+diff --git a/runtime/main.c b/runtime/main.c
+index 82808af..ab02fd7 100644
+--- a/runtime/main.c
++++ b/runtime/main.c
+@@ -577,6 +577,7 @@ static void portable_paths(RtConfig *c) {
+ 
+ int main(int argc, char **argv) {
+     mem_init();   // first: claim the guest address space before anything else can land there; reads nx2navi.ini
++    rt_log("%s", rt_build_line());   // the first line: which build and settings every later line comes from
+     // The build that wrote the log, at its top: an attached log from another install or version shows at a glance.
+     rt_log("version: NX2navi %s, game %d.%d.%d", rt_port_version, rt_game_version / 100, rt_game_version / 10 % 10,
+            rt_game_version % 10);
+diff --git a/runtime/provenance.c b/runtime/provenance.c
+new file mode 100644
+index 0000000..9076ec0
+--- /dev/null
++++ b/runtime/provenance.c
+@@ -0,0 +1,116 @@
++// Build provenance: one line naming the entry point, exe, source commit, translator and every NX2NAVI_* setting of this
++// run, first in the log and as build.txt beside every dump, capture, shot and mark, so a symptom is never filed
++// against the wrong build. The commit is baked in at compile time (build-linux.py passes -DNX2NAVI_BUILD_COMMIT for this
++// file only); NX2NAVI_RUN_NAME names the entry point (the tooling's `just run <name>`, "-" when unset).
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++#include "cfg.h"
++#include "host.h"
++#include "platform/platform.h"
++
++#ifdef _WIN32
++#define environ _environ
++#else
++extern char **environ;
++#endif
++
++#ifndef NX2NAVI_BUILD_COMMIT
++#define NX2NAVI_BUILD_COMMIT "unknown"
++#endif
++
++static char line[8192];
++
++static int cmp_str(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
++
++// A value whose name looks like a credential is written as "<redacted>".
++static int secret_like(const char *name, size_t n) {
++    static const char *const words[] = {"KEY", "TOKEN", "SECRET", "PASS", "AUTH", "CRED"};
++    for (size_t w = 0; w < sizeof words / sizeof *words; w++)
++        for (size_t i = 0, k = strlen(words[w]); i + k <= n; i++)
++            if (!strncmp(name + i, words[w], k)) return 1;
++    return 0;
++}
++
++static void add(size_t *n, const char *fmt, const char *a, size_t alen) {
++    if (*n >= sizeof line - 1) return;
++    int k = snprintf(line + *n, sizeof line - *n, fmt, (int)alen, a);
++    *n = k < 0 ? *n : *n + (size_t)k < sizeof line ? *n + (size_t)k : sizeof line - 1;
++}
++
++// The translator: its folder's name and the first 12 digits of its identity (NX2NAVI_XLATE_ID, else <translator>.id as
++// gfx_shader.c xlate_identity reads it), e.g. "xlate-rebase/e7a4625221b1".
++static void xlate_part(size_t *n, const char *exe_dir) {
++    char p[PLAT_PATH_MAX + 16], id[16] = "";
++    const char *x = cfg_get("NX2NAVI_XLATE");
++    if (x && *x) snprintf(p, sizeof p, "%s", x);
++    else snprintf(p, sizeof p, "%s/nx2navi_xlate", exe_dir);
++    const char *ide = cfg_get("NX2NAVI_XLATE_ID");
++    if (ide && *ide) snprintf(id, sizeof id, "%.12s", ide);
++    else {
++        char q[PLAT_PATH_MAX + 32];
++        char *dot = strrchr(p, '.'), *sep = plat_last_sep(p);
++        snprintf(q, sizeof q, "%.*s.id", (int)(dot && dot > sep ? dot - p : (long)strlen(p)), p);
++        FILE *f = fopen(q, "r");
++        if (!f || !fgets(id, 13, f)) snprintf(id, sizeof id, "noid");
++        if (f) fclose(f);
++    }
++    char *sep = plat_last_sep(p);
++    const char *parent = "";
++    size_t plen = 0;
++    if (sep) {
++        *sep = 0;
++        char *s2 = plat_last_sep(p);
++        parent = s2 ? s2 + 1 : p, plen = strlen(parent);
++    }
++    add(n, " xlate=%.*s", parent, plen);
++    add(n, "/%.*s", id, strlen(id));
++}
++
++const char *rt_build_line(void) {
++    if (line[0]) return line;
++    size_t n = 0;
++    const char *entry = cfg_get("NX2NAVI_RUN_NAME");
++    if (!entry || !*entry) entry = "-";
++    add(&n, "build: entry=%.*s", entry, strlen(entry));
++    char exe[PLAT_PATH_MAX] = "?";
++    if (!plat_exe_path(exe, sizeof exe)) strcpy(exe, "?");
++    char *sep = plat_last_sep(exe), *base = sep ? sep + 1 : exe;
++    add(&n, " exe=%.*s", base, strlen(base));
++    add(&n, " commit=%.*s", NX2NAVI_BUILD_COMMIT, strlen(NX2NAVI_BUILD_COMMIT));
++    if (sep) *sep = 0;
++    xlate_part(&n, sep ? exe : ".");
++    add(&n, " knobs=%.*s", "", 0);
++    size_t count = 0;
++    for (char **e = environ; e && *e; e++) count += !strncmp(*e, "NX2NAVI_", 8);
++    char **v = count ? malloc(count * sizeof *v) : NULL;
++    size_t m = 0;
++    for (char **e = environ; v && e && *e; e++)
++        if (!strncmp(*e, "NX2NAVI_", 8)) v[m++] = *e;
++    if (v) qsort(v, m, sizeof *v, cmp_str);
++    for (size_t i = 0; i < m; i++) {
++        const char *eq = strchr(v[i], '=');
++        size_t nl = eq ? (size_t)(eq - v[i]) : strlen(v[i]);
++        add(&n, i ? ",%.*s" : "%.*s", v[i], nl);
++        if (eq) add(&n, "=%.*s", secret_like(v[i], nl) ? "<redacted>" : eq + 1, secret_like(v[i], nl) ? 10 : strlen(eq + 1));
++    }
++    if (!m) add(&n, "%.*s", "-", 1);
++    free(v);
++    return line;
++}
++
++void rt_build_note_file(const char *path) {
++    const char *l = rt_build_line();
++    char buf[sizeof line + 1];
++    size_t n = strlen(l);
++    memcpy(buf, l, n);
++    buf[n++] = '\n';
++    if (!plat_file_write(path, buf, n)) rt_log("build: cannot write %s", path);
++}
++
++void rt_build_note(const char *dir) {
++    char p[PLAT_PATH_MAX + 16];
++    snprintf(p, sizeof p, "%s/build.txt", dir);
++    rt_build_note_file(p);
++}
+diff --git a/runtime/rdoc.c b/runtime/rdoc.c
+index ea5a2d1..7533656 100644
+--- a/runtime/rdoc.c
++++ b/runtime/rdoc.c
+@@ -69,6 +69,7 @@ void rdoc_init(void) {
+     char full[PLAT_PATH_MAX], tmpl[PLAT_PATH_MAX + 16];
+     if (!plat_full_path(dir && *dir ? dir : "build/captures", full, sizeof full)) return;
+     plat_file_mkdir_p(full);
++    rt_build_note(full);
+     snprintf(tmpl, sizeof tmpl, "%s/nx2navi", full);
+     api->SetCaptureFilePathTemplate(tmpl);
+     rt_log("rdoc: ready, %d frame(s), captures %s", n_targets, full);
+diff --git a/runtime/vk_dump.c b/runtime/vk_dump.c
+index eb3a769..25b0e1b 100644
+--- a/runtime/vk_dump.c
++++ b/runtime/vk_dump.c
+@@ -1408,6 +1408,7 @@ static void req_options(char *t) {
+ // passes.txt and images.txt in dir (a new folder per NX2NAVI_DUMP_WHITE attempt), bufs.txt with NX2NAVI_DUMP_BUF
+ static void open_files(void) {
+     make_dirs(dir);
++    rt_build_note(dir);
+     char path[600];
+     snprintf(path, sizeof path, "%s/passes.txt", dir);
+     passes_f = fopen(path, "w");
+-- 
+2.56.0
+

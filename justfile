@@ -143,7 +143,7 @@ debug *args:
 # Default binary: nx2navi.play3 (patches through 0065; play2 = through 0064): live debugging without a restart, watch.req / peek.req / buf.req /
 # pick.req (NX2NAVI_WATCH_REQ=1), F5 pick, Shift+F5 crosshair, F6 shot, F12 dump, Shift+F6 broken, Shift+F12 fixed.
 try *args:
-    NX2NAVI_EXE="${NX2NAVI_EXE:-play3}" NX2NAVI_WATCH_REQ="${NX2NAVI_WATCH_REQ:-1}" \
+    NX2NAVI_RUN_NAME="${NX2NAVI_RUN_NAME:-try}" NX2NAVI_EXE="${NX2NAVI_EXE:-play3}" NX2NAVI_WATCH_REQ="${NX2NAVI_WATCH_REQ:-1}" \
     NX2NAVI_TEX_RELEASED_YIELD="${NX2NAVI_TEX_RELEASED_YIELD:-85}" \
     NX2NAVI_ALIAS_EXTRA_MIB="${NX2NAVI_ALIAS_EXTRA_MIB:-512}" NX2NAVI_AO_ORDER="${NX2NAVI_AO_ORDER:-1}" \
     NX2NAVI_SHADOW_NT="${NX2NAVI_SHADOW_NT:-1}" \
@@ -153,7 +153,7 @@ try *args:
 # `just try` on nx2navi.play5 (0001-0067, mesh draws in dumps) with the translator fix 0064 (#164, signed I2F): its own translator, shader cache and pipeline cache copy
 # under build/v111 (*-i2f), so the live caches stay as they are. Every shader is translated again on first use.
 try-i2f *args:
-    NX2NAVI_EXE="${NX2NAVI_EXE:-play5}" NX2NAVI_XLATE="${NX2NAVI_XLATE:-{{src}}/build/{{ver}}/xlate-i2f/nx2navi_xlate}" \
+    NX2NAVI_RUN_NAME="${NX2NAVI_RUN_NAME:-try-i2f}" NX2NAVI_EXE="${NX2NAVI_EXE:-play5}" NX2NAVI_XLATE="${NX2NAVI_XLATE:-{{src}}/build/{{ver}}/xlate-i2f/nx2navi_xlate}" \
     NX2NAVI_SHADER_CACHE="${NX2NAVI_SHADER_CACHE:-{{src}}/build/{{ver}}/shader-cache-i2f}" \
     NX2NAVI_PIPELINE_CACHE="${NX2NAVI_PIPELINE_CACHE:-{{src}}/build/{{ver}}/pipeline-cache-i2f.bin}" \
     {{just_executable()}} -f "{{justfile()}}" try {{args}}
@@ -184,7 +184,7 @@ items:
 # try-vram with the text mod: rebuilds it first (Link renamed to NAME, or the last name; items.toml applied).
 try-name NAME="" *args:
     {{just_executable()}} -f "{{justfile()}}" text "{{NAME}}"
-    NX2NAVI_MODS_DIR="${NX2NAVI_MODS_DIR:-{{src}}/build/{{ver}}/mods-text}" {{just_executable()}} -f "{{justfile()}}" try-vram {{args}}
+    NX2NAVI_RUN_NAME="${NX2NAVI_RUN_NAME:-try-name}" NX2NAVI_MODS_DIR="${NX2NAVI_MODS_DIR:-{{src}}/build/{{ver}}/mods-text}" {{just_executable()}} -f "{{justfile()}}" try-vram {{args}}
 
 # try-i2f on play11 with the VRAM hold settings (#160): render-target reuse on (off: 30 fps in Hyrule from churn;
 # on is suspected of a lighting flicker, being made safe), trim at 85%, released cap
@@ -197,7 +197,7 @@ try-name NAME="" *args:
 # cache and pipeline cache copy (*-tld). Live dumps (dump.req) land in build/v111/dump as with every try.
 # Runs through try-name, so the text mod and the try-vram settings apply as on Cal's usual line.
 try-tld *args:
-    NX2NAVI_EXE="${NX2NAVI_EXE:-tld}" NX2NAVI_TLD_CLAMP="${NX2NAVI_TLD_CLAMP:-1}" \
+    NX2NAVI_RUN_NAME="${NX2NAVI_RUN_NAME:-try-tld}" NX2NAVI_EXE="${NX2NAVI_EXE:-tld}" NX2NAVI_TLD_CLAMP="${NX2NAVI_TLD_CLAMP:-1}" \
     NX2NAVI_TEX_DESC_STRICT="${NX2NAVI_TEX_DESC_STRICT:-1}" \
     NX2NAVI_XLATE="${NX2NAVI_XLATE:-{{src}}/build/{{ver}}/xlate-tld/nx2navi_xlate}" \
     NX2NAVI_SHADER_CACHE="${NX2NAVI_SHADER_CACHE:-{{src}}/build/{{ver}}/shader-cache-tld}" \
@@ -205,7 +205,7 @@ try-tld *args:
     {{just_executable()}} -f "{{justfile()}}" try-name "" {{args}}
 
 try-vram *args:
-    NX2NAVI_EXE="${NX2NAVI_EXE:-play11}" NX2NAVI_TEX_RT_RECYCLE="${NX2NAVI_TEX_RT_RECYCLE:-1}" \
+    NX2NAVI_RUN_NAME="${NX2NAVI_RUN_NAME:-try-vram}" NX2NAVI_EXE="${NX2NAVI_EXE:-play11}" NX2NAVI_TEX_RT_RECYCLE="${NX2NAVI_TEX_RT_RECYCLE:-1}" \
     NX2NAVI_TEX_RT_TRIM="${NX2NAVI_TEX_RT_TRIM:-85}" NX2NAVI_TEX_RT_TRIM_PER_MIN="${NX2NAVI_TEX_RT_TRIM_PER_MIN:-0}" \
     NX2NAVI_TEX_RELEASED_MIB="${NX2NAVI_TEX_RELEASED_MIB:-1536}" NX2NAVI_TEX_RELEASED_LRU="${NX2NAVI_TEX_RELEASED_LRU:-1}" \
     NX2NAVI_TEX_LIVE_IDLE="${NX2NAVI_TEX_LIVE_IDLE:-900}" NX2NAVI_TEX_STALE_LIVE="${NX2NAVI_TEX_STALE_LIVE:-1}" \
@@ -337,5 +337,6 @@ pin-desktop CPUS="8-11,24-27":
 # with a header saying what it tests, its tracker item and when to delete it); no name runs the usual play setup.
 run NAME="" *args:
     #!/usr/bin/env sh
+    export NX2NAVI_RUN_NAME="${NX2NAVI_RUN_NAME:-{{ if NAME == "" { "play" } else { NAME } }}}"   # the log's build line names it
     if [ -z "{{NAME}}" ]; then exec {{just_executable()}} -f "{{justfile()}}" try-name "" {{args}}; fi
     exec sh "{{justfile_directory()}}/runs/{{NAME}}.sh" {{args}}

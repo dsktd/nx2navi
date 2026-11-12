@@ -120,6 +120,17 @@ PER_FILE_FLAGS = {
 }
 
 
+def source_commit(src):
+    """The checkout's short commit, with -dirty when tracked files differ from it; "unknown" outside git."""
+    git = ['git', '-C', str(src)]
+    try:
+        head = subprocess.run(git + ['rev-parse', '--short=12', 'HEAD'], capture_output=True, text=True, check=True).stdout.strip()
+        dirty = subprocess.run(git + ['status', '--porcelain', '-uno'], capture_output=True, text=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return 'unknown'
+    return head + ('-dirty' if dirty else '')
+
+
 def guest_tag(opt, flags):
     """The object folder of a guest variant: O2, O2-znver3; flags that make a long name are hashed."""
     return flags_tag(f'O{opt}', flags)
@@ -211,6 +222,8 @@ def write_ninja(src, out, lift, gen, cpu, exe='nx2navi', tracy=None, rt_obj=None
         o = out / 'obj' / rt_obj / rel.with_suffix('.o')
         lines.append(f'build {npath(o)}: cc_rt {npath(s)}')
         extra = defines.get(rel.as_posix())
+        if rel.as_posix() == 'provenance.c':   # the source commit, baked into the build line (provenance.c)
+            extra = f"'-DNX2NAVI_BUILD_COMMIT=\"{source_commit(runtime.parent)}\"'"
         if extra:
             lines.append(f'  rtflags = $rtflags {extra}')
         flags = PER_FILE_FLAGS.get(rel.as_posix())
