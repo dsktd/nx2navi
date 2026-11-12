@@ -1,0 +1,178 @@
+From 131d0f0debdee3ff5a52454b4619752777670906 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 23:16:58 -0500
+Subject: [PATCH] vk_memory: NX2NAVI_SHADOW_TAB_DIRTY=1 (0: walk all) indexes
+ the table's shadows by 2 MiB snapshot region; a table sync snaps those
+ regions and visits only the shadows of regions stamped or untracked since the
+ last one; shadow line counts regions snapped, dirty and shadows visited
+
+---
+ runtime/vk_memory.c | 98 ++++++++++++++++++++++++++++++++++++++++++---
+ 1 file changed, 93 insertions(+), 5 deletions(-)
+
+diff --git a/runtime/vk_memory.c b/runtime/vk_memory.c
+index 5a1335d..8db0169 100644
+--- a/runtime/vk_memory.c
++++ b/runtime/vk_memory.c
+@@ -91,6 +91,7 @@ typedef struct PoolRec {
+     uint64_t sborn;                    // the value of the first submission that can have used the shadow (shadow_pool)
+     volatile uint8_t stouched;         // on the touched list: the GPU may use it in the submission being recorded
+     uint32_t stab_i;                   // shadow_lock: 1 + its index in stab (the table's shadows), 0 when not there
++    uint32_t stab_vis;                 // shadow_lock: the table sync that last visited it (NX2NAVI_SHADOW_TAB_DIRTY)
+     // shadow_lock: base copies of the pages a noted GPU write covers (merge_page), open addressing by page address;
+     // csb a power of two, page 0 an empty slot
+     struct SBase { uint64_t page; uint8_t *base; } *sb;
+@@ -1262,6 +1263,19 @@ static uint64_t s_tab_fast, s_tab_slow, s_tab_all_ticks, s_tab_all_syncs;   // s
+ static uint64_t s_tab_ticks, s_tab_syncs;         // the sync for the table's readers: its time (part of s_ticks), its runs
+ static PoolRec **stab;                            // shadow_lock: the shadows in the device address table (PoolRec.stab_i)
+ static int nstab, cstab;
++// NX2NAVI_SHADOW_TAB_DIRTY (default 1; 0 = walk every table shadow): the table's shadows by snapshot region. A table
++// sync snaps the regions that hold table shadows and visits only the shadows of regions stamped (or untracked) since
++// the previous table sync (treg_gen); every other table shadow had all its stamps at or below its sgen then, and no
++// stamp has landed in its regions since. A region gets treg_gen 0 when a shadow joins it, so new shadows are visited.
++typedef struct { PoolRec **v; int n, c; } RegShadows;
++static RegShadows *rsh;                           // shadow_lock: SNAP_REGIONS entries, made at the first add
++static uint32_t *treg_gen, *treg_i;               // shadow_lock: per region: gen_now after its last visit; 1 + index in tregs
++static uint32_t *tregs;                           // shadow_lock: the regions that hold table shadows
++static int ntregs, ctregs;
++static PoolRec **sfar;                            // shadow_lock: table shadows past the snapshot regions, always visited
++static int nsfar, csfar;
++static uint32_t stab_visit;                       // shadow_lock: table syncs so far
++static uint64_t s_tab_regs, s_tab_dregs, s_tab_vis;   // shadow_lock, since the last log: regions snapped, dirty, shadows visited
+ static uint32_t stab_want;                        // the last guest submission whose record bound the table
+ static uint64_t s_t_over_all;                     // shadow_lock: s_tab_over since the start
+ static uint64_t s_late_pages, s_late_bytes;       // shadow_lock, check: write-backs into pages the CPU wrote since their copy-in
+@@ -1492,6 +1506,49 @@ static void copy_marked(PoolRec *r, uint64_t a, uint64_t e) {
+ }
+ 
+ // vk_pool_fini, after the pool left the index: off the touched list before its record goes.
++static int rsh_ok(void) {
++    if (rsh) return 1;
++    rsh = calloc(SNAP_REGIONS, sizeof *rsh), treg_gen = calloc(SNAP_REGIONS, 4), treg_i = calloc(SNAP_REGIONS, 4);
++    if (!rsh || !treg_gen || !treg_i) rt_fatal("vk: out of memory for the table's regions");
++    return 1;
++}
++
++// shadow_lock held: r joins (add) or leaves the table's region index.
++static void tab_index(PoolRec *r, int add) {
++    uint64_t r0 = r->import_lo >> SNAP_SHIFT, r1 = (r->import_hi - 1) >> SNAP_SHIFT;
++    if (r1 >= SNAP_REGIONS) {
++        if (add) {
++            if (nsfar == csfar) grow((void **)&sfar, &csfar, sizeof *sfar);
++            sfar[nsfar++] = r;
++        } else
++            for (int i = 0; i < nsfar; i++)
++                if (sfar[i] == r) { sfar[i] = sfar[--nsfar]; break; }
++        return;
++    }
++    rsh_ok();
++    for (uint64_t k = r0; k <= r1; k++) {
++        RegShadows *e = &rsh[k];
++        if (add) {
++            if (e->n == e->c) grow((void **)&e->v, &e->c, sizeof *e->v);
++            e->v[e->n++] = r;
++            treg_gen[k] = 0;
++            if (!treg_i[k]) {
++                if (ntregs == ctregs) grow((void **)&tregs, &ctregs, sizeof *tregs);
++                tregs[ntregs++] = (uint32_t)k;
++                treg_i[k] = (uint32_t)ntregs;
++            }
++            continue;
++        }
++        for (int i = 0; i < e->n; i++)
++            if (e->v[i] == r) { e->v[i] = e->v[--e->n]; break; }
++        if (!e->n && treg_i[k]) {
++            uint32_t last = tregs[--ntregs];
++            tregs[treg_i[k] - 1] = last, treg_i[last] = treg_i[k];
++            treg_i[k] = 0;
++        }
++    }
++}
++
+ static void shadow_forget(PoolRec *r) {
+     plat_mutex_lock(&shadow_lock);
+     for (int i = 0; i < nstouch; i++)
+@@ -1499,6 +1556,7 @@ static void shadow_forget(PoolRec *r) {
+     for (int i = 0; r->tlisted && i < ntpools; i++)
+         if (tpools[i] == r) { tpools[i] = tpools[--ntpools]; break; }
+     if (r->stab_i) {   // the last one takes its place
++        tab_index(r, 0);
+         PoolRec *last = stab[--nstab];
+         stab[r->stab_i - 1] = last, last->stab_i = r->stab_i;
+         r->stab_i = 0;
+@@ -1969,13 +2027,14 @@ static void shadow_log(uint64_t frame) {
+            "copied in (%llu untracked), %.2f ms (queries %.2f); %.1f MiB written back of %.1f MiB the GPU may have written, %.2f ms; %llu "
+            "pages the GPU writes keep a base copy; %llu pages not written back, their pool was made again or the CPU "
+            "wrote them since; %llu written-back pages' watch bits taken, %llu of them stamped as the CPU's; table: %llu syncs "
+-           "%.2f ms, %llu shadows clean by pages, %llu synced",
++           "%.2f ms, %llu shadows clean by pages, %llu synced; %llu regions snapped, %llu dirty, %llu shadows visited",
+            (unsigned long long)frame, (long long)s_live_n, s_live_bytes / 1048576.0, (unsigned long long)s_syncs,
+            (unsigned long long)s_queries, s_copied / 1048576.0, (unsigned long long)s_untracked, qpc_ms(s_ticks),
+            qpc_ms(s_q_ticks), s_wb_bytes / 1048576.0, s_wb_seen / 1048576.0, qpc_ms(s_wb_ticks), (unsigned long long)s_sb_pages,
+            (unsigned long long)s_stale_pages, (unsigned long long)s_rearm_pages, (unsigned long long)s_rearm_kept,
+-           (unsigned long long)s_tab_all_syncs, qpc_ms(s_tab_all_ticks), (unsigned long long)s_tab_fast, (unsigned long long)s_tab_slow);
+-    s_tab_all_syncs = s_tab_all_ticks = s_tab_fast = s_tab_slow = 0;
++           (unsigned long long)s_tab_all_syncs, qpc_ms(s_tab_all_ticks), (unsigned long long)s_tab_fast, (unsigned long long)s_tab_slow,
++           (unsigned long long)s_tab_regs, (unsigned long long)s_tab_dregs, (unsigned long long)s_tab_vis);
++    s_tab_all_syncs = s_tab_all_ticks = s_tab_fast = s_tab_slow = s_tab_regs = s_tab_dregs = s_tab_vis = 0;
+     s_syncs = s_queries = s_copied = s_untracked = s_wb_bytes = s_ticks = s_wb_seen = s_wb_ticks = s_q_ticks = 0;
+     s_stale_pages = s_rearm_pages = s_rearm_kept = 0;
+     if (s_learn || s_check) shadow_table_log(frame);
+@@ -2662,6 +2721,7 @@ static void shadow_table_add(PoolRec *r) {
+         if (nstab == cstab) grow((void **)&stab, &cstab, sizeof *stab);
+         stab[nstab++] = r;
+         r->stab_i = (uint32_t)nstab;
++        tab_index(r, 1);
+     }
+     plat_mutex_unlock(&shadow_lock);
+ }
+@@ -2708,8 +2768,11 @@ static int shadow_pool_pages_clean(const PoolRec *r, uint32_t epoch, int cpu) {
+ 
+ void vk_mem_shadow_sync(uint64_t fence) {
+     if (!shadow_on) return;
+-    static int tab_fast = -1;
++    static int tab_fast = -1, tab_dirty;
+     if (tab_fast < 0) {
++        tab_dirty = rt_knob("SHADOW_TAB_DIRTY", "1") == 1;
++        rt_log("mem: the table's sync visits %s (NX2NAVI_SHADOW_TAB_DIRTY)",
++               tab_dirty ? "the shadows of regions stamped since the last one" : "every shadow");
+         tab_fast = rt_knob("SHADOW_TAB_FAST", "1") == 1;
+         rt_log("mem: table shadows failing the region test %s (NX2NAVI_SHADOW_TAB_FAST)",
+                tab_fast ? "check their pages before a sync" : "sync");
+@@ -2739,7 +2802,32 @@ void vk_mem_shadow_sync(uint64_t fence) {
+         plat_mutex_lock(&gen_lock);
+         for (int i = 0; i < nstouch; i++) shadow_sync_pool(stouch[i], epoch, cpu);
+         uint64_t t1 = qpc();
+-        for (int i = 0; table && i < nstab; i++) {   // the shadows the replay did not resolve
++        if (table && tab_dirty) {   // the regions stamped since the last table sync, and their shadows
++            uint32_t vis = ++stab_visit;
++            const uint32_t *mx = cpu ? creg_max : reg_max;
++            for (int i = 0; i < ntregs; i++) s_queries += snap_regions(tregs[i], tregs[i], epoch);
++            s_tab_regs += (uint64_t)ntregs;
++            for (int i = 0; i < ntregs + nsfar; i++) {
++                uint32_t k = i < ntregs ? tregs[i] : 0;
++                int far = i >= ntregs;
++                if (!far && !snap_untracked[k] && mx[k] <= treg_gen[k]) continue;
++                if (!far) s_tab_dregs++;
++                PoolRec **v = far ? &sfar[i - ntregs] : rsh[k].v;
++                int n = far ? 1 : rsh[k].n;
++                for (int j = 0; j < n; j++) {
++                    PoolRec *r = v[j];
++                    if (r->stab_vis == vis || r->stouched) continue;
++                    r->stab_vis = vis, s_tab_vis++;
++                    uint64_t r0 = r->import_lo >> SNAP_SHIFT, r1 = (r->import_hi - 1) >> SNAP_SHIFT;
++                    if (r1 < SNAP_REGIONS) s_queries += snap_regions(r0, r1, epoch);
++                    if (shadow_pool_clean(r, epoch, cpu)) continue;
++                    if (tab_fast && shadow_pool_pages_clean(r, epoch, cpu)) { r->sgen = gen_now, s_tab_fast++; continue; }
++                    shadow_sync_pool(r, epoch, cpu), s_syncs++, s_tab_slow++;
++                }
++            }
++            for (int i = 0; i < ntregs; i++) treg_gen[tregs[i]] = gen_now;
++        }
++        for (int i = 0; table && !tab_dirty && i < nstab; i++) {   // the shadows the replay did not resolve
+             PoolRec *r = stab[i];
+             if (r->stouched) continue;
+             uint64_t r0 = r->import_lo >> SNAP_SHIFT, r1 = (r->import_hi - 1) >> SNAP_SHIFT;
+-- 
+2.56.0
+
