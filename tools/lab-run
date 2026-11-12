@@ -73,6 +73,12 @@ if [ -n "$soft" ]; then
     cp -a --reflink=auto "$BIN/shader-cache" "$OUT/shader-cache" 2>/dev/null || mkdir -p "$OUT/shader-cache"
     envs+=("NX2NAVI_SHADER_CACHE=$OUT/shader-cache"); }
 fi
+# GPU runs: LAB_CPUS (e.g. 0-7,16-23, the CCD Cal's game uses) pins the game there once the container's cpuset
+# includes those cores; otherwise the run stays on the cpuset and says so (results then count as relative only)
+if [ -z "$soft" ] && [ -n "${LAB_CPUS:-}" ]; then
+  if taskset -c "$LAB_CPUS" true 2>/dev/null; then pin=(taskset -c "$LAB_CPUS")
+  else echo "lab-run: LAB_CPUS=$LAB_CPUS not in cpuset $(cat /sys/fs/cgroup/cpuset.cpus.effective 2>/dev/null); unpinned (relative numbers only)" >&2; fi
+fi
 if [ -n "${LAB_VALIDATE:-}" ]; then
   vvl=$(nix build nixpkgs#vulkan-validation-layers --no-link --print-out-paths | tail -1) || exit 4
   cat >"$OUT/vk_layer_settings.txt" <<EOF
