@@ -366,6 +366,34 @@ def ingest_cal():
     return ['Cal play logs: ' + (r.stderr.strip().split('\n')[-1] if r.stderr.strip() else 'none')]
 
 
+def extra_cells():
+    """Cells agents queue for the night (.lab/nightly/cells.txt, one shell command a line, `#` comments), run after the
+    suites while budget is left, each under the lab lock via its own lab-run; output in .lab/nightly/cells-<date>.log, done
+    lines move to cells.done. Stops when Cal is back (exit 9) or the budget is spent."""
+    f = R + '/.lab/nightly/cells.txt'
+    if not os.path.exists(f):
+        return []
+    todo = [l for l in open(f).read().split('\n') if l.strip() and not l.startswith('#')]
+    done, out = [], R + '/.lab/nightly/cells-%s.log' % datetime.date.today()
+    for c in todo:
+        if DRY:
+            print('would run cell: ' + c); continue
+        if time.time() - T0 > BUDGET - 600 or cal_playing() or not lock_wait():
+            break
+        with open(out, 'a') as o:
+            o.write('$ %s\n' % c); o.flush()
+            rc = subprocess.run(['bash', '-c', c], cwd=R, stdout=o, stderr=subprocess.STDOUT).returncode
+            o.write('exit %d\n' % rc)
+        if rc == 9:
+            break
+        done.append(c)
+    if done:
+        left = [l for l in open(f).read().split('\n') if l.strip() and l not in done]
+        open(f, 'w').write('\n'.join(left) + '\n')
+        open(R + '/.lab/nightly/cells.done', 'a').write(''.join('%s %s\n' % (datetime.date.today(), c) for c in done))
+    return ['Queued cells: %d of %d run (.lab/nightly/cells-%s.log)' % (len(done), len(todo), datetime.date.today())]
+
+
 def main():
     plan, ran = pick(), []
     extra = env_drift() + upstream() + ingest_cal()
@@ -378,11 +406,13 @@ def main():
             print('  %s: %s%s' % (e, w, '' if k < fit else ' (beyond the budget: a later night)'))
         print('Prune, once those are tested (dry run, nothing deleted): ' + line)
         print('Kept in the store: ' + '; '.join('%s (%s)' % kw for kw in kept))
+        extra_cells()
         print('\n'.join(extra))
         return
     if not quiet_host():
         return
     os.environ['CELL_REDO'] = '1'   # cells whose load average rose above the threshold during a run redo it once
+    extra += extra_cells()   # queued agent cells first: small and asked for; the suites take what budget is left
     todo = list(plan)
     while todo:
         e, why = todo.pop(0)
