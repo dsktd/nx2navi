@@ -11,6 +11,7 @@
 R=$HOME/claude/nx2navi; P=$R/.lab/parity; B=$R/NX2navi/build/v111
 exe=$1 tag=$2 reps=$3; shift 3
 grep -q "^$exe	" $R/builds.tsv 2>/dev/null || { echo "no builds.tsv row for $exe: run tools/builds-add first (ARCHITECTURE.md 11)"; exit 8; }
+$R/tools/store-build verify $exe || [ $? = 2 ] || exit 8   # overwritten build refused; not stored yet is allowed for iteration
 log=$(ls -t $B/logs/play-*.log | head -1)
 [ $(( $(date +%s) - $(stat -c %Y $log) )) -lt 180 ] && { echo "CAL BACK"; exit 9; }
 gap=${GAP:-900} first=${FIRST:-600}

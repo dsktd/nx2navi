@@ -18,3 +18,4 @@ for i in $(seq $reps); do
   ls -t $B/logs/play-*.log | head -1 | xargs stat -c %Y | awk -v n=$(date +%s) '{ exit (n - $1 < 120) ? 1 : 0 }' || { echo CAL BACK; exit 9; }
 done
 $R/tools/results-add windows field-running $logs
+$R/tools/results-add status field-running $logs

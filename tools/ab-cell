@@ -7,6 +7,7 @@
 R=$HOME/claude/nx2navi; P=$R/.lab/parity; B=$R/NX2navi/build/v111
 exe=$1 sc=$2 tag=$3 reps=$4 knob=$5; shift 5
 grep -q "^$exe	" $R/builds.tsv 2>/dev/null || { echo "no builds.tsv row for $exe: run tools/builds-add first (ARCHITECTURE.md 11)"; exit 8; }
+$R/tools/store-build verify $exe || [ $? = 2 ] || exit 8   # overwritten build refused; not stored yet is allowed for iteration
 start=$(ls -t $B/logs/play-*.log | head -1)
 i=0; tries=0
 while [ $i -lt $reps ] && [ $tries -lt $((reps * 2)) ]; do

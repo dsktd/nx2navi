@@ -16,6 +16,7 @@ R=$HOME/claude/nx2navi; B=$R/NX2navi/build/v111
 exe=$1 reps=${2:-${SUITE_REPS:-3}}
 [ -n "$exe" ] || { sed -n 2,3p $0; exit 2; }
 grep -q "^$exe	" $R/builds.tsv 2>/dev/null || { echo "no builds.tsv row for $exe: tools/builds-add first"; exit 8; }
+$R/tools/store-build verify $exe || exit 1   # the exe must be the stored one (build/store, ARCHITECTURE.md 11)
 export RESULTS_TAG="${RESULTS_TAG:-suite}"
 out=$R/.lab/suite/$exe; mkdir -p $out
 plan() { echo "suite $exe x$reps: $*"; [ -n "$SUITE_DRY" ] || "$@"; }
@@ -27,11 +28,13 @@ for sc in west grave; do
   scen=field-west-standing; [ $sc = grave ] && scen=graveyard-standing
   [ -n "$SUITE_DRY" ] && { echo "  results-add windows $scen (+ shadow, vram) over $logs"; continue; }
   $R/tools/results-add windows $scen $logs
+  $R/tools/results-add status $scen $logs
   [ $sc = west ] && $R/tools/results-add shadow $scen $logs
   cp $R/.lab/ab-$tag-$sc-1/final.png $out/shot-$sc.png 2>/dev/null
 done
 for sc in west grave; do
   for i in $(seq $reps); do plan env COLD=$sc $R/tools/load-cell $exe $tag $i || [ -n "$SUITE_DRY" ] || exit $?; done
+  [ -n "$SUITE_DRY" ] || $R/tools/results-add status "load cold $sc" $(for i in $(seq $reps); do echo $R/.lab/lc-$tag-$sc-$i/run.log; done)
 done
 plan env RESULTS_NOTE=noisy $R/tools/suite-run $exe $tag-run $reps
 plan $R/tools/load-cell $exe $tag-loop 4

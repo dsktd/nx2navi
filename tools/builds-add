@@ -7,13 +7,13 @@ commit and nearest tag), the private patches contained (numbers from patches/*.p
 with no patch file are listed as 'unnumbered'), and the change vs the parent build's row (patches added/removed, base,
 translator). run= names the runs/ script whose exported NX2NAVI_ defaults are the build's own (default runs/play.sh).
 Call it right after building the exe. tools/ab-cell and tools/load-cell refuse a build with no row here.
-Columns: exe date commit xlate base parent patches changed run defaults note
+Columns: exe date commit xlate base parent patches changed run defaults note store (store: tools/store-build)
 """
 import datetime, glob, os, re, subprocess, sys
 
 R = os.path.expanduser('~/claude/nx2navi')
 TSV = R + '/builds.tsv'
-HEAD = 'exe date commit xlate base parent patches changed run defaults note'.split()
+HEAD = 'exe date commit xlate base parent patches changed run defaults note store'.split()
 
 
 def git(wt, *a):
@@ -91,8 +91,9 @@ def main():
     dd = ' '.join('%s=%s' % kv for kv in sorted(defaults(run).items()))
     new = [exe, git(wt, 'show', '-s', '--format=%cs', commit) or datetime.date.today().isoformat(), commit, kw.get('xlate', '?'), base + ' ' + tag, parent,
            ','.join(sorted(nums)) or '-', ' '.join(ch) or 'no change', run, dd,
-           ' '.join(x for x in (kw.get('note', ''), ('unnumbered: ' + '; '.join(sorted(un))) if un else '') if x)]
+           ' '.join(x for x in (kw.get('note', ''), ('unnumbered: ' + '; '.join(sorted(un))) if un else '') if x), '']
     rs = [r for r in rows() if r[0] != exe or '--force' not in sys.argv[1:]]
+    rs = [r + [''] * (len(HEAD) - len(r)) for r in rs]
     if have(exe) and '--force' not in sys.argv[1:]:
         sys.exit('builds.tsv already has %s (--force to replace)' % exe)
     out = '\t'.join(HEAD) + '\n' + ''.join('\t'.join(r) + '\n' for r in rs + [new])

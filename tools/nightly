@@ -14,7 +14,7 @@ Stops without running when a play log is under 2 min old (Cal is playing) or the
 NIGHTLY_BUDGET_MIN (default 180) bounds the start of new suites (a suite is ~40 min at 3 reps); NIGHTLY_DRY=1 prints the plan.
 About 3 h for 4 builds. Schedule: `tools/nightly` (e.g. 01:00).
 """
-import datetime, glob, os, re, subprocess, sys, time
+import datetime, fcntl, glob, os, re, subprocess, sys, time
 
 R = os.path.expanduser('~/claude/nx2navi')
 DRY = bool(os.environ.get('NIGHTLY_DRY'))
@@ -102,12 +102,48 @@ def cal_playing():
     return bool(logs) and time.time() - max(os.path.getmtime(l) for l in logs) < 120
 
 
+LOCKFD = None
+
+
+def quiet_host():
+    """Hold the build lock for the whole run (builds take `flock /tmp/nx2navi-build.lock`, so none lands beside a cell)."""
+    global LOCKFD
+    if DRY:
+        return True
+    LOCKFD = open('/tmp/nx2navi-build.lock', 'w')
+    t = time.time()
+    while True:
+        try:
+            fcntl.flock(LOCKFD, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError:
+            if time.time() - t > 1800:
+                print('a build holds /tmp/nx2navi-build.lock for 30 min: stop')
+                return False
+            time.sleep(30)
+
+
+def host_state():
+    g = {}
+    for k in ('power_dpm_force_performance_level', 'pp_dpm_sclk'):
+        for f in glob.glob('/sys/class/drm/card*/device/' + k):
+            try:
+                g[k] = open(f).read().replace('\n', ' ').strip()
+                break
+            except OSError:
+                pass
+    return 'load %s; gpu %s' % (open('/proc/loadavg').read().split()[0], g or 'clocks not readable')
+
+
 def run_suite(e):
     if DRY:
         print('would run: SUITE_DRY=1 tools/suite', e)
         return True
     if cal_playing():
         print('Cal is playing: stop'); return False
+    if subprocess.run([R + '/tools/store-build', 'verify', e]).returncode:
+        print('%s is not the stored build (or not stored): skipped' % e); return None
+    HOST.append('%s: %s' % (e, host_state()))
     if not lock_wait():
         print('lab lock held over 30 min: stop'); return False
     env = dict(os.environ, RESULTS_TAG='suite nightly')
@@ -144,7 +180,43 @@ def bisect(M):
     return sorted(set(q)), found
 
 
-def summary(plan, queue, found, ran):
+def prune(queue, ran):
+    """Cal's rule: a build leaves the store once a nightly has recorded it, unless it is a baseline, the default, a pending
+    bisect candidate or endpoint, or the newest build on an active line. Frees build/store/<exe>-<commit> and build/v111/nx2navi.<exe>."""
+    nightly = {r['exe'] for r in tsv(R + '/results.tsv') if 'nightly' in r['tool']}
+    keep = {'play13', default_exe()} | set(queue)
+    keep |= {e for e in order if e not in {b['parent'] for b in B} and bx[e]['date'] >= (datetime.date.today() - datetime.timedelta(days=3)).isoformat()}
+    for k, d in metrics().items():   # endpoints of an unresolved move stay
+        for a in d:
+            for b in d:
+                if a != b and a in chain(b):
+                    between = chain(b)[chain(b).index(a) + 1:-1]
+                    if any(x in queue for x in between):
+                        keep |= {a, b}
+    freed, gone = 0, []
+    for e in sorted(nightly - keep):
+        r = bx[e]
+        if ' sha256:' not in r.get('store', ''):
+            continue
+        d = R + '/' + r['store'].split(' sha256:')[0]
+        sz = sum(os.path.getsize(os.path.join(a, f)) for a, _, fs in os.walk(d) for f in fs)
+        gone.append('%s (%.0f MB)' % (e, sz / 1e6))
+        freed += sz
+        if not DRY:
+            subprocess.run(['chmod', '-R', 'u+w', d]); subprocess.run(['rm', '-rf', d])
+            x = '%s/NX2navi/build/v111/nx2navi.%s' % (R, e)
+            if os.path.exists(x):
+                freed += os.path.getsize(x); os.remove(x)
+            lines = [l.split('\t') for l in open(R + '/builds.tsv').read().split('\n') if l]
+            for l in lines[1:]:
+                if l[0] == e:
+                    l[-1] = 'pruned ' + datetime.date.today().isoformat()
+            tmp = R + '/builds.tsv.nightly'
+            open(tmp, 'w').write(''.join('\t'.join(l) + '\n' for l in lines)); os.rename(tmp, R + '/builds.tsv')
+    return 'pruned from the store: %s; %.1f GB freed' % (', '.join(gone) or 'none', freed / 1e9)
+
+
+def summary(plan, queue, found, ran, pruned=''):
     M, day = metrics(), datetime.date.today().isoformat()
     de = default_exe()
     L = ['# Nightly %s' % day, '', 'Picked (reason):'] + ['- %s: %s%s' % (e, w, '' if e in ran else ' (not run)') for e, w in plan]
@@ -161,8 +233,12 @@ def summary(plan, queue, found, ran):
                 if e != de and abs(m - m0) > (h0 - l0) / 2 + (h_ - lo) / 2 and (m < m0 if hi else m > m0):
                     reg.append('%s %.2f' % (e, m))
         L.append('| %s / %s | %s %.2f | %s | %s |' % (k[0], k[1], best, d[best][0], ('%.2f' % d[de][0]) if de in d else '-', ', '.join(reg) or '-'))
+    bad = [r for r in tsv(R + '/results.tsv') if r.get('status', 'ok') != 'ok' and r['exe'] in ran and 'suite' in r['tool']]
+    L += ['', 'Crashes / device loss / no start (count as regressions): ' + (', '.join('%s %s %s' % (r['exe'], r['scenario'], r['status']) for r in bad) or 'none')]
+    L += ['', 'Host at start of each build: ' + '; '.join(HOST)]
     L += ['', 'Bisect:'] + ['- %s / %s moved %.2f -> %.2f between adjacent builds %s and %s; change: %s' % (k[0], k[1], ma, mb, a, b, ch) for k, a, b, ma, mb, ch in found]
     L += ['- queued for the next night: ' + (', '.join(queue) or 'none')]
+    L += ['', pruned]
     L += ['', 'Shots flagged for Cal (not pass/fail):']
     for e in ran:
         f = '%s/.lab/suite/%s/shots.txt' % (R, e)
@@ -174,15 +250,23 @@ def summary(plan, queue, found, ran):
     print('\n'.join(L))
 
 
+HOST = []
+
+
 def main():
     plan, ran = pick(), []
+    if not quiet_host():
+        return
     todo = list(plan)
     while todo:
         e, why = todo.pop(0)
         if time.time() - T0 > BUDGET - 2400 and not DRY:
             print('budget: not starting %s' % e); break
         print('nightly: %s (%s)' % (e, why), flush=True)
-        if not run_suite(e):
+        ok = run_suite(e)
+        if ok is None:
+            continue
+        if not ok:
             break
         ran.append(e)
         if not DRY:
@@ -192,7 +276,16 @@ def main():
                     todo.append((m, 'bisect midpoint'))
                     plan.append((m, 'bisect midpoint (same night)'))
     q, found = bisect(metrics())
-    summary(plan, [x for x in q if x not in ran], found, ran)
+    queue = [x for x in q if x not in ran]
+    pr = prune(queue, ran)
+    summary(plan, queue, found, ran, pr)
+    # morning digest one-liner and the regressions list for tracker notes (ARCHITECTURE.md 11)
+    dd = os.path.expanduser('~/claude/.services/digest/inputs')
+    if DRY:
+        return
+    os.makedirs(dd, exist_ok=True)
+    open(dd + '/nx2navi.txt', 'w').write('NX2navi nightly %s: %d build(s) tested (%s); %d bisect move(s) isolated; see .lab/nightly/%s.md\n' % (
+        datetime.date.today(), len(ran), ', '.join(ran), len(found), datetime.date.today()))
 
 
 main()

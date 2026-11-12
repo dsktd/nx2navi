@@ -7,9 +7,10 @@
   results-add windows <scenario> <run.log>...  window metrics over several runs (n = runs); RESULTS_NOTE=noisy adds a note
   results-add shadow <scenario> <run.log>...   shadow sync ms per frame (copy-in + write-back + table, frames 600+, TRACE=perf)
   results-add vram <scenario> <run.log>...     last `vram N of M MiB` and `textures live N` of each run
+  results-add status <scenario> <run.log>...   run_status: how many runs crashed, lost the device or never started (status != ok)
   results-add row <run.log> <scenario> <metric> <mean> <min> <max> <n> <tool> [note]
 
-Columns: date, entry, exe, commit, xlate, scenario, metric, mean, min, max, n, tool, source, knobs. A row whose
+Columns: date, entry, exe, commit, xlate, scenario, metric, mean, min, max, n, tool, source, knobs, status. A row whose
 (entry, scenario, metric, source) is already there is skipped, so a re-run or backfill is harmless. n=1 rows are
 indicative (a single run). Appends with one write; never rewrites the file.
 """
@@ -17,7 +18,7 @@ import datetime, os, re, statistics as st, subprocess, sys
 
 R = os.path.expanduser('~/claude/nx2navi')
 TSV = R + '/results.tsv'
-HEAD = 'date entry exe commit xlate scenario metric mean min max n tool source knobs'.split()
+HEAD = 'date entry exe commit xlate scenario metric mean min max n tool source knobs status'.split()
 BORING = re.compile(r'NX2NAVI_(ALIAS_EXTRA_MIB|GPU_WAIT|MARK_CHORD|NVIDIA|RUN_NAME|TRACE|REPLAY_ASYNC|TEX_DESC_STRICT|'
                     r'VK_RECORDER|PIPE_SKIP|AB|DUMP\w*|INPUT\w*|PROFILE\w*|MODS_DIR|XLATE|\w*CACHE\w*|HDR\w*|LIVE\w*)$')
 
@@ -87,7 +88,7 @@ def row(log, scen, metric, vals, tool, note='', date=None, knobs=None):
     tag = os.environ.get('RESULTS_TAG', '')   # 'suite', 'suite nightly': tools/suite and tools/nightly set it
     tool = (tag + ' ' + tool).strip()
     return [d, b['entry'], b['exe'], b['commit'], b['xlate'], scen, metric, f(st.mean(vals)), f(min(vals)), f(max(vals)),
-            len(vals), tool, src, k]
+            len(vals), tool, src, k, 'ok']
 
 
 SCEN = {'west': 'field-west-standing', 'grave': 'graveyard-standing', 'mid': 'field-mid-standing'}
@@ -196,6 +197,29 @@ def do_vram(scen, logs):
     return agg(logs, scen, S, 'lab-run')
 
 
+def run_state(log):
+    # ok | nostart (no frame ever presented, or a fatal line) | devloss | crash (died before the run's last frame)
+    if not os.path.exists(log):
+        return 'nostart'
+    s = open(log, errors='replace').read()
+    if re.search(r'DEVICE_LOST|device lost|device loss', s):
+        return 'devloss'
+    if re.search(r'the SDK aborted|FATAL', s) or not re.search(r'present: frame \d+|frametime:', s):
+        return 'nostart'
+    if re.search(r'SIGSEGV|SIGABRT|Segmentation fault|\bcrash(ed)?\b', s) and not re.search(r'frametime: 60 s', s):
+        return 'crash'
+    return 'ok'
+
+
+def do_status(scen, logs):
+    st_ = [run_state(l) for l in logs]
+    bad = [x for x in st_ if x != 'ok']
+    r = row(logs[0], scen, 'run_status', [float(len(bad))], 'lab-run', 'runs=%d' % len(logs))
+    r[10] = len(logs)
+    r[14] = bad[0] if bad else 'ok'
+    return [r]
+
+
 def main():
     a = sys.argv[1:]
     if not a:
@@ -208,6 +232,8 @@ def main():
         emit(do_window(a[1], a[2]))
     elif a[0] in ('windows', 'shadow', 'vram'):
         emit({'windows': do_windows, 'shadow': do_shadow, 'vram': do_vram}[a[0]](a[1], a[2:]))
+    elif a[0] == 'status':
+        emit(do_status(a[1], a[2:]))
     elif a[0] == 'row':
         emit([row(a[1], a[2], a[3], [float(a[4]), float(a[5]), float(a[6])][:1], a[8], ' '.join(a[9:]))])
     else:

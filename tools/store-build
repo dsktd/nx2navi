@@ -1,0 +1,83 @@
+#!/usr/bin/env python3
+"""store-build store|verify|restore <exe>: the immutable build store (ARCHITECTURE.md 11).
+
+  store <exe>    copy build/v111/nx2navi.<exe> and its translator dir (from builds.tsv) to NX2navi/build/store/<exe>-<commit>/,
+                 read-only, with SHA256; builds.tsv column `store` = "<dir> sha256:<12>". Refuses to replace a stored exe.
+  verify <exe>   build/v111/nx2navi.<exe> must hash like the stored one (play37 once overwrote play36's output): exit 1 if
+                 not, exit 2 if the exe is not stored. tools/suite and tools/nightly require it.
+  restore <exe>  copy the stored exe back to build/v111/nx2navi.<exe> (rename into place).
+Shader and pipeline caches are not stored (15 GB); runs name them by path (.lab/parity/scR, pcR.bin) and the translator id.
+All builds run under `flock /tmp/nx2navi-build.lock` (tools/nightly holds it while it runs, so no build lands beside it).
+"""
+import hashlib, os, shutil, subprocess, sys
+
+R = os.path.expanduser('~/claude/nx2navi')
+V = R + '/NX2navi/build/v111'
+S = R + '/NX2navi/build/store'
+TSV = R + '/builds.tsv'
+
+
+def sha(p):
+    h = hashlib.sha256()
+    with open(p, 'rb') as f:
+        for c in iter(lambda: f.read(1 << 22), b''):
+            h.update(c)
+    return h.hexdigest()
+
+
+def table():
+    l = [x.split('\t') for x in open(TSV).read().split('\n') if x]
+    h = l[0] + (['store'] if 'store' not in l[0] else [])
+    return h, [r + [''] * (len(h) - len(r)) for r in l[1:]]
+
+
+def save(h, rows):
+    tmp = TSV + '.%d' % os.getpid()
+    open(tmp, 'w').write('\t'.join(h) + '\n' + ''.join('\t'.join(r) + '\n' for r in rows))
+    os.rename(tmp, TSV)
+
+
+def main():
+    if len(sys.argv) != 3 or sys.argv[1] not in ('store', 'verify', 'restore'):
+        sys.exit(__doc__)
+    op, exe = sys.argv[1:]
+    h, rows = table()
+    r = next((x for x in rows if x[0] == exe), None)
+    if not r:
+        sys.exit('store-build: %s has no builds.tsv row' % exe)
+    si = h.index('store')
+    src = '%s/nx2navi.%s' % (V, exe)
+    if op == 'store':
+        if ' sha256:' in r[si]:
+            sys.exit('store-build: %s already stored: %s' % (exe, r[si]))
+        d = '%s/%s-%s' % (S, exe, r[2])
+        os.makedirs(d)
+        shutil.copy(src, d + '/nx2navi.' + exe)
+        xd = r[3].split('/')[0]
+        if os.path.isdir('%s/%s' % (V, xd)):
+            shutil.copytree('%s/%s' % (V, xd), d + '/' + xd)
+        x = sha(d + '/nx2navi.' + exe)
+        open(d + '/SHA256', 'w').write('%s  nx2navi.%s\n' % (x, exe))
+        subprocess.run(['chmod', '-R', 'a-w', d])
+        r[si] = '%s sha256:%s' % (os.path.relpath(d, R), x[:12])
+        save(h, rows)
+        print(r[si])
+    else:
+        if ' sha256:' not in r[si]:
+            print('store-build: %s is not stored (tools/store-build store %s)' % (exe, exe), file=sys.stderr)
+            sys.exit(2)
+        d, want = r[si].split(' sha256:')
+        stored = '%s/%s/nx2navi.%s' % (R, d, exe)
+        if op == 'verify':
+            got = sha(src)[:12]
+            if got != want:
+                print('store-build: build/v111/nx2navi.%s is sha256:%s, the store has %s: it was overwritten; '
+                      'tools/store-build restore %s' % (exe, got, want, exe), file=sys.stderr)
+                sys.exit(1)
+        else:
+            shutil.copy(stored, src + '.restore')
+            os.rename(src + '.restore', src)
+            print('restored', src)
+
+
+main()
