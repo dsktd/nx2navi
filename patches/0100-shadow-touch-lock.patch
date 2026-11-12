@@ -1,4 +1,4 @@
-From 70965ce3adfa5e041d44dd7c7f662d20ef508cce Mon Sep 17 00:00:00 2001
+From 74266d8ebb8daf185b0cc3580dc730dd5fb77776 Mon Sep 17 00:00:00 2001
 From: desocketed <desocketed@users.noreply.github.com>
 Date: Thu, 12 Nov 2026 08:24:14 -0500
 Subject: [PATCH] vk_memory: NX2NAVI_SHADOW_TOUCH_LOCK=1 (0: old; ab) puts the
@@ -11,23 +11,23 @@ Subject: [PATCH] vk_memory: NX2NAVI_SHADOW_TOUCH_LOCK=1 (0: old; ab) puts the
  2 files changed, 27 insertions(+), 4 deletions(-)
 
 diff --git a/runtime/cfg.c b/runtime/cfg.c
-index 66229a5..dd04232 100644
+index 97cfdb1..6988167 100644
 --- a/runtime/cfg.c
 +++ b/runtime/cfg.c
 @@ -76,7 +76,7 @@ static const char *const known[] = {
      "ZSTD_CHECK", "ZSTD_NATIVE",
      "BIND_REUSE", "DYN_DELTA", "STG_ARENA", "SUBMIT_BATCH", "ASTC_GPU_DESWIZZLE", "ASTC_SCRATCH_KEEP", "ASTC_ARENA", "ASTC_BC1",
      "TEXUP_LOG_MS", "DYN_RES", "DYN_RES_TARGET", "DYN_RES_STEP", "TEXTURE_DETAIL",
--    "RECORDER_CORE", "RECORDER_PRIO", "REPLAY_TIME", "LOCK_TIME", "POOL_CREATE_BUDGET", "POOL_CREATE_MS", "POOL_FINI_IDLE", "POOL_LOAD_BACKLOG", "POOL_LOAD_MS", "POOL_LOAD_STEP", "POOL_LOAD_FIT", "SHADOW_RECYCLE_MB",
-+    "RECORDER_CORE", "RECORDER_PRIO", "REPLAY_TIME", "LOCK_TIME", "POOL_CREATE_BUDGET", "POOL_CREATE_MS", "POOL_FINI_IDLE", "POOL_LOAD_BACKLOG", "POOL_LOAD_MS", "POOL_LOAD_STEP", "POOL_LOAD_FIT", "SHADOW_RECYCLE_MB", "SHADOW_TOUCH_LOCK",
+-    "RECORDER_CORE", "RECORDER_PRIO", "REPLAY_TIME", "LOCK_TIME", "POOL_CREATE_BUDGET", "POOL_CREATE_MS", "POOL_FINI_IDLE", "POOL_LOAD_BACKLOG", "POOL_LOAD_MS", "POOL_LOAD_STEP", "POOL_LOAD_FIT", "POOL_IDLE_MS", "SHADOW_RECYCLE_MB",
++    "RECORDER_CORE", "RECORDER_PRIO", "REPLAY_TIME", "LOCK_TIME", "POOL_CREATE_BUDGET", "POOL_CREATE_MS", "POOL_FINI_IDLE", "POOL_LOAD_BACKLOG", "POOL_LOAD_MS", "POOL_LOAD_STEP", "POOL_LOAD_FIT", "POOL_IDLE_MS", "SHADOW_RECYCLE_MB", "SHADOW_TOUCH_LOCK",
      "VMA_BLOCK_MB", "SYNC_WAKE_ALL", "LOG_ASYNC", "DEVICE_LOST_AT",
      "COOP", "COOP_BETA", "COOP_NAME", "COOP_SERVER", "COOP_PORT", "COOP_ROOM", "COOP_AUTO", "COOP_DROP",   // co-op (coop.c); the last three have no menu row
      "COOP_PROGRESS", "COOP_ITEMS", "COOP_SONGS", "COOP_QUEST", "COOP_KEYS", "COOP_RUPEES", "COOP_AMMO",   // the room's rules (coop_game.c)
 diff --git a/runtime/vk_memory.c b/runtime/vk_memory.c
-index da5c842..e98ed6b 100644
+index 1b65520..be516ac 100644
 --- a/runtime/vk_memory.c
 +++ b/runtime/vk_memory.c
-@@ -1323,14 +1323,30 @@ static int shadow_pool(VkCtx *c, PoolRec *r, uint64_t addr, uint64_t size) {
+@@ -1335,14 +1335,30 @@ static int shadow_pool(VkCtx *c, PoolRec *r, uint64_t addr, uint64_t size) {
      return 1;
  }
  
@@ -60,7 +60,7 @@ index da5c842..e98ed6b 100644
  }
  
  // ---- base copies of the pages both write ("Pages both write" above). shadow_lock held throughout.
-@@ -1585,8 +1601,10 @@ static uint64_t snap_tregs_runs(uint32_t epoch) {
+@@ -1597,8 +1613,10 @@ static uint64_t snap_tregs_runs(uint32_t epoch) {
  
  static void shadow_forget(PoolRec *r) {
      plat_mutex_lock(&shadow_lock);
@@ -71,23 +71,23 @@ index da5c842..e98ed6b 100644
      for (int i = 0; r->tlisted && i < ntpools; i++)
          if (tpools[i] == r) { tpools[i] = tpools[--ntpools]; break; }
      if (r->stab_i) {   // the last one takes its place
-@@ -2835,6 +2853,7 @@ void vk_mem_shadow_sync(uint64_t fence) {
+@@ -2878,6 +2896,7 @@ void vk_mem_shadow_sync(uint64_t fence) {
          }
      }
      plat_mutex_lock(&shadow_lock);
-+    plat_mutex_lock(&touch_lock);   // the touched list (NX2NAVI_SHADOW_TOUCH_LOCK); its filler is this thread
++    plat_mutex_lock(&touch_lock);   // the touched list (NX2NAVI_SHADOW_TOUCH_LOCK): shadow_touch may hold only this one
      if (nstouch || (table && nstab)) {
          plat_mutex_lock(&gen_lock);
          for (int i = 0; i < nstouch; i++) shadow_sync_pool(stouch[i], epoch, cpu);
-@@ -2888,6 +2907,7 @@ void vk_mem_shadow_sync(uint64_t fence) {
-         if (table) s_tab_ticks += qpc() - t1, s_tab_syncs++, s_tab_all_ticks += qpc() - t1, s_tab_all_syncs++;
+@@ -2932,6 +2951,7 @@ void vk_mem_shadow_sync(uint64_t fence) {
+         if (ahead) s_pre_ticks += qpc() - t1, s_pre_syncs++, s_pre_bytes += s_copied - copied0;
      }
      s_ticks += qpc() - t0;
 +    plat_mutex_unlock(&touch_lock);
      plat_mutex_unlock(&shadow_lock);
      RT_ZONE_END(zs);
  }
-@@ -4828,7 +4848,10 @@ void vk_mem_shutdown(void) {
+@@ -4872,7 +4892,10 @@ void vk_mem_shutdown(void) {
      nsnap_pool = 0, snap_pool_bytes = 0;
      plat_mutex_unlock(&snap_pool_lock);
      plat_mutex_lock(&shadow_lock);
