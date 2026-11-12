@@ -332,3 +332,10 @@ pin-desktop CPUS="8-11,24-27":
     for name in niri pipewire pipewire-pulse wireplumber waybar Xwayland xwayland-satell mako; do  # comm names are cut at 15 characters
         for pid in $(pgrep -x "$name"); do taskset -apc "{{CPUS}}" "$pid" >/dev/null && echo "$name $pid -> {{CPUS}}"; done
     done
+
+# One entry point for test setups: `just run <name>` runs runs/<name>.sh (each script holds that test's settings,
+# with a header saying what it tests, its tracker item and when to delete it); no name runs the usual play setup.
+run NAME="" *args:
+    #!/usr/bin/env sh
+    if [ -z "{{NAME}}" ]; then exec {{just_executable()}} -f "{{justfile()}}" try-name "" {{args}}; fi
+    exec sh "{{justfile_directory()}}/runs/{{NAME}}.sh" {{args}}
