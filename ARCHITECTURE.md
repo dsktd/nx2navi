@@ -239,6 +239,7 @@ Bindless slots (`TexSlot`, 16 kinds x 32768) hold the game's NVN descriptors. An
 - **The frame limit** is `fps_limit` / `NX2NAVI_FPS_LIMIT`, capped at 240 (`frame_rate.c:21-23`). Cal's ini currently says 60 (play log 379); the perf trace ran at 240.
 - **Game time follows wall time.** The step is the moving average of the last 5 display intervals, at least 1/240 s and at most 1/15 s (`frame_rate.c:10-13, 55-58`).
 - **Why replays drift.** Recorded input is keyed to game time, and game time is the measured wall time. A different frame rate gives different steps and stick-sample instants, so positions diverge (tracker #145).
+- **Stalls the frame-time split cannot see (2026-11-11, rebase-upstream 57e7476, nx2navi.play25).** The frame-time summary's categories time the replay/renderer only, so a worst frame with 0.0 everywhere (play22 f2928 297 ms, f505 296 ms; play-20261111-213952 f92 453 ms) was spent off the renderer. `NX2NAVI_STALL_MS=<ms>` (default 0; `kern_stall_frame` in `runtime/kernel.c`, called from `perf_present`) logs `stall:` lines for such presents: per busy guest thread (main first, up to 6) the kernel states over the interval (run/core/host/sleep/sync/cv/lock/addr, from `acct`, which then counts without `TRACE=sched`), host CPU and run-queue ms (`/proc/self/task/<tid>/schedstat`) and minor/major faults. Upstream 760a7aa (not in rebase-upstream) keeps freshly thawed regions thawed: a candidate for shadow-pool churn.
 
 ## 9. Input, audio, HDR and scaling, saves
 

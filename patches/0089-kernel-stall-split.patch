@@ -1,0 +1,186 @@
+From 57e747647b13b1945c428ef1f7731a9c66cdbc51 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 22:23:50 -0500
+Subject: [PATCH] kernel: NX2NAVI_STALL_MS (default 0, off) logs, for a present
+ at least that long after the previous one, where each busy guest thread spent
+ the interval: kernel states (run/core/host/sleep/sync/...), host CPU and
+ run-queue time from schedstat, and page faults
+
+---
+ runtime/cfg.c    |  3 +-
+ runtime/host.h   |  1 +
+ runtime/kernel.c | 90 +++++++++++++++++++++++++++++++++++++++++++++++-
+ runtime/perf.c   |  1 +
+ 4 files changed, 93 insertions(+), 2 deletions(-)
+
+diff --git a/runtime/cfg.c b/runtime/cfg.c
+index 08870dd..411aedb 100644
+--- a/runtime/cfg.c
++++ b/runtime/cfg.c
+@@ -67,7 +67,7 @@ static const char *const known[] = {
+     "REPLAY_CHECK", "RESOLVE_CHECK", "RESTART_WAIT", "ROMFS", "ROMFS_INDEX", "ROMFS_MMAP", "ROMFS_MODS", "ROMFS_PATCHES",
+     "ROMFS_PROOF_DIR", "ROMFS_VERIFY", "RSTICK_DEADZONE", "RUMBLE", "RUMBLE_CURVE", "RUMBLE_STRENGTH", "RUMBLE_TRIGGERS", "SHADER_CACHE",
+     "SHADER_CACHE_FLUSH", "SHADER_CARRY", "SHADER_MEMO", "SHADER_RELOAD", "SHADOW_BULK_WRITE", "SHADOW_CHECK", "SHADOW_COMPARE", "SHADOW_RANGE", "SHADOW_RES", "SHADOW_SCALE", "SHADOW_TABLE_STORES", "SHARED_FONTS", "SHARPNESS", "SHOTS", "SHOTS_DIR",
+-    "SVC_SLOW_MS",
++    "SVC_SLOW_MS", "STALL_MS",
+     "SHOTS_FULL", "SPEED_PROBE", "SPIN", "SPIN_HANDOFF_US", "SPLIT_DRAWS", "SPLIT_IDLE", "SPLIT_IN_PASS", "SPLIT_US", "SPV_MARK_TEST", "SPV_OVERRIDE", "STICK_DEADZONE", "STICK_SENS",
+     "SWKBD_ANSWER",
+     "SET_AT", "SWKBD_TEST", "TAA", "DBG_TEST", "DEBUG_MENU", "MENU_TEST_DEBUG", "FSR4", "FSR4_FG", "FG4_VERSION", "FG4_SWAPCHAIN", "TEST_PAD", "TEST_PAD_AT", "TEST_PREPARE_SHADERS", "TEX_ALIAS", "DEPTH_INIT_INLINE", "DEPTH_ALIAS_LOG", "TEX_DISUSE", "TEX_DISUSE_EVICT", "TEX_GEN_UNDO", "TEX_MEMO", "TEX_VRAM_PRESSURE", "TEX_RELEASED_MB", "TEX_REUSE", "TEX_SPLIT_FILL", "TEX_COMMIT_FREE_MB", "TEX_PROC_COMMIT_MB", "TEX_EVICT", "TEX_COMMIT_EVICT", "MIRROR_EVICT", "VRAM_BUDGET_MB", "TIMER_1MS", "TRACE", "TXD_TRANSPOSE", "UBO_SNAPSHOT", "EVO_TRACE", "EVENT_AT_SYNC", "UPSCALER", "VK_DYN_A2C", "VK_DYN_VERTEX", "VK_NAN_PRESERVE", "VK_NOOPT", "VK_NO_FLOAT64",
+@@ -212,6 +212,7 @@ static const CfgMeta metas[] = {
+     // vk_memory.c "Pages a shader stores into through the device address table"
+     {"SHADOW_TABLE_STORES", "0", "0|1", RESTART}, {"SHADOW_CHECK", "0", "0|1", RESTART},
+     {"SVC_SLOW_MS", "0", "0..60000", RESTART},   // kernel.c kern_svc: log services slower than this
++    {"STALL_MS", "0", "0..60000", RESTART},   // kernel.c kern_stall_frame: per-thread split of presents this slow
+     {"SHADOW_RANGE", "100", "50..400", RESTART}, {"CONTACT_SHADOWS", "0", "0..100", RESTART},
+     {"PCSS", "0", "0..200", RESTART},
+     // Game
+diff --git a/runtime/host.h b/runtime/host.h
+index 8511202..e7d5bc2 100644
+--- a/runtime/host.h
++++ b/runtime/host.h
+@@ -314,6 +314,7 @@ void kern_host_left(void *thread);                         // back at depth 0 wi
+ int kern_core_diag_on(void);                               // NX2NAVI_CORE_DIAG
+ void kern_core_diag_frame(uint64_t frame, uint64_t interval_ns);   // perf_present, every present (also logs the
+                                                            // asynchronous preemption counters)
++void kern_stall_frame(uint64_t frame, uint64_t interval_ns);   // NX2NAVI_STALL_MS: per thread, on present
+ void kern_sched_report(uint64_t frame);                    // NX2NAVI_TRACE=sched: per-thread time split, on present
+ uint32_t kern_handle_new(int kind, void *obj);             // kind: KERN_SESSION or KERN_TMEM (ipc.c)
+ void *kern_handle_get(uint32_t h, int kind);
+diff --git a/runtime/kernel.c b/runtime/kernel.c
+index e40ac19..f5c25b1 100644
+--- a/runtime/kernel.c
++++ b/runtime/kernel.c
+@@ -86,6 +86,7 @@ struct RtThread {
+     uint32_t tid;              // host thread id
+     int st;                    // S_* state since st_since
+     uint64_t st_since, st_ns[S_N], nblk, npre, pre_since, cpu_last;
++    uint64_t sl_st[S_N];       // NX2NAVI_STALL_MS: the states' sums at the previous present
+     uint64_t wobj;             // what the current wait is on: owner handle, key, address or first handle
+     const uint32_t *whs;       // a WaitSynchronization that blocks: its handles, in the waiter's own memory (holding G)
+     int wn;
+@@ -169,8 +170,9 @@ static void wait_add(WaitRec *w, int st, uint64_t obj, uint32_t waker, uint64_t
+ }
+ 
+ // Close the current state's interval and enter st.
++static int g_stall_on;   // NX2NAVI_STALL_MS set: the states are counted without NX2NAVI_TRACE=sched too
+ static void acct(RtThread *t, int st) {
+-    if (!(rt_trace & RT_TRACE_SCHED)) return;
++    if (!(rt_trace & RT_TRACE_SCHED) && !g_stall_on) return;
+     uint64_t now = kern_now_ns();
+     if (t->st_since) {
+         t->st_ns[t->st] += now - t->st_since;
+@@ -1228,6 +1230,7 @@ void kern_sched_report(uint64_t frame) {
+     uint64_t sc = g_sync_calls, sb = g_sync_blocks, sw = g_sync_woken, ss = g_sync_spared;
+     for (RtThread *t = g_all; t; t = t->all) {
+         memset(t->st_ns, 0, sizeof t->st_ns);
++        memset(t->sl_st, 0, sizeof t->sl_st);   // NX2NAVI_STALL_MS counts from here on
+         t->nblk = t->npre = 0;
+         t->lw_ns = t->lw_n = t->lw_max = t->lg_ns = t->lg_n = t->lg_max = t->sl_n = t->sl_req = t->sl_act = 0;
+         t->sp_n = t->sp_ho = 0;   // racy against the thread's own increments: a few passes may be lost
+@@ -1275,6 +1278,91 @@ void kern_sched_report(uint64_t frame) {
+         }
+ }
+ 
++// NX2NAVI_STALL_MS (default 0, off): a present at least that long after the previous one gets a line per busy guest
++// thread saying where its interval went: the kernel's states (run = guest code holding a core, core = waiting for a
++// virtual core, host = in a host call, sleep/sync/cv/lock/addr = blocked in that kind of SVC), what the host scheduler
++// gave it (on the CPU, waiting on a run queue) and its page faults. The frame-time summary's worst frames charge the
++// renderer only; a frame with nothing there was spent here. Costs two /proc reads per guest thread per present.
++static uint64_t g_stall_ns;
++static void stall_proc(uint32_t tid, uint64_t *run, uint64_t *rq, uint64_t *flt, uint64_t *maj) {
++    char path[64], buf[1024];
++    *run = *rq = *flt = *maj = 0;
++    snprintf(path, sizeof path, "/proc/self/task/%u/schedstat", tid);
++    FILE *f = fopen(path, "r");
++    if (f) {
++        unsigned long long a = 0, b = 0;
++        if (fscanf(f, "%llu %llu", &a, &b) == 2) *run = a, *rq = b;
++        fclose(f);
++    }
++    snprintf(path, sizeof path, "/proc/self/task/%u/stat", tid);
++    if (!(f = fopen(path, "r"))) return;
++    size_t n = fread(buf, 1, sizeof buf - 1, f);
++    fclose(f);
++    buf[n] = 0;
++    const char *p = strrchr(buf, ')');   // fields after the name: state ppid pgrp session tty tpgid flags minflt cminflt majflt
++    unsigned long long mn = 0, mj = 0;
++    if (p && sscanf(p + 2, "%*c %*d %*d %*d %*d %*d %*u %llu %*u %llu", &mn, &mj) == 2) *flt = mn, *maj = mj;
++}
++
++void kern_stall_frame(uint64_t frame, uint64_t interval_ns) {
++    static int init;
++    if (!init) {
++        init = 1;
++        g_stall_ns = (uint64_t)(strtod(cfg_value("NX2NAVI_STALL_MS"), NULL) * 1e6);
++        g_stall_on = g_stall_ns > 0;
++        if (g_stall_on) rt_log("kernel: presents over %.0f ms log where each guest thread spent them (NX2NAVI_STALL_MS)",
++                               g_stall_ns / 1e6);
++    }
++    if (!g_stall_on) return;
++    enum { ROWS = 6, TH = 128 };
++    typedef struct { uint32_t h, tid; int prio, main, render; uint64_t st[S_N], run, rq, flt, maj, busy; } Row;
++    static struct { uint32_t tid; uint64_t run, rq, flt, maj; } base[TH];   // the host's sums at the previous present
++    static Row th[TH];
++    Row r[ROWS];
++    int nt = 0, nr = 0, slow = interval_ns >= g_stall_ns && frame > 1;
++    lock();   // the kernel's states under G; the /proc reads after it
++    for (RtThread *t = g_all; t && nt < TH; t = t->all) {
++        if (!t->tid || t->exited) continue;
++        acct(t, t->st);   // close the open interval
++        Row *x = &th[nt++];
++        x->h = t->handle, x->tid = t->tid, x->prio = t->prio, x->main = t->is_main, x->render = t == g_render;
++        for (int k = 0; k < S_N; k++) x->st[k] = t->st_ns[k] - t->sl_st[k];
++        memcpy(t->sl_st, t->st_ns, sizeof t->sl_st);
++    }
++    unlock();
++    for (int i = 0; i < nt; i++) {
++        Row *x = &th[i];
++        uint64_t run, rq, flt, maj;
++        stall_proc(x->tid, &run, &rq, &flt, &maj);
++        int j = 0;
++        while (j < TH && base[j].tid && base[j].tid != x->tid) j++;
++        if (j == TH) j = (int)(x->tid % TH);   // full: reuse a slot, that thread's next line is off once
++        int known = base[j].tid == x->tid;
++        x->run = known ? run - base[j].run : 0, x->rq = known ? rq - base[j].rq : 0;
++        x->flt = known ? flt - base[j].flt : 0, x->maj = known ? maj - base[j].maj : 0;
++        base[j].tid = x->tid, base[j].run = run, base[j].rq = rq, base[j].flt = flt, base[j].maj = maj;
++        if (!slow) continue;
++        x->busy = x->st[S_RUN] + x->st[S_CORE] + x->st[S_HOST] + x->run + (x->main ? (uint64_t)1 << 62 : 0);   // main first
++        int at = nr < ROWS ? nr++ : ROWS;
++        while (at > 0 && r[at - 1].busy < x->busy) {
++            if (at < ROWS) r[at] = r[at - 1];
++            at--;
++        }
++        if (at < ROWS) r[at] = *x;
++    }
++    if (!slow) return;
++    rt_log("stall: frame %llu: %.1f ms since the previous present", (unsigned long long)frame, interval_ns / 1e6);
++    for (int i = 0; i < nr; i++) {
++        char s[256];
++        int o = 0;
++        for (int k = S_RUN; k < S_N && o < (int)sizeof s - 32; k++)
++            if (r[i].st[k] >= 100000) o += snprintf(s + o, sizeof s - o, " %s %.1f", s_name[k], r[i].st[k] / 1e6);
++        rt_log("stall:   thread %#x p%d tid %u%s%s:%s ms; host CPU %.1f ms, run queue %.1f ms, faults %llu (major %llu)",
++               r[i].h, r[i].prio, r[i].tid, r[i].main ? " main" : "", r[i].render ? " render" : "", o ? s : " idle",
++               r[i].run / 1e6, r[i].rq / 1e6, (unsigned long long)r[i].flt, (unsigned long long)r[i].maj);
++    }
++}
++
+ // ---- locks: tag word = owner handle | WAITERS_BIT
+ static inline uint32_t ld32(uint64_t a) { return __atomic_load_n((uint32_t *)(uintptr_t)a, __ATOMIC_SEQ_CST); }
+ static inline void st32(uint64_t a, uint32_t v) { __atomic_store_n((uint32_t *)(uintptr_t)a, v, __ATOMIC_SEQ_CST); }
+diff --git a/runtime/perf.c b/runtime/perf.c
+index 5c7a7f4..6771c3f 100644
+--- a/runtime/perf.c
++++ b/runtime/perf.c
+@@ -812,6 +812,7 @@ void perf_present(uint64_t frame) {
+     if (__atomic_load_n(&overlay, __ATOMIC_RELAXED))   // the overlay's only cost while it is off: this branch
+         perfmon_frame(now, d, frame_ns, rep, __atomic_load_n(&counts[PERF_CNT_TEX_UP], __ATOMIC_RELAXED));
+     kern_core_diag_frame(frame, d);
++    kern_stall_frame(frame, d);
+     if (flight_on) flight_frame(frame, now, d, frame_ns, counts);
+     if (!(rt_trace & RT_TRACE_PERF)) {
+         memset(frame_ns, 0, sizeof frame_ns);
+-- 
+2.56.0
+
