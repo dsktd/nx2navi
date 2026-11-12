@@ -1,0 +1,105 @@
+#!/usr/bin/env python3
+"""builds-add <exe> <commit> <parent-exe|-> [xlate=<dir/id12>] [run=<runs/x.sh>] [wt=<worktree>] [note=...]
+
+Append (or with --force replace) the row for build `exe` in builds.tsv, the table that says what each exe contains, so a
+results.tsv row can be read against the change it measured (ARCHITECTURE.md 11). Computed from git: the base (upstream
+commit and nearest tag), the private patches contained (numbers from patches/*.patch matched by commit subject; subjects
+with no patch file are listed as 'unnumbered'), and the change vs the parent build's row (patches added/removed, base,
+translator). run= names the runs/ script whose exported NX2NAVI_ defaults are the build's own (default runs/play.sh).
+Call it right after building the exe. tools/ab-cell and tools/load-cell refuse a build with no row here.
+Columns: exe date commit xlate base parent patches changed run defaults note
+"""
+import datetime, glob, os, re, subprocess, sys
+
+R = os.path.expanduser('~/claude/nx2navi')
+TSV = R + '/builds.tsv'
+HEAD = 'exe date commit xlate base parent patches changed run defaults note'.split()
+
+
+def git(wt, *a):
+    return subprocess.run(['git', '-C', wt] + list(a), capture_output=True, text=True).stdout.strip()
+
+
+def patchmap():
+    m = {}
+    for f in sorted(glob.glob(R + '/patches/*.patch')):
+        s = open(f, errors='replace').read(3000)
+        x = re.search(r'^Subject: (?:\[PATCH[^\]]*\] )?(.*?)(?:\n(?=\S)|\n\n)', s, re.M | re.S)
+        if x:
+            m[x[1].replace('\n ', ' ')[:50]] = os.path.basename(f)[:4]
+    return m
+
+
+def contents(wt, commit):
+    base = git(wt, 'merge-base', commit, 'origin/main')
+    pm, nums, un = patchmap(), set(), set()
+    for s in git(wt, 'log', '--format=%s', 'origin/main..' + commit).split('\n'):
+        if s:
+            (nums.add(pm[s[:50]]) if s[:50] in pm else un.add(s[:60]))
+    return base[:7], git(wt, 'describe', '--tags', base), nums, un
+
+
+def defaults(run):
+    d, seen = {}, set()
+    while run and run not in seen:
+        seen.add(run)
+        p = R + '/' + run
+        if not os.path.exists(p):
+            break
+        s = open(p).read()
+        for k, v in re.findall(r'export (NX2NAVI_\w+)="\$\{\1:-([^}"$]*)\}"', s):
+            d.setdefault(k.replace('NX2NAVI_', ''), v)
+        for k, v in re.findall(r'(NX2NAVI_\w+)="\$\{\1:-([^}"$]*)\}"', s):
+            d.setdefault(k.replace('NX2NAVI_', ''), v)
+        run = 'runs/play.sh' if re.search(r'exec sh .*play\.sh', s) and run != 'runs/play.sh' else None
+    for k in ('EXE', 'RUN_NAME', 'XLATE', 'SHADER_CACHE', 'PIPELINE_CACHE'):
+        d.pop(k, None)
+    return d
+
+
+def rows():
+    if not os.path.exists(TSV):
+        return []
+    return [l.split('\t') for l in open(TSV).read().split('\n')[1:] if l]
+
+
+def have(exe):
+    return any(r[0] == exe for r in rows())
+
+
+def main():
+    a = [x for x in sys.argv[1:] if x != '--force']
+    if len(a) < 3:
+        sys.exit(__doc__)
+    exe, commit, parent = a[:3]
+    kw = dict(x.split('=', 1) for x in a[3:])
+    wt = R + '/' + kw.get('wt', 'NX2navi')
+    base, tag, nums, un = contents(wt, commit)
+    prow = next((r for r in rows() if r[0] == parent), None)
+    if prow:
+        pn = set(prow[6].split(',')) - {'-'}
+        added, removed = sorted(nums - pn), sorted(pn - nums)
+    else:
+        added, removed = sorted(nums), []
+    ch = []
+    if added: ch.append('+' + ','.join(added))
+    if removed: ch.append('-' + ','.join(removed))
+    if prow and prow[4] != base + ' ' + tag: ch.append('base %s -> %s %s' % (prow[4], base, tag))
+    if prow and prow[3] != kw.get('xlate', '?'): ch.append('xlate %s -> %s' % (prow[3], kw.get('xlate', '?')))
+    if not prow: ch.append('first row')
+    run = kw.get('run', 'runs/play.sh')
+    dd = ' '.join('%s=%s' % kv for kv in sorted(defaults(run).items()))
+    new = [exe, git(wt, 'show', '-s', '--format=%cs', commit) or datetime.date.today().isoformat(), commit, kw.get('xlate', '?'), base + ' ' + tag, parent,
+           ','.join(sorted(nums)) or '-', ' '.join(ch) or 'no change', run, dd,
+           ' '.join(x for x in (kw.get('note', ''), ('unnumbered: ' + '; '.join(sorted(un))) if un else '') if x)]
+    rs = [r for r in rows() if r[0] != exe or '--force' not in sys.argv[1:]]
+    if have(exe) and '--force' not in sys.argv[1:]:
+        sys.exit('builds.tsv already has %s (--force to replace)' % exe)
+    out = '\t'.join(HEAD) + '\n' + ''.join('\t'.join(r) + '\n' for r in rs + [new])
+    tmp = TSV + '.%d' % os.getpid()
+    open(tmp, 'w').write(out)
+    os.rename(tmp, TSV)
+    print('builds.tsv: %s %s' % (exe, new[7]), file=sys.stderr)
+
+
+main()

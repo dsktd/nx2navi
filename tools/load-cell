@@ -10,6 +10,7 @@
 # new play log appears. Caches: the parity copies in .lab/parity. Sibling of tools/ab-cell (steady A/B).
 R=$HOME/claude/nx2navi; P=$R/.lab/parity; B=$R/NX2navi/build/v111
 exe=$1 tag=$2 reps=$3; shift 3
+grep -q "^$exe	" $R/builds.tsv 2>/dev/null || { echo "no builds.tsv row for $exe: run tools/builds-add first (ARCHITECTURE.md 11)"; exit 8; }
 log=$(ls -t $B/logs/play-*.log | head -1)
 [ $(( $(date +%s) - $(stat -c %Y $log) )) -lt 180 ] && { echo "CAL BACK"; exit 9; }
 gap=${GAP:-900} first=${FIRST:-600}
@@ -51,3 +52,4 @@ for try in 1 2 3; do
 done
 $R/tools/load-stat $R/.lab/$name/run.log
 grep loadavg $R/.lab/$name.out | tail -1 | sed "s/^/   /"
+$R/tools/results-add load $R/.lab/$name/run.log   # results.tsv (ARCHITECTURE.md 11)

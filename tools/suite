@@ -1,0 +1,50 @@
+#!/bin/bash
+# suite <exe> [reps]: the fixed regression suite for one build (ARCHITECTURE.md 11). Same metrics for every build, whatever
+# it targets, so rows compare across builds. Runs on the GPU (lab lock via lab-run, one job at a time); meant for
+# tools/nightly, not for iteration (iteration = one targeted ab-cell/load-cell). reps default 3 (SUITE_REPS).
+# Rows land in results.tsv with the tool tag `suite` (`suite nightly` from nightly). `just suite <exe>`; SUITE_DRY=1 prints
+# the plan and runs nothing. About 40 min at 3 reps (GPU time: ~2 min a standing/running run, ~1.5 min a cold load).
+#  1 field-west standing: fps, 1% low             (ab-cell NULL knob runs: standing window)
+#  2 graveyard standing: fps, 1% low, >25 ms/min  (spread over the reps)
+#  3 cold load longest gap + lost ms, west and graveyard   (load-cell COLD=)
+#  4 running: >25 ms frames/min from the scripted replay .lab/parity/load-run.txt, noted `noisy` while spread > 15%
+#  5 replay ms (ab-cell replay_A_ms) + shadow sync ms/frame at field-west
+#  6 VRAM + live textures after a fixed 4-round teleport loop (load-cell, one run)
+#  7 fixed-position shots (the standing runs' final.png) kept in .lab/suite/<exe>/ and diffed against the parent build's
+#    (builds.tsv); RMSE listed in .lab/suite/<exe>/shots.txt, flagged for Cal's review above 0.07 (the replay repeat bound)
+R=$HOME/claude/nx2navi; B=$R/NX2navi/build/v111
+exe=$1 reps=${2:-${SUITE_REPS:-3}}
+[ -n "$exe" ] || { sed -n 2,3p $0; exit 2; }
+grep -q "^$exe	" $R/builds.tsv 2>/dev/null || { echo "no builds.tsv row for $exe: tools/builds-add first"; exit 8; }
+export RESULTS_TAG="${RESULTS_TAG:-suite}"
+out=$R/.lab/suite/$exe; mkdir -p $out
+plan() { echo "suite $exe x$reps: $*"; [ -n "$SUITE_DRY" ] || "$@"; }
+tag=su-$exe
+# each step stops the whole suite when Cal is back (ab-cell/load-cell exit 9)
+for sc in west grave; do
+  plan env FRAME=4200 $R/tools/ab-cell $exe $sc $tag $reps NX2NAVI_NULL_KNOB || [ -n "$SUITE_DRY" ] || exit $?
+  logs=$(for i in $(seq $reps); do echo $R/.lab/ab-$tag-$sc-$i/run.log; done)
+  scen=field-west-standing; [ $sc = grave ] && scen=graveyard-standing
+  [ -n "$SUITE_DRY" ] && { echo "  results-add windows $scen (+ shadow, vram) over $logs"; continue; }
+  $R/tools/results-add windows $scen $logs
+  [ $sc = west ] && $R/tools/results-add shadow $scen $logs
+  cp $R/.lab/ab-$tag-$sc-1/final.png $out/shot-$sc.png 2>/dev/null
+done
+for sc in west grave; do
+  for i in $(seq $reps); do plan env COLD=$sc $R/tools/load-cell $exe $tag $i || [ -n "$SUITE_DRY" ] || exit $?; done
+done
+plan env RESULTS_NOTE=noisy $R/tools/suite-run $exe $tag-run $reps
+plan $R/tools/load-cell $exe $tag-loop 4
+if [ -z "$SUITE_DRY" ]; then
+  $R/tools/results-add vram teleport-loop-4 $R/.lab/lc-$tag-loop/run.log
+  # shots vs the parent build's
+  parent=$(awk -F'\t' -v e=$exe '$1 == e { print $6 }' $R/builds.tsv)
+  : > $out/shots.txt
+  for f in $out/shot-*.png; do
+    p=$R/.lab/suite/$parent/$(basename $f)
+    [ -f "$p" ] || { echo "$(basename $f): no shot of parent $parent yet" >> $out/shots.txt; continue; }
+    d=$(nix shell nixpkgs#imagemagick -c magick compare -metric RMSE "$f" "$p" null: 2>&1 | sed 's/.*(\(.*\))/\1/')
+    echo "$(basename $f) vs $parent: RMSE $d $(awk -v d="$d" 'BEGIN { print (d > 0.07) ? "FLAG: for Cal to review" : "same" }')" >> $out/shots.txt
+  done
+  cat $out/shots.txt
+fi

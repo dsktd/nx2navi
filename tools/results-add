@@ -1,0 +1,217 @@
+#!/usr/bin/env python3
+"""results-add: append verified measurements to results.tsv (the one record of NX2navi perf; see ARCHITECTURE.md 11).
+
+  results-add ab <ab-cell summary .txt>        one set of rows per cell: replay B-A, interval B-A, replay A (n = runs)
+  results-add load <run.log>...                load-stat clusters grouped by (build, area): longest, lost ms
+  results-add window <run.log> <scenario>      the last full 60 s `frametime:` window: fps, 1% low, >25 ms per min (n=1)
+  results-add windows <scenario> <run.log>...  window metrics over several runs (n = runs); RESULTS_NOTE=noisy adds a note
+  results-add shadow <scenario> <run.log>...   shadow sync ms per frame (copy-in + write-back + table, frames 600+, TRACE=perf)
+  results-add vram <scenario> <run.log>...     last `vram N of M MiB` and `textures live N` of each run
+  results-add row <run.log> <scenario> <metric> <mean> <min> <max> <n> <tool> [note]
+
+Columns: date, entry, exe, commit, xlate, scenario, metric, mean, min, max, n, tool, source, knobs. A row whose
+(entry, scenario, metric, source) is already there is skipped, so a re-run or backfill is harmless. n=1 rows are
+indicative (a single run). Appends with one write; never rewrites the file.
+"""
+import datetime, os, re, statistics as st, subprocess, sys
+
+R = os.path.expanduser('~/claude/nx2navi')
+TSV = R + '/results.tsv'
+HEAD = 'date entry exe commit xlate scenario metric mean min max n tool source knobs'.split()
+BORING = re.compile(r'NX2NAVI_(ALIAS_EXTRA_MIB|GPU_WAIT|MARK_CHORD|NVIDIA|RUN_NAME|TRACE|REPLAY_ASYNC|TEX_DESC_STRICT|'
+                    r'VK_RECORDER|PIPE_SKIP|AB|DUMP\w*|INPUT\w*|PROFILE\w*|MODS_DIR|XLATE|\w*CACHE\w*|HDR\w*|LIVE\w*)$')
+
+
+def defaults_of(exe):
+    # builds.tsv: the exe's own default knobs; a row lists only knobs that differ from them
+    if os.path.exists(R + '/builds.tsv'):
+        for l in open(R + '/builds.tsv').read().split('\n')[1:]:
+            f = l.split('\t')
+            if f[0] == exe and len(f) > 9:
+                return set(f[9].split())
+    return None
+
+
+def build(log):
+    s = open(log, errors='replace').read(60000)
+    m = re.search(r'build: entry=(\S+) exe=(\S+) commit=(\S+) xlate=(\S+) knobs=(\S*)', s)
+    if not m:
+        n = log.rstrip('/').split('/')[-2]
+        if os.environ.get('RESULTS_BACKFILL') != '1':
+            sys.exit('results-add: %s has no build line' % log)
+        # backfill: a run before the provenance line (patch 0087, play13) goes by its name: pr-p13-west -> play13
+        g = re.search(r'-p(\d+)(?:-|$)', n)
+        exe = 'play' + g[1] if g else '?'
+        row = next((l.split('\t') for l in open(R + '/builds.tsv').read().split('\n')[1:] if l.startswith(exe + '\t')), None)
+        if not row:
+            sys.exit('results-add: %s: exe unknown' % log)
+        return dict(entry=n, exe=exe, commit=row[2], xlate=row[3].split('/')[0] + '/' + row[3].split('/')[-1], knobs='', ab='')
+    kv = [k for k in m[5].split(',') if '=' in k and '/' not in k.split('=', 1)[-1]]
+    ab = [k.split('=')[0] for k in kv if k.endswith('=ab')]
+    kn = [k.replace('NX2NAVI_', '') for k in kv if not BORING.match(k.split('=')[0]) and not k.endswith('=ab')]
+    exe = m[2].replace('nx2navi.', '')
+    dflt = defaults_of(exe)
+    if dflt is None:
+        sys.exit('results-add: exe %s has no row in builds.tsv (run tools/builds-add first)' % exe)
+    kn = [k for k in kn if k not in dflt]
+    return dict(entry=m[1], exe=m[2].replace('nx2navi.', ''), commit=m[3], xlate=m[4], knobs=' '.join(kn), ab=ab[0] if ab else '')
+
+
+def emit(rows):
+    old = set()
+    if os.path.exists(TSV):
+        for l in open(TSV).read().split('\n')[1:]:
+            f = l.split('\t')
+            if len(f) >= 13:
+                old.add((f[1], f[5], f[6], f[12]))
+    else:
+        rows = [None] + rows
+    out = ''
+    for r in rows:
+        if r is None:
+            out += '\t'.join(HEAD) + '\n'
+        elif (r[1], r[5], r[6], r[12]) not in old:
+            out += '\t'.join(str(x) for x in r) + '\n'
+    if out:
+        with open(TSV, 'a') as f:
+            f.write(out)
+    print('results.tsv: %d row(s) appended' % out.count('\n'), file=sys.stderr)
+
+
+def row(log, scen, metric, vals, tool, note='', date=None, knobs=None):
+    b = build(log)
+    src = os.path.relpath(os.path.dirname(os.path.abspath(log)), R)
+    d = date or datetime.date.fromtimestamp(os.path.getmtime(log)).isoformat()
+    k = ' '.join(x for x in (b['knobs'] if knobs is None else knobs, note) if x)
+    f = lambda v: '%.2f' % v if abs(v) < 100 else '%.0f' % v
+    tag = os.environ.get('RESULTS_TAG', '')   # 'suite', 'suite nightly': tools/suite and tools/nightly set it
+    tool = (tag + ' ' + tool).strip()
+    return [d, b['entry'], b['exe'], b['commit'], b['xlate'], scen, metric, f(st.mean(vals)), f(min(vals)), f(max(vals)),
+            len(vals), tool, src, k]
+
+
+SCEN = {'west': 'field-west-standing', 'grave': 'graveyard-standing', 'mid': 'field-mid-standing'}
+
+
+def do_ab(txt):
+    s = open(txt).read()
+    m = re.search(r'ab-(.+)-(west|grave|mid)\.txt$', txt)
+    runs = sorted(set(re.findall(r'^(ab-\S+-\d+) ', s, re.M)))
+    if not runs:
+        return []
+    first = '%s/.lab/%s/run.log' % (R, runs[0])
+    fixed = all(os.path.exists('%s/.lab/%s/run-ab.log' % (R, r)) for r in runs)   # dump-window artifact fixed in ab-cell
+    ints = [float(x) for x in re.findall(r'B - A: interval ([-+0-9.]+) ms', s)]
+    rep = [float(x) for x in re.findall(r'B - A: interval [-+0-9.]+ ms \(\S+\), replay ([-+0-9.]+) ms', s)]
+    repA = [float(x) for x in re.findall(r' A: .*?replay ([0-9.]+) ms', s)]
+    scen, knob = SCEN[m[2]], build(first)['ab']
+    tool = 'ab-cell ' + (knob or '?')
+    rows = [row(first, scen, 'ab_replay_BminusA_ms', rep, tool, 'ab=' + knob, knobs='')]
+    if fixed:
+        rows.append(row(first, scen, 'ab_interval_BminusA_ms', ints, tool, 'ab=' + knob, knobs=''))
+    rows.append(row(first, scen, 'replay_A_ms', repA, tool, 'ab=' + knob, knobs=''))
+    for r in rows:
+        r[12] = os.path.relpath(txt, R)
+    return rows
+
+
+def do_load(logs):
+    sys.path.insert(0, R + '/tools')
+    import importlib.machinery, importlib.util
+    ld = importlib.machinery.SourceFileLoader('loadstat', R + '/tools/load-stat')
+    sp = importlib.util.spec_from_loader('loadstat', ld)
+    m = importlib.util.module_from_spec(sp)
+    ld.exec_module(m)
+    cells = {}
+    for p in logs:
+        bl, ls = m.loads(p)
+        for l in ls:
+            cells.setdefault((bl, l['area']), []).append((p, l))
+    rows = []
+    for (bl, area), v in cells.items():
+        p = v[0][0]
+        paths = sorted({x[0] for x in v})
+        for key, metric in (('longest', 'load_longest_ms'), ('lost', 'load_lost_ms')):
+            r = row(p, 'load ' + area, metric, [x[1][key] for x in v], 'load-cell')
+            r[12] = ' '.join(os.path.relpath(os.path.dirname(os.path.abspath(q)), R) for q in paths[:3]) + (' +%d' % (len(paths) - 3) if len(paths) > 3 else '')
+            rows.append(r)
+    return rows
+
+
+def do_window(log, scen):
+    s = open(log, errors='replace').read()
+    w = re.findall(r'frametime: 60 s: (\d+) frames in ([\d.]+) s, mean ([\d.]+) fps, 1% low ([\d.]+) fps, over 25 ms (\d+)', s)
+    full = [x for x in w[:-1] if float(x[1]) <= 61.0]
+    if len(full) < 2:
+        return []
+    x = full[-1]
+    return [row(log, scen, 'fps', [float(x[2])], 'lab-run'), row(log, scen, 'fps_1pc_low', [float(x[3])], 'lab-run'),
+            row(log, scen, 'over25ms_per_min', [float(x[4])], 'lab-run')]
+
+
+def agg(logs, scen, series, tool, note=''):
+    rows = []
+    for metric, vals in series.items():
+        if not vals:
+            continue
+        n = note
+        if os.environ.get('RESULTS_NOTE') == 'noisy' and (max(vals) - min(vals)) > .15 * max(abs(st.mean(vals)), 1e-9):
+            n = (n + ' noisy').strip()
+        rows.append(row(logs[0], scen, metric, vals, tool, n))
+    return rows
+
+
+def do_windows(scen, logs):
+    S = {'fps': [], 'fps_1pc_low': [], 'over25ms_per_min': []}
+    for l in logs:
+        r = do_window(l, scen)
+        for x in r:
+            S[x[6]].append(float(x[7]))
+    return agg(logs, scen, S, 'lab-run')
+
+
+def do_shadow(scen, logs):
+    v = []
+    for l in logs:
+        s = open(l, errors='replace').read()
+        t = n = 0
+        for m in re.finditer(r'mem: shadow at frame (\d+):(.*)', s):
+            if int(m[1]) < 600:
+                continue
+            c = [re.search(x, m[2]) for x in (r'since the last:.*?([\d.]+) ms \(queries', r'may have written, ([\d.]+) ms', r'table: \d+ syncs ([\d.]+) ms')]
+            t += sum(float(x[1]) for x in c if x)
+            n += 1
+        if n:
+            v.append(t / (n * 60))
+    return agg(logs, scen, {'shadow_sync_ms_per_frame': v}, 'lab-run')
+
+
+def do_vram(scen, logs):
+    S = {'vram_mib': [], 'live_textures': []}
+    for l in logs:
+        s = open(l, errors='replace').read()
+        a, b = re.findall(r'vram (\d+) of', s), re.findall(r'textures live (\d+)', s)
+        if a: S['vram_mib'].append(float(a[-1]))
+        if b: S['live_textures'].append(float(b[-1]))
+    return agg(logs, scen, S, 'lab-run')
+
+
+def main():
+    a = sys.argv[1:]
+    if not a:
+        sys.exit(__doc__)
+    if a[0] == 'ab':
+        emit(do_ab(a[1]))
+    elif a[0] == 'load':
+        emit(do_load(a[1:]))
+    elif a[0] == 'window':
+        emit(do_window(a[1], a[2]))
+    elif a[0] in ('windows', 'shadow', 'vram'):
+        emit({'windows': do_windows, 'shadow': do_shadow, 'vram': do_vram}[a[0]](a[1], a[2:]))
+    elif a[0] == 'row':
+        emit([row(a[1], a[2], a[3], [float(a[4]), float(a[5]), float(a[6])][:1], a[8], ' '.join(a[9:]))])
+    else:
+        sys.exit(__doc__)
+
+
+main()

@@ -310,3 +310,7 @@ crit bin top="20":
     cd {{src}} && {{dev}} {{py}} -I tools/crit_path.py {{bin}} --top {{top}}
 flight dump *args:
     cd {{src}} && {{dev}} {{py}} -I tools/flight_view.py {{dump}} {{args}}
+
+# The fixed regression suite for one build (tools/suite, ~40 min GPU); candidates go through tools/nightly, not this.
+suite exe reps="3":
+    {{justfile_directory()}}/tools/suite {{exe}} {{reps}}

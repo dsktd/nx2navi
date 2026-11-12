@@ -6,6 +6,7 @@
 # Warm caches: the parity copies in .lab/parity (sc*/pc*.bin). Stops (exit 9) when a new play log appears.
 R=$HOME/claude/nx2navi; P=$R/.lab/parity; B=$R/NX2navi/build/v111
 exe=$1 sc=$2 tag=$3 reps=$4 knob=$5; shift 5
+grep -q "^$exe	" $R/builds.tsv 2>/dev/null || { echo "no builds.tsv row for $exe: run tools/builds-add first (ARCHITECTURE.md 11)"; exit 8; }
 start=$(ls -t $B/logs/play-*.log | head -1)
 i=0; tries=0
 while [ $i -lt $reps ] && [ $tries -lt $((reps * 2)) ]; do
@@ -17,6 +18,9 @@ while [ $i -lt $reps ] && [ $tries -lt $((reps * 2)) ]; do
     mid) w='scene=HyruleField_Adult entrance=HyruleField_FromLakeHylia age=adult'; rec=lab-profile-flicker/load-slot01.txt;;
   esac
   name=ab-$tag-$sc-$i
+  # no measurement beside a build: wait for a 1-minute load average under 6, and log it (2026-11-12)
+  while [ "$(awk '{print ($1 < 6)}' /proc/loadavg)" != 1 ]; do sleep 20; done
+  echo "$name start load $(cut -d' ' -f1-3 /proc/loadavg)" >&2
   (cd $R && LAB_EXE=nx2navi.$exe LAB_TIMEOUT=${LAB_TIMEOUT:-400} taskset -c 0-7,16-23 tools/lab-run --warp "$w" $rec ${FRAME:-5400} $name \
     NX2NAVI_ALIAS_EXTRA_MIB=512 NX2NAVI_GPU_WAIT=0 NX2NAVI_MARK_CHORD=off NX2NAVI_NVIDIA=0 NX2NAVI_MODS_DIR=$B/mods-text \
     NX2NAVI_REPLAY_ASYNC=1 NX2NAVI_TEX_DESC_STRICT=1 NX2NAVI_VK_RECORDER=1 NX2NAVI_SHADOW_NT=1 NX2NAVI_PIPE_SKIP=any \
@@ -37,3 +41,4 @@ d = [float(m[1]) for m in re.finditer(r'B - A: interval ([-+0-9.]+) ms', open(sy
 r = [float(m[1]) for m in re.finditer(r'replay ([-+0-9.]+) ms \(', open(sys.argv[1]).read())]
 if d: print(f"cell: {len(d)} runs, B-A interval mean {st.mean(d):+.2f} ms, spread {min(d):+.2f}..{max(d):+.2f}; replay B-A mean {st.mean(r):+.2f} ms, spread {min(r):+.2f}..{max(r):+.2f}")
 P
+$R/tools/results-add ab $R/.lab/ab-$tag-$sc.txt   # results.tsv (ARCHITECTURE.md 11)

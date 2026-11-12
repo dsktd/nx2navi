@@ -8,6 +8,8 @@ Before you finish, add durable findings (facts and where in the code) to the mat
 
 Shared lab board `~/claude/nx2navi/.lab/BOARD.md` (scratch, not committed): read it at start and before each build or GPU run; add your line under "Working now" (task, exe/files you change, since) when starting, update it at each milestone, remove it when done. If someone already changes the same file (e.g. `runtime/vk_texture.c`), coordinate there ("after X") instead of editing in parallel. Claim the next patch number on the board before writing it. Note GPU lock holder/waiters under "GPU queue"; add dated one-liners to "Fresh findings" (newest first, trim to ~40).
 
+Results record (Cal, 2026-11-12). Every verified measurement goes into `results.tsv` and every exe into `builds.tsv`; symptoms go into `SYMPTOMS.md`. `tools/ab-cell` and `tools/load-cell` append their rows themselves and refuse an exe with no `builds.tsv` row: right after a build run `tools/builds-add <exe> <commit> <parent-exe> xlate=<dir/id12> wt=<worktree> [run=runs/x.sh]` (computes the patches contained and the change vs the parent). Charts: http://127.0.0.1:8080/results/ (service `results`). Iteration = one targeted ab-cell/load-cell for the metric you work on; candidate builds are judged by the fixed suite (`just suite <exe>`, `tools/nightly`) and a recommendation waits for a nightly.
+
 ## Layout
 
 - `NX2navi/` is a worktree of upstream (`tangerineturtle1/NX2navi`) on the local branch **`build`**. It is gitignored here and is **never pushed**.
