@@ -342,3 +342,20 @@ run NAME="" *args:
     f="{{justfile_directory()}}/runs/{{NAME}}.sh"
     [ -e "$f" ] || { echo "no run '{{NAME}}'; have: $(ls "${f%/*}" | sed 's/\.sh$//' | tr '\n' ' ')"; exit 1; }
     exec sh "$f" {{args}}
+
+# Log summary per build (fps/1% low/>25 ms per minute, shadow sync totals, stall sites); two logs: A/B diff.
+# just logstat build/v111/logs/play-A.log [build/v111/logs/play-B.log]   (paths relative to src)
+logstat +logs:
+    cd {{src}} && {{justfile_directory()}}/tools/logstat {{logs}}
+
+# Upstream analysers on our Linux logs (inside the dev shell: numpy needs its libstdc++). Each needs its knob at run
+# time: perf-summary NX2NAVI_TRACE=perf[,sched]; ab NX2NAVI_AB=<s> with a knob set to "ab"; crit NX2NAVI_CRIT=a-b plus
+# TRACE=sched; flight NX2NAVI_FLIGHT=1 (dumps in build/flight/). ARCHITECTURE.md "Tools".
+perf-summary log first="0" last="999999":
+    cd {{src}} && {{dev}} {{py}} -I tools/perf_summary.py {{log}} {{first}} {{last}}
+ab log skip="10":
+    cd {{src}} && {{dev}} {{py}} -I tools/ab_summary.py {{log}} --skip {{skip}}
+crit bin top="20":
+    cd {{src}} && {{dev}} {{py}} -I tools/crit_path.py {{bin}} --top {{top}}
+flight dump *args:
+    cd {{src}} && {{dev}} {{py}} -I tools/flight_view.py {{dump}} {{args}}

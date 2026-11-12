@@ -1,0 +1,154 @@
+#!/usr/bin/env python3
+"""Summarise NX2navi play logs per build, or diff two of them.
+
+    tools/logstat LOG [LOG2]     one log: summary; two logs: summary of each plus B - A.
+
+Rates are per minute (frametime windows) and per 600 frames (shadow lines), so runs of different length compare.
+
+Reads the lines every build prints without tracing: `build:` (provenance, patch 0087) or the translator identity,
+`frametime: 60 s:` windows (fps, 1% low, frames over 25/50/100 ms) and their cause line, `mem: shadow at frame`
+(shadow-storage sync, vk_memory.c vk_mem_shadow_report) and `stall:` blocks (patch 0089), grouped by the game-code
+site of the longest host call. Only standing-still windows compare across runs; everything else is indicative.
+"""
+
+import re
+import sys
+from collections import defaultdict
+
+BUILD = re.compile(r"build: (entry=\S+ exe=\S+ commit=\S+ xlate=\S+)")
+XLATE = re.compile(r"translator identity ([0-9a-f]{12})")
+WINDOW = re.compile(
+    r"frametime: 60 s: (\d+) frames in [\d.]+ s, mean ([\d.]+) fps, 1% low ([\d.]+) fps, "
+    r"over 25 ms (\d+), 50 ms (\d+), 100 ms (\d+)"
+)
+CAUSE = re.compile(r"(\w+) (\d+) \(([\d.]+) ms avg\)")
+SHADOW = re.compile(r"mem: shadow at frame (\d+): (.*)")
+NUM_FIELD = re.compile(
+    r"([\d.]+) (MiB copied in|pool syncs|queries|MiB written back|ms\b|syncs|regions snapped|"
+    r"dirty|shadows visited|synced)"
+)
+STALL = re.compile(r"stall: frame (\d+): ([\d.]+) ms")
+STALL_SITE = re.compile(r"stall:\s+(0x[0-9a-f]+) entry (\S+); longest host call ([\d.]+) ms at (\S+), game code (\S+)")
+
+SHADOW_KEYS = [
+    "pool syncs",
+    "MiB copied in",
+    "copy ms",
+    "MiB written back",
+    "wb ms",
+    "table syncs",
+    "table ms",
+    "regions snapped",
+    "dirty",
+    "shadows visited",
+]
+
+
+def shadow_fields(text):
+    """Pick the cumulative counters out of one `mem: shadow at frame` line (field order as vk_mem_shadow_report)."""
+    out = {}
+    ms_seen = 0
+    for value, name in NUM_FIELD.findall(text):
+        v = float(value)
+        if name == "ms":
+            name = ["copy ms", "wb ms", "table ms"][min(ms_seen, 2)]
+            ms_seen += 1
+        elif name == "syncs":
+            name = "table syncs"
+        if name in SHADOW_KEYS and name not in out:
+            out[name] = v
+    return out
+
+
+def parse(path):
+    s = {
+        "build": "?",
+        "windows": [],
+        "causes": defaultdict(lambda: [0, 0.0]),
+        "shadow": defaultdict(float),
+        "shadow_n": 0,
+        "stalls": [],
+        "sites": defaultdict(lambda: [0, 0.0]),
+    }
+    with open(path, encoding="utf-8", errors="replace") as f:
+        lines = f.readlines()
+    for line in lines:
+        if m := BUILD.search(line):
+            s["build"] = m.group(1)
+        elif (m := XLATE.search(line)) and s["build"] == "?":
+            s["build"] = "xlate=" + m.group(1)
+        elif m := WINDOW.search(line):
+            s["windows"].append([float(x) for x in m.groups()])
+        elif "over 25 ms by cause" in line:
+            for cause, n, avg in CAUSE.findall(line):
+                c = s["causes"][cause]
+                c[0] += int(n)
+                c[1] += int(n) * float(avg)
+        elif m := SHADOW.search(line):
+            s["shadow_n"] = int(m.group(1))  # the counters are "since the last" line: they span frames 0..this
+            for k, v in shadow_fields(m.group(2)).items():
+                s["shadow"][k] += v
+        elif m := STALL.search(line):
+            s["stalls"].append((int(m.group(1)), float(m.group(2))))
+        elif m := STALL_SITE.search(line):
+            site = s["sites"][f"{m.group(2)} {m.group(5)}"]
+            site[0] += 1
+            site[1] += float(m.group(3))
+    return s
+
+
+def totals(s):
+    w = s["windows"]
+    t = {"minutes": len(w)}
+    if w:
+        frames = sum(x[0] for x in w)
+        t["mean fps"] = sum(x[0] * x[1] for x in w) / frames
+        t["worst 1% low"] = min(x[2] for x in w)
+        for i, k in ((3, ">25ms"), (4, ">50ms"), (5, ">100ms")):
+            t[k + "/min"] = sum(x[i] for x in w) / len(w)
+    t["stalls"] = len(s["stalls"])
+    t["stall ms"] = sum(ms for _, ms in s["stalls"])
+    for k in SHADOW_KEYS:
+        if k in s["shadow"]:
+            t[k + "/600f"] = s["shadow"][k] * 600 / s["shadow_n"]
+    return t
+
+
+def report(path, s):
+    print(f"== {path}\n   {s['build']}")
+    for i, w in enumerate(s["windows"]):
+        print(
+            f"   min {i + 1:2}: {w[1]:5.1f} fps  1% low {w[2]:5.1f}  >25 {int(w[3]):4} >50 {int(w[4]):3} "
+            f">100 {int(w[5]):3}"
+        )
+    if s["causes"]:
+        print("   >25ms causes: " + ", ".join(f"{k} {n} ({ms / n:.1f} ms avg)" for k, (n, ms) in s["causes"].items()))
+    for site, (n, ms) in sorted(s["sites"].items(), key=lambda kv: -kv[1][1])[:8]:
+        print(f"   stall site {site}: {n}x, longest host calls {ms:.0f} ms")
+
+
+def main(argv):
+    if not 1 <= len(argv) <= 2:
+        sys.exit(__doc__)
+    logs = [(p, parse(p)) for p in argv]
+    for p, s in logs:
+        report(p, s)
+    tots = [totals(s) for _, s in logs]
+    keys = list(dict.fromkeys(k for t in tots for k in t))
+    print(
+        "\n   "
+        + "".join(
+            f"{k:>24}"
+            for k in ["metric"] + [f"log{i + 1}" for i in range(len(tots))] + (["B - A"] if len(tots) == 2 else [])
+        )
+    )
+    for k in keys:
+        vals = [t.get(k) for t in tots]
+        row = [f"{v:.1f}" if v is not None else "-" for v in vals]
+        if len(vals) == 2 and None not in vals:
+            row.append(f"{vals[1] - vals[0]:+.1f}")
+        print("   " + f"{k:>24}" + "".join(f"{r:>24}" for r in row))
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
