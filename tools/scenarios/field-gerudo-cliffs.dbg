@@ -1,7 +1,7 @@
 # Hyrule Field at the Gerudo Valley gate, adult, turned round to face the valley's cliffs; standing. Red/black/rainbow
 # rock (SYMPTOMS.md, dump f3781 play24). Visual cell: A/B NX2NAVI_DUMMY_CLEAR=0 vs 2 (patch 0104): magenta cliffs at 2 =
 # the rock's colour layers sample a stand-in (bindless 2D array handles that resolve to nothing); unchanged red = not.
-# face=-62.18: the entrance's facing (180 - 62.18 in the matrix convention, tools/warp-save face=) turned by 180; the
-# old face=-62.18 turned nobody (the spawn ignores yaw keys, 2026-11-12).
+# face=117.82: the entrance's facing (180 - 62.18 in the matrix convention, tools/warp-save face=) turned by 180; the
+# old face=117.82 turned nobody (the spawn ignores yaw keys, 2026-11-12).
 # base: .lab/scenarios/base-profile
-# warp: scene=HyruleField_Adult entrance=HyruleField_FrontOfGerudoValley face=-62.18 age=adult
+# warp: scene=HyruleField_Adult entrance=HyruleField_FrontOfGerudoValley face=117.82 age=adult

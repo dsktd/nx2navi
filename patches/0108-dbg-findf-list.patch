@@ -1,0 +1,94 @@
+From 6d5c10bd47d6f2e5b7ede8edb0287027f53011e4 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Thu, 12 Nov 2026 14:30:53 -0500
+Subject: [PATCH] debug_tools: test-script commands findf <lo> <hi> (a search
+ for floats in a range, whose next greater/less then follow a value by how it
+ moves) and list <n> (the search's first places and their values)
+
+---
+ runtime/debug_tools.c | 55 ++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 54 insertions(+), 1 deletion(-)
+
+diff --git a/runtime/debug_tools.c b/runtime/debug_tools.c
+index ade7c36..651eb33 100644
+--- a/runtime/debug_tools.c
++++ b/runtime/debug_tools.c
+@@ -740,6 +740,44 @@ int dbg_search_new(uint32_t value, int size) {
+     return res_n;
+ }
+ 
++// A new search for 4-byte floats in [lo, hi] (lo > 0: then a float's bits order as its value, so next's greater and less
++// work on them): for values found by how they move, such as a clock.
++static int dbg_search_floats(float lo, float hi) {
++    enum { PIECE = 16 << 20 };
++    if (!res_addr) res_addr = malloc(sizeof(uint64_t) * RESULT_MAX), res_last = malloc(sizeof(uint32_t) * RESULT_MAX);
++    res_n = res_over = 0;
++    res_size = 4;
++    if (!res_addr || !res_last || !dbg_supported() || !(lo > 0) || hi < lo) return 0;
++    const RtGuestLayout *l = mem_layout();
++    const RtRange ranges[2] = {l->heap, l->alias};
++    for (int r = 0; r < 2; r++) {
++        uint64_t a = ranges[r].base, end = ranges[r].base + ranges[r].size;
++        while (a < end) {
++            RtMemoryInfo mi;
++            if (mem_query(a, &mi) || !mi.size) break;
++            uint64_t stop = mi.base + mi.size < end ? mi.base + mi.size : end;
++            if (!mi.state || (mi.perm & 3) != 3) { a = stop; continue; }
++            while (a < stop) {
++                uint64_t n = stop - a < PIECE ? stop - a : PIECE;
++                if (mem_read_hold(a, n)) {
++                    const uint8_t *p = (const uint8_t *)(uintptr_t)a;
++                    for (uint64_t i = 0; i + 4 <= n; i += 4) {
++                        float x;
++                        memcpy(&x, p + i, 4);
++                        if (x >= lo && x <= hi) {
++                            if (res_n < RESULT_MAX) res_addr[res_n] = a + i, memcpy(&res_last[res_n++], &x, 4);
++                            else res_over = 1;
++                        }
++                    }
++                    mem_read_release();
++                }
++                a += n;
++            }
++        }
++    }
++    return res_n;
++}
++
+ // Keeps the results whose value now passes: mode 0 equals value, 1 changed, 2 unchanged, 3 greater, 4 less than at the
+ // search before (unsigned; a float is searched by its bits with mode 0).
+ int dbg_search_next(int mode, uint32_t value) {
+@@ -1180,7 +1218,8 @@ static void facing_scan(FILE *f, float y) {
+ // <tick>:next <mode> <value>;<tick>:setfirst <value>;<tick>:holdfirst <value>;<tick>:show [<hash hex>];
+ // <tick>:warp <area> [<start position>];<tick>:event <name>;<tick>:text <game data text's name>;
+ // <tick>:freecam <0|1> <sticks 0|1> <speed>;<tick>:camgo <dx> <dy> <dz> [<yaw> <pitch>];<tick>:camreset;<tick>:campos;
+-// <tick>:camset <x> <y> <z> <yaw> <pitch>;<tick>:mark":
++// <tick>:camset <x> <y> <z> <yaw> <pitch>;<tick>:mark;
++// <tick>:findf <lo> <hi>;<tick>:list <n>":
+ // the menu's requests without the menu, for test runs. Ticks count the game's pad reads from the player's first appearance.
+ static void test_script(uint64_t tick) {
+     static char buf[2048];
+@@ -1288,6 +1327,20 @@ static void test_script(uint64_t tick) {
+             dbg_mem_read(dbg_search_addr(0), dbg_search_size(), &now);
+             rt_log("debug: tick %llu: %d places left (mode %u, value %llu); the first holds %u; %d held", (unsigned long long)tick, n,
+                    on, value, now, dbg_frozen_count());
++        } else if (!strncmp(colon + 1, "findf ", 6)) {   // findf <lo> <hi>: floats in the range (lo > 0)
++            float lo = 0, hi = 0;
++            sscanf(colon + 7, "%f %f", &lo, &hi);
++            int n = dbg_search_floats(lo, hi), over = 0;
++            dbg_search_count(&over);
++            rt_log("debug: tick %llu: %d floats in %g..%g%s", (unsigned long long)tick, n, lo, hi, over ? " (and more)" : "");
++        } else if (sscanf(colon + 1, "list %u", &on) == 1) {   // list <n>: the first n places of the search and their values
++            for (int i = 0; i < (int)on && i < res_n; i++) {
++                uint32_t v = 0;
++                float fv;
++                dbg_mem_read(res_addr[i], 4, &v);
++                memcpy(&fv, &v, 4);
++                rt_log("debug: tick %llu: place %d %#llx = %u (float %g)", (unsigned long long)tick, i, (unsigned long long)res_addr[i], v, fv);
++            }
+         } else if (sscanf(colon + 1, "find %llu %u", &value, &size) >= 1) {
+             uint64_t t0 = plat_now_ns();
+             int n = dbg_search_new((uint32_t)value, (int)size), over = 0;
+-- 
+2.56.0
+

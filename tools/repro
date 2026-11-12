@@ -20,10 +20,12 @@ base=$(sed -n 's/^# base: *//p' "$rec" | head -1); base=${base:-.lab/scenarios/b
 [[ $base == /* ]] || base=$R/$base
 dbg=$(grep -v '^#' "$rec" | grep . | paste -sd';')
 dbg="$dbg${dbg:+;}${REPRO_MARK_TICK:-120}:mark"
+exe=${REPRO_EXE:-mark}   # the build's own translator (builds.tsv xlate column), else xlate-rebase
+xd=$(awk -F'\t' -v e=$exe '$1 == e { split($4, a, "/"); print a[1] }' $R/builds.tsv); xd=${xd:-xlate-rebase}
 out=$R/.lab/$label; rm -rf "$out/mark"; mkdir -p "$out/mark"
-cd $R && LAB_PROFILE_SRC=$base LAB_EXE=nx2navi.${REPRO_EXE:-mark} LAB_TIMEOUT=${LAB_TIMEOUT:-300} \
-  taskset -c 0-7,16-23 tools/lab-run --warp "$warp gd=$rec" .lab/parity/load-west.txt "${REPRO_FRAME:-1300}" "$label" \
-  NX2NAVI_XLATE=$B/xlate-rebase/nx2navi_xlate NX2NAVI_SHADER_CACHE=$P/scR NX2NAVI_PIPELINE_CACHE=$P/pcR.bin \
+cd $R && LAB_PROFILE_SRC=$base LAB_EXE=nx2navi.$exe LAB_TIMEOUT=${LAB_TIMEOUT:-900} \
+  tools/lab-run --warp "$warp gd=$rec" .lab/parity/load-west.txt "${REPRO_FRAME:-1300}" "$label" \
+  NX2NAVI_XLATE=$B/$xd/nx2navi_xlate NX2NAVI_SHADER_CACHE=$P/scR NX2NAVI_PIPELINE_CACHE=$P/pcR.bin \
   NX2NAVI_PIPE_SKIP=any "NX2NAVI_DBG_TEST=$dbg" NX2NAVI_MARK_RECIPE=1 "NX2NAVI_MARK_DIR=$out/mark" "$@" | tail -3
 got=$(ls -t "$out"/mark/mark-*.dbg 2>/dev/null | head -1)
 [ -n "$got" ] || { echo "repro: no recipe written by the repro's mark (Link not there by frame ${REPRO_FRAME:-1300}?)" >&2; exit 1; }

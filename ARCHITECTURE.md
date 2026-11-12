@@ -487,7 +487,7 @@ one is v0, the hand-written `tools/scenarios/*.dbg` of 2026-11-12), so old marks
   {cos,0,-sin},{0,1,0},{sin,0,cos}, face = atan2(m[6], m[8]) (routing Link about: 85 -> -40.5 -> -51.1 deg), but writing
   it does not turn him (rewritten next frame). The spawn takes the facing from game data **float 0x1ea93bd8 = -face in
   radians** (0xa4aee8cd follows as 180 - face but alone turns nobody): a recipe restores it through its `# gd` lines
-  and `tools/warp-save face=<deg>` (patch 0107 writes `face=` in the `# warp:` line). `yaw=` keeps its old, inert
+  and `tools/warp-save face=<deg>` (patch 0107 writes `face=` in the `# warp:` line). `field-gerudo-cliffs` uses face=117.82 (faces the valley, shot `.lab/mk-gerudo2`, play43). `yaw=` keeps its old, inert
   meaning so the suite scenarios keep their view. Heap scan (NX2NAVI_MARK_RECIPE=2 `facing` lines): 7 quaternions and
   dozens of matrices hold the same turn; none is reached by a pointer from the actor. The actor's +0x3c8 (1.578
   always) is not the facing); `# near:` the nearest named start position (for the live `warp`); free camera as
@@ -495,8 +495,11 @@ one is v0, the hand-written `tools/scenarios/*.dbg` of 2026-11-12), so old marks
   `<tick>:speed` when not 1; `# gd <kind> <hash> <value>` for every scalar and `# gda <kind> <hash> <count> i:v...` for
   every 4-byte array of the game data (flags, counters, items, health, magic, rupees, but **not the time of day**: the only steadily
   running game data are uint 0xe53eb6d1 (+~1.5/s, honoured from the save) and 0xe573f564 (+~1.5/s, play time?);
-  setting 0xe53eb6d1 to 0 or 720 left Hyrule Field equally at night (grey mean 0.534 both), so the clock is held outside
-  the game data (environment state; next: a find/next memory search across a dusk)); `# not captured:` actors, RNG, Link's motion/action, sound, bool arrays,
+  setting 0xe53eb6d1 to 0 or 720 left Hyrule Field equally at night (grey mean 0.534 both). A float search
+  (test commands `findf <lo> <hi>` + `next 3` + `list <n>`, exe mark, 2026-11-12) found a heap float at **0x1373cde5c**
+  (same address in two boots) rising 4.64 -> 4.81 -> 4.99 over 1800 ticks, like hours at ~0.035/s; holding it at 12
+  for 600 ticks left the Market-front view at night (grey 0.536), so it is not the lighting's clock either, and the
+  same base save is daylight at the Gerudo Valley gate: the visible time may be per area or scripted there. Open.); `# not captured:` actors, RNG, Link's motion/action, sound, bool arrays,
   vectors, texts.
 - **Game data layout** (1.1.1, manager **[main+0x4c7e180], section kind*0x60: +0x10 count, +0x18 entries, +0x20
   {hash,index} table, +0x2c its size). The kinds ARE the save's sections (progress.sav: pairs {hash,u32} from 0x28 up to

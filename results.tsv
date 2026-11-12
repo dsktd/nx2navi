@@ -194,3 +194,7 @@ date	entry	exe	commit	xlate	scenario	metric	mean	min	max	n	tool	source	knobs	sta
 2026-11-12	-	mark	0ba1e3c671c9-dirty	xlate-rebase/53afad07286c	repro-roundtrip	repro_pos_m	0.00	0.00	0.00	1	repro-cell	.lab/rc-mark-b	DBG_TEST=120:mark MARK_RECIPE=1	ok	d088798f		
 2026-11-12	-	mark	0ba1e3c671c9-dirty	xlate-rebase/53afad07286c	repro-roundtrip	repro_gd_diff	3.00	3.00	3.00	1	repro-cell	.lab/rc-mark-b	DBG_TEST=120:mark MARK_RECIPE=1	ok	d088798f		
 2026-11-12	-	mark	0ba1e3c671c9-dirty	xlate-rebase/53afad07286c	repro-roundtrip	repro_shot_score	0.00	0.00	0.00	1	repro-cell	.lab/rc-mark-b	DBG_TEST=120:mark MARK_RECIPE=1	ok	d088798f		
+2026-11-12	-	play43	e4db2a723610	xlate-play33/e8d52df68016	repro-roundtrip	repro_ok	1.00	1.00	1.00	1	repro-cell	.lab/rc-play43-b	DBG_TEST=120:mark MARK_RECIPE=1 repro: ok: area HyruleField_Adult -> HyruleField_Adult, position 0.00 m apart, yaw 0.0 deg, age adult -> adult, game data 3 of 12867 differ	ok	d088798f		
+2026-11-12	-	play43	e4db2a723610	xlate-play33/e8d52df68016	repro-roundtrip	repro_pos_m	0.00	0.00	0.00	1	repro-cell	.lab/rc-play43-b	DBG_TEST=120:mark MARK_RECIPE=1	ok	d088798f		
+2026-11-12	-	play43	e4db2a723610	xlate-play33/e8d52df68016	repro-roundtrip	repro_gd_diff	3.00	3.00	3.00	1	repro-cell	.lab/rc-play43-b	DBG_TEST=120:mark MARK_RECIPE=1	ok	d088798f		
+2026-11-12	-	play43	e4db2a723610	xlate-play33/e8d52df68016	repro-roundtrip	repro_shot_score	0.00	0.00	0.00	1	repro-cell	.lab/rc-play43-b	DBG_TEST=120:mark MARK_RECIPE=1	ok	d088798f		
