@@ -101,7 +101,7 @@ if [[ -z $prof && -d $bundle ]]; then
   envs+=("NX2NAVI_PROFILE_DIR=$prof"); echo "lab-run: profile from bundle ${bundle##*/}"
 elif [[ -z $prof && -n $soft ]]; then
   # soft runs may overlap Cal's game: never snapshot/restore his live saves, run on a fresh copy
-  prof=$OUT/profile; mkdir -p "$prof"; cp -a "$live"/. "$prof"/ || exit 4
+  prof=$OUT/profile; mkdir -p "$prof"; cp -a "${LAB_PROFILE_SRC:-$live}"/. "$prof"/ || exit 4
   envs+=("NX2NAVI_PROFILE_DIR=$prof"); echo "lab-run: soft, profile copy in $prof"
 elif [[ -z $prof && -n $warp ]]; then
   # LAB_PROFILE_SRC: a fixed base profile (tools/scenario, .lab/scenarios/base-profile) instead of the live one

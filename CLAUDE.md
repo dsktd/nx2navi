@@ -10,6 +10,11 @@ Shared lab board `~/claude/nx2navi/.lab/BOARD.md` (scratch, not committed): read
 
 Results record (Cal, 2026-11-12). Every verified measurement goes into `results.tsv` and every exe into `builds.tsv`; symptoms go into `SYMPTOMS.md`. `tools/ab-cell` and `tools/load-cell` append their rows themselves and refuse an exe with no `builds.tsv` row: right after a build run `tools/builds-add <exe> <commit> <parent-exe> xlate=<dir/id12> wt=<worktree> [run=runs/x.sh]` (computes the patches contained and the change vs the parent). Charts: http://127.0.0.1:8080/results/ (service `results`). Iteration = one targeted ab-cell/load-cell for the metric you work on; candidate builds are judged by the fixed suite (`just suite <exe>`, `tools/nightly`) and a recommendation waits for a nightly.
 
+Recipes (Cal, 2026-11-12). Bug reports and lab scenarios are recipes (`# recipe v1` text: area, Link's place, age,
+game data, camera; ARCHITECTURE.md 11 "Recipes"), never save states or Cal's saves. A mark of Cal's writes
+`logs/mark-<present>.dbg`; reproduce it with `tools/repro <file>`. When a bug needs state a recipe lacks (weather, scene
+layer, actor spawns), add it to the format (new version, old ones stay readable) and to `tools/repro-cell`'s checks.
+
 ## Layout
 
 - `NX2navi/` is a worktree of upstream (`tangerineturtle1/NX2navi`) on the local branch **`build`**. It is gitignored here and is **never pushed**.

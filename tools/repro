@@ -1,0 +1,34 @@
+#!/bin/bash
+# repro <recipe.dbg> [label] [KEY=VALUE...]: boot the lab on a recipe (recipe v1: a mark's logs/mark-<present>.dbg or a
+# shot.req's shot-<present>.dbg, written by the runtime, NX2NAVI_MARK_RECIPE; ARCHITECTURE.md "Recipes") and mark again
+# once Link stands there: a shot plus the recipe of where the repro ended up, compared with the first (tools/repro-diff).
+#   - profile: the recipe's `# base:` (the neutral base profile), never Cal's live one; tools/warp-save writes its
+#     `# warp:` (area, Link's exact position and yaw, age) and its game data `# gd`/`# gda` (flags, counters, items,
+#     health, the clock, ...) into the copy's save, which the recording .lab/parity/load-west.txt then loads
+#   - the recipe's tick lines run from Link's first frame (NX2NAVI_DBG_TEST), then `<REPRO_MARK_TICK, 120>:mark`
+#   - out: .lab/<label>/mark/mark-<P>.dbg (+ shot.png, the mark's shot), diff.txt; exit 1 when repro-diff fails
+# Env: REPRO_EXE (variant, default mark; needs patch 0106), REPRO_FRAME (when the run stops, default 1300), LAB_SOFT=1
+# for lavapipe (no GPU, but too slow to get through the save menu: 2026-11-12), lab-run's own (LAB_TIMEOUT, ...).
+# GPU: lab-run takes the lab lock and refuses beside Cal's game. Caches: the lab's copies (.lab/parity scR, pcR.bin).
+set -u
+R=$HOME/claude/nx2navi; P=$R/.lab/parity; B=$R/NX2navi/build/v111
+[ $# -ge 1 ] || { sed -n 2,4p "$0"; exit 2; }
+rec=$(realpath "$1"); label=${2:-repro-$(basename "$rec" .dbg)}; shift; [ $# -gt 0 ] && shift
+v=$(head -1 "$rec"); [ "$v" = "# recipe v1" ] || { echo "repro: $rec: first line '$v', want '# recipe v1'" >&2; exit 2; }
+warp=$(sed -n 's/^# warp: *//p' "$rec" | head -1)
+base=$(sed -n 's/^# base: *//p' "$rec" | head -1); base=${base:-.lab/scenarios/base-profile}
+[[ $base == /* ]] || base=$R/$base
+dbg=$(grep -v '^#' "$rec" | grep . | paste -sd';')
+dbg="$dbg${dbg:+;}${REPRO_MARK_TICK:-120}:mark"
+out=$R/.lab/$label; rm -rf "$out/mark"; mkdir -p "$out/mark"
+cd $R && LAB_PROFILE_SRC=$base LAB_EXE=nx2navi.${REPRO_EXE:-mark} LAB_TIMEOUT=${LAB_TIMEOUT:-300} \
+  taskset -c 0-7,16-23 tools/lab-run --warp "$warp gd=$rec" .lab/parity/load-west.txt "${REPRO_FRAME:-1300}" "$label" \
+  NX2NAVI_XLATE=$B/xlate-rebase/nx2navi_xlate NX2NAVI_SHADER_CACHE=$P/scR NX2NAVI_PIPELINE_CACHE=$P/pcR.bin \
+  NX2NAVI_PIPE_SKIP=any "NX2NAVI_DBG_TEST=$dbg" NX2NAVI_MARK_RECIPE=1 "NX2NAVI_MARK_DIR=$out/mark" "$@" | tail -3
+got=$(ls -t "$out"/mark/mark-*.dbg 2>/dev/null | head -1)
+[ -n "$got" ] || { echo "repro: no recipe written by the repro's mark (Link not there by frame ${REPRO_FRAME:-1300}?)" >&2; exit 1; }
+p=${got##*mark-}; p=${p%.dbg}
+mv "$P/logs/shot-$p.png" "$out/mark/shot.png" 2>/dev/null; rm -f "$P/logs/shot-$p.build.txt"
+"$R/tools/repro-diff" "$rec" "$got" | tee "$out/diff.txt"; rc=${PIPESTATUS[0]}
+echo "repro: shot $out/mark/shot.png"
+exit $rc

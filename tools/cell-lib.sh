@@ -21,5 +21,7 @@ cell_scenario() {
   rdbg= rhash=
   [ "${SCENARIO_RECIPES:-0}" = 1 ] && [ -f $R/tools/scenarios/$1.dbg ] || return 0
   w=$($R/tools/recipe $1 warp) rdbg=$($R/tools/recipe $1 dbg) rhash=$($R/tools/recipe $1 hash)
+  # recipe v1 (a mark's recipe kept as a scenario): its game data lines go into the save too (tools/warp-save gd=)
+  [ "$($R/tools/recipe $1 version)" -ge 1 ] && w="$w gd=$R/tools/scenarios/$1.dbg"
   export LAB_PROFILE_SRC=$($R/tools/recipe $1 base)
 }

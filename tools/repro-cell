@@ -1,0 +1,24 @@
+#!/bin/bash
+# repro-cell <exe>: the repro round-trip cell (nightly; ARCHITECTURE.md "Recipes"), so a build that breaks capture shows as
+# a regression: tools/repro on tools/scenarios/repro-seed.dbg marks once Link stands (recipe A + shot A), tools/repro on
+# recipe A marks again (B); compared: area, age, Link's position (m), game data values that differ, and the shots'
+# visual score (tools/visual-score, 95th percentile tile). Rows in results.tsv, scenario repro-roundtrip, tool repro-cell:
+# repro_pos_m, repro_gd_diff, repro_shot_score, repro_ok (1/0). Two GPU boots (~3 min). Needs patch 0106 in the exe.
+R=$HOME/claude/nx2navi; exe=${1:?repro-cell <exe>}; tag=rc-$exe
+REPRO_EXE=$exe $R/tools/repro $R/tools/scenarios/repro-seed.dbg $tag-a >/dev/null
+a=$(ls -t $R/.lab/$tag-a/mark/mark-*.dbg 2>/dev/null | head -1)
+[ -n "$a" ] || { echo "repro-cell: seed run wrote no recipe"; $R/tools/results-add row $R/.lab/$tag-a/run.log repro-roundtrip repro_ok 0 0 0 1 repro-cell "seed: no recipe"; exit 1; }
+REPRO_EXE=$exe $R/tools/repro "$a" $tag-b; ok=$?
+b=$(ls -t $R/.lab/$tag-b/mark/mark-*.dbg 2>/dev/null | head -1)
+line=$(head -1 $R/.lab/$tag-b/diff.txt 2>/dev/null)
+pos=$(sed -n 's/.*position \([0-9.na]*\) m apart.*/\1/p' <<<"$line"); gd=$(sed -n 's/.*game data \([0-9]*\) of.*/\1/p' <<<"$line")
+py=$(nix build --no-link --print-out-paths --impure --expr \
+  '(builtins.getFlake "nixpkgs").legacyPackages.x86_64-linux.python3.withPackages (p: [p.numpy p.pillow])' 2>/dev/null | tail -1)
+score=$("$py/bin/python3" -I $R/tools/visual-score score $R/.lab/$tag-a/mark/shot.png $R/.lab/$tag-b/mark/shot.png 2>/dev/null | grep -o '[0-9.]*' | head -1)
+log=$R/.lab/$tag-b/run.log
+$R/tools/results-add row $log repro-roundtrip repro_ok $((ok == 0)) $((ok == 0)) $((ok == 0)) 1 repro-cell "$line"
+[ -n "$pos" ] && $R/tools/results-add row $log repro-roundtrip repro_pos_m $pos $pos $pos 1 repro-cell
+[ -n "$gd" ] && $R/tools/results-add row $log repro-roundtrip repro_gd_diff $gd $gd $gd 1 repro-cell
+[ -n "$score" ] && $R/tools/results-add row $log repro-roundtrip repro_shot_score $score $score $score 1 repro-cell
+echo "repro-cell $exe: ${line:-no diff} shot score ${score:-?}"
+exit $ok

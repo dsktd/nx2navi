@@ -14,7 +14,9 @@ if sys.argv[1:2] == ['init-base']:
     sys.exit()
 f = '%s/tools/scenarios/%s.dbg' % (R, sys.argv[1])
 t = open(f).read()
-v = {'hash': hashlib.sha256(t.encode()).hexdigest()[:8], 'warp': '', 'base': '', 'dbg': ''}
+v = {'hash': hashlib.sha256(t.encode()).hexdigest()[:8], 'version': '0', 'warp': '', 'base': '', 'dbg': ''}
+if t.startswith('# recipe v'):   # versioned (v1: marks write # gd/# gda game data lines, see tools/repro); none = v0
+    v['version'] = t.split('\n', 1)[0][10:].strip()
 cmds = []
 for l in t.split('\n'):
     l = l.strip()

@@ -1,0 +1,299 @@
+From efe944f916571c25faa429fe7cfe315a177bfeb2 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Thu, 12 Nov 2026 13:01:21 -0500
+Subject: [PATCH] debug_tools: NX2NAVI_MARK_RECIPE (default 1; 0 off, 2 also a
+ raw .probe) writes a recipe at every mark and shot.req,
+ logs/mark-<present>.dbg (NX2NAVI_MARK_DIR elsewhere): area, Link's position,
+ age, free camera, speed and every scalar and 4-byte-array game data value, so
+ a lab run recreates the moment from a neutral save; test-script commands mark
+ and camset
+
+---
+ runtime/boot.c        |  34 +++++++++-
+ runtime/debug_tools.c | 148 +++++++++++++++++++++++++++++++++++++++++-
+ runtime/debug_tools.h |   9 ++-
+ 3 files changed, 188 insertions(+), 3 deletions(-)
+
+diff --git a/runtime/boot.c b/runtime/boot.c
+index c4f9277..a62b901 100644
+--- a/runtime/boot.c
++++ b/runtime/boot.c
+@@ -16,6 +16,7 @@
+ #include <string.h>
+ 
+ #include "cfg.h"
++#include "debug_tools.h"
+ #include "cheats.h"
+ #include "coop.h"
+ #include "fs.h"
+@@ -256,6 +257,7 @@ static void save_shot(const tex_t *t, const char *path) {
+ // pictures show what a player sees.
+ // crop: the window crop the present shows (x, y, w, h; zero size for the whole image), so the picture is what a player
+ // sees and not the whole swapchain texture the game renders a smaller frame into.
++static void moment_recipe(const char *kind, uint64_t n, const char *what, int no);
+ static int shot_force;   // mark_poll: this present is saved like a shot.req, whatever NX2NAVI_SHADER_RELOAD says
+ 
+ static void series_shot(const tex_t *t, const int crop[4], uint64_t n) {
+@@ -283,6 +285,7 @@ static void series_shot(const tex_t *t, const int crop[4], uint64_t n) {
+         reload = cfg_get("NX2NAVI_SHADER_RELOAD") && atoi(cfg_get("NX2NAVI_SHADER_RELOAD")) == 1 &&
+                  gfx_shader_beside_cache("shot.req", req_path, sizeof req_path);
+     int req_file = reload && plat_file_exists(req_path), req = req_file || shot_force;
++    if (req_file) moment_recipe("shot", n, "shot.req", 0);
+     shot_force = 0;
+     if (req) {
+     } else if (world) {   // the first present at or after each step of the world clock
+@@ -772,6 +775,32 @@ static void debug_keys(int k, uint64_t n, const char *dump_path) {
+     if (k & INPUT_DBG_FIXED) rt_log("ANSWER: LOOKS FIXED at present %llu (Shift+F12)", p), shot_force = 1;
+ }
+ 
++// NX2NAVI_MARK_RECIPE (default 1; 0 off; 2 also <kind>-<present>.probe, the game data and the player actor raw): a mark
++// or a shot.req writes logs/<kind>-<present>.dbg beside the shot, the recipe that recreates the moment from the neutral
++// base save (debug_tools.c dbg_mark_recipe, tools/repro). NX2NAVI_MARK_DIR: another folder for them (lab runs).
++static void moment_recipe(const char *kind, uint64_t n, const char *what, int no) {
++    static int mode = -1;
++    if (mode < 0) mode = cfg_get("NX2NAVI_MARK_RECIPE") ? atoi(cfg_get("NX2NAVI_MARK_RECIPE")) : 1;
++    if (mode <= 0 || !dbg_supported()) return;
++    char name[96], path[PLAT_PATH_MAX];
++    const char *dir = cfg_get("NX2NAVI_MARK_DIR");
++    for (int probe = 0; probe <= (mode == 2); probe++) {
++        snprintf(name, sizeof name, "%s-%05llu.%s", kind, (unsigned long long)n, probe ? "probe" : "dbg");
++        if (dir && *dir) plat_file_mkdir_p(dir), snprintf(path, sizeof path, "%s/%s", dir, name);
++        else {
++            char rel[128];
++            snprintf(rel, sizeof rel, "logs/%s", name);
++            if (!gfx_shader_beside_cache(rel, path, sizeof path)) continue;
++        }
++        if (!probe) {
++            if (!dbg_mark_recipe(path, what)) rt_log("%s %d: no recipe (no save loaded, or %s not writable)", kind, no, path);
++            continue;
++        }
++        FILE *f = fopen(path, "w");
++        if (f) dbg_mark_probe(f), fclose(f);
++    }
++}
++
+ static void mark_poll(uint64_t n) {
+     static int init, dump_req, marks;
+     static char mark_req[PLAT_PATH_MAX], dump_path[PLAT_PATH_MAX];
+@@ -804,11 +833,14 @@ static void mark_poll(uint64_t n) {
+     plat_write_trace_rearm();
+     int keys = input_debug_keys();
+     if (keys) debug_keys(keys, n, dump_req ? dump_path : NULL);
+-    const char *why = input_mark_key() ? "F9" : input_mark_take() ? "gamepad chord" : NULL;
++    const char *why = input_mark_key() ? "F9" : input_mark_take() ? "gamepad chord" : dbg_mark_take() ? "test script" : NULL;
+     if (!why && mark_req[0] && n % 4 == 0 && plat_file_exists(mark_req)) why = "mark.req", plat_file_delete(mark_req);
+     if (!why) return;
+     rt_log("mark %d at present %llu (%s)", ++marks, (unsigned long long)n, why);
+     shot_force = 1;
++    char what[96];
++    snprintf(what, sizeof what, "mark %d at present %llu (%s)", marks, (unsigned long long)n, why);
++    moment_recipe("mark", n, what, marks);
+     if (dump_req) {
+         FILE *f = fopen(dump_path, "w");
+         if (f) fclose(f);
+diff --git a/runtime/debug_tools.c b/runtime/debug_tools.c
+index 725911b..c8d8d91 100644
+--- a/runtime/debug_tools.c
++++ b/runtime/debug_tools.c
+@@ -990,10 +990,149 @@ void dbg_pad(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *
+     *buttons &= ~(zl | zr | l | r);
+ }
+ 
++// ---- a mark's recipe (boot.c mark_poll, NX2NAVI_MARK_RECIPE)
++static volatile int32_t mark_asked;
++int dbg_mark_take(void) { return __atomic_exchange_n(&mark_asked, 0, __ATOMIC_ACQ_REL); }
++
++static void hex_line(FILE *f, const char *what, uint64_t a, size_t n) {
++    uint8_t b[0x1000];
++    if (n > sizeof b || !rd(a, b, n)) {
++        fprintf(f, "%s %#llx unreadable\n", what, (unsigned long long)a);
++        return;
++    }
++    fprintf(f, "%s %#llx ", what, (unsigned long long)a);
++    for (size_t i = 0; i < n; i++) fprintf(f, "%02x", b[i]);
++    fputc('\n', f);
++}
++
++// The recipe (tools/repro reads it; ARCHITECTURE.md "Recipes"): "# recipe v1", then comment lines a save edit applies
++// (tools/warp-save: # warp, # gd, # gda) and NX2NAVI_DBG_TEST tick lines the runtime runs after Link appears. The
++// game data's layout, found 2026-11-12 (1.1.1; kinds = the save's sections, each entry begins with its kind's vtable):
++// bool 0x18 a entry, value byte +0x16; int 2, float 4, uint 20: 0x28, value +0x1c (+0x20 holds the same at a load);
++// enum 6: 0x38, the value's name hash +0x1c; int/float/uint arrays 3/5/21: 0x40, enum arrays 7: 0x50, the element
++// count +0x20 and the elements (4 bytes each) at the pointer +0x28 (a second copy at +0x38). Not written: bool arrays
++// (1: packed bits), vectors (10), texts (16 and up; the area is # warp), binaries, 64-bit kinds.
++static const struct { int kind, stride, at, array; } gd_kinds[] = {
++    {0, 0x18, 0x16, 0}, {2, 0x28, 0x1c, 0}, {4, 0x28, 0x1c, 0}, {6, 0x38, 0x1c, 0}, {20, 0x28, 0x1c, 0},
++    {3, 0x40, 0x28, 1}, {5, 0x40, 0x28, 1}, {7, 0x50, 0x28, 1}, {21, 0x40, 0x28, 1},
++};
++
++static int gd_write(FILE *f) {
++    uint64_t m = gmd();
++    int lines = 0;
++    for (size_t g = 0; m && g < sizeof gd_kinds / sizeof gd_kinds[0]; g++) {
++        int k = gd_kinds[g].kind, stride = gd_kinds[g].stride;
++        uint64_t sec = m + (uint64_t)k * 0x60, table = rd_ptr(sec + 0x20), entries = rd_ptr(sec + 0x18);
++        uint32_t count = 0, size = 0;
++        if (!table || !entries || !rd(sec + 0x10, &count, 4) || !rd(sec + 0x2c, &size, 4) || !count || count > 200000 ||
++            size > 1000000)
++            continue;
++        Pair *pairs = malloc(sizeof(Pair) * size);
++        uint8_t *raw = malloc((size_t)count * (size_t)stride);
++        if (pairs && raw && rd(table, pairs, sizeof(Pair) * size) && rd(entries, raw, (size_t)count * (size_t)stride))
++            for (uint32_t i = 0; i < size; i++) {
++                if (!pairs[i].hash || pairs[i].index >= count) continue;
++                const uint8_t *e = raw + (size_t)pairs[i].index * (size_t)stride;
++                if (!gd_kinds[g].array) {
++                    uint32_t v = 0;
++                    memcpy(&v, e + gd_kinds[g].at, k == 0 ? 1 : 4);
++                    if (k == 0) v &= 1;
++                    fprintf(f, "# gd %d %08x %x\n", k, pairs[i].hash, v);
++                    lines++;
++                    continue;
++                }
++                uint32_t n = 0;
++                uint64_t data = 0;
++                memcpy(&n, e + 0x20, 4), memcpy(&data, e + gd_kinds[g].at, 8);
++                uint32_t *el = n && n <= 4096 ? malloc(n * 4u) : NULL;
++                if (el && rd(data, el, n * 4u)) {   // the elements that are not 0, as index:value
++                    fprintf(f, "# gda %d %08x %u", k, pairs[i].hash, n);
++                    for (uint32_t j = 0; j < n; j++)
++                        if (el[j]) fprintf(f, " %u:%x", j, el[j]);
++                    fputc('\n', f);
++                    lines++;
++                }
++                free(el);
++            }
++        free(pairs), free(raw);
++    }
++    return lines;
++}
++
++// The actor's +0x3c8, a float in radians, as Link's facing: NOT confirmed (2026-11-12: it read 1.578 with the save's
++// yaw at 90, 150 and 0 alike, and the game ignored all three: Link spawns facing the same way whatever the save says).
++static int player_yaw(float *yaw) {
++    uint64_t a = dbg_supported() ? player() : 0;
++    return a && rd(a + 0x3c8, yaw, 4) && isfinite(*yaw);
++}
++
++int dbg_mark_recipe(const char *path, const char *mark) {
++    char area[64] = "";
++    float p[3] = {0, 0, 0}, yaw = 0;
++    uint64_t child = gmd_entry(0, 0x18, hash_of("Sequence_IsChildhood"));
++    uint8_t young = 0;
++    int has_area = text_get("Sequence_CurrentBanc", area), has_pos = dbg_player_pos(p), has_yaw = player_yaw(&yaw),
++        has_age = child && rd(child + 0x16, &young, 1);
++    if (!has_area || !has_pos) return 0;   // no area or no Link (title, menus before a save): nothing to recreate
++    FILE *f = fopen(path, "w");
++    if (!f) return 0;
++    fprintf(f, "# recipe v1\n# %s\n# mark: %s\n# base: .lab/scenarios/base-profile\n", rt_build_line(), mark);
++    fprintf(f, "# warp: scene=%s pos=%.4f,%.4f,%.4f yaw=%.3f", area, p[0], p[1], p[2], has_yaw ? yaw * 57.29578f : 0.0f);
++    if (has_age) fprintf(f, " age=%s", young & 1 ? "child" : "adult");
++    fputc('\n', f);
++    int best = -1;
++    float best_d = 0;
++    for (int i = 0; i < dbg_places(); i++) {   // the nearest start position: the live teleport's target (warp)
++        if (strcmp(places[i].area, area) || !places[i].has_xyz) continue;
++        float dx = places[i].xyz[0] - p[0], dy = places[i].xyz[1] - p[1], dz = places[i].xyz[2] - p[2];
++        float d = sqrtf(dx * dx + dy * dy + dz * dz);
++        if (best < 0 || d < best_d) best = i, best_d = d;
++    }
++    if (best >= 0) fprintf(f, "# near: %s %.1f m (live: <tick>:warp %s %s)\n", places[best].pos, best_d, area, places[best].pos);
++    if (speed_factor != 1.0f) fprintf(f, "1:speed %.3f\n", speed_factor);
++    if (fc.on)   // the free camera where it stands: on without sticks, then placed
++        fprintf(f, "1:freecam 1 0 %.1f\n2:camset %.4f %.4f %.4f %.4f %.4f\n", fc.speed, fc.pos[0], fc.pos[1], fc.pos[2],
++                fc.yaw, fc.pitch);
++    else fprintf(f, "# camera: the game's own (follows Link; not captured)\n");
++    for (int i = 0; i < frozen_n; i++)
++        fprintf(f, "# held: %#llx = %llu (%d bytes; a heap address, valid only in the same session)\n",
++                (unsigned long long)frozen[i].addr, (unsigned long long)frozen[i].value, frozen[i].size);
++    fprintf(f, "# not captured: actors (enemies, NPCs, objects) and their state, RNG, Link's motion and action, sound, "
++               "bool arrays, vectors and texts of the game data\n");
++    int n = gd_write(f);
++    fclose(f);
++    rt_log("mark: recipe %s (%s, %.1f %.1f %.1f, %d game data lines)", path, area, p[0], p[1], p[2], n);
++    return 1;
++}
++
++// NX2NAVI_MARK_RECIPE=2: the game data's sections and the player actor raw, for finding their layout
++void dbg_mark_probe(FILE *f) {
++    uint64_t m = gmd(), a = player();
++    fprintf(f, "gmd %#llx player %#llx\n", (unsigned long long)m, (unsigned long long)a);
++    if (a) hex_line(f, "actor", a, 0x1000);
++    for (int k = 0; m && k < 40; k++) {
++        uint64_t sec = m + (uint64_t)k * 0x60, table = rd_ptr(sec + 0x20), entries = rd_ptr(sec + 0x18);
++        uint32_t count = 0, size = 0;
++        rd(sec + 0x10, &count, 4), rd(sec + 0x2c, &size, 4);
++        fprintf(f, "kind %d count %u size %u table %#llx entries %#llx\n", k, count, size, (unsigned long long)table,
++                (unsigned long long)entries);
++        hex_line(f, " sec", sec, 0x60);
++        if (!table || !entries || !size || size > 1000000) continue;
++        int shown = 0;
++        for (uint32_t i = 0; i < size && shown < 6; i++) {
++            Pair pr;
++            if (rd(table + (uint64_t)i * 8, &pr, 8) && pr.hash && pr.index < 6)
++                fprintf(f, " pair %08x %u\n", pr.hash, pr.index), shown++;
++        }
++        hex_line(f, " ent", entries, 0x600);
++    }
++}
++
+ // ---- NX2NAVI_DBG_TEST="<tick>:flag <hash hex> <0|1>;<tick>:speed <factor>;<tick>:find <value> <size>;
+ // <tick>:next <mode> <value>;<tick>:setfirst <value>;<tick>:holdfirst <value>;<tick>:show [<hash hex>];
+ // <tick>:warp <area> [<start position>];<tick>:event <name>;<tick>:text <game data text's name>;
+-// <tick>:freecam <0|1> <sticks 0|1> <speed>;<tick>:camgo <dx> <dy> <dz> [<yaw> <pitch>];<tick>:camreset;<tick>:campos":
++// <tick>:freecam <0|1> <sticks 0|1> <speed>;<tick>:camgo <dx> <dy> <dz> [<yaw> <pitch>];<tick>:camreset;<tick>:campos;
++// <tick>:camset <x> <y> <z> <yaw> <pitch>;<tick>:mark":
+ // the menu's requests without the menu, for test runs. Ticks count the game's pad reads from the player's first appearance.
+ static void test_script(uint64_t tick) {
+     static char buf[2048];
+@@ -1024,6 +1163,11 @@ static void test_script(uint64_t tick) {
+             int cam_on = 0, sticks = 1;
+             float speed = 8;
+             if (sscanf(colon + 9, "%d %d %f", &cam_on, &sticks, &speed) >= 1) dbg_freecam_set(cam_on, sticks, speed);
++        } else if (!strncmp(colon + 1, "camset ", 7)) {     // camset <x> <y> <z> <yaw> <pitch>: the free camera placed
++            double d[3];
++            float yaw = 0, pitch = 0;
++            if (sscanf(colon + 8, "%lf %lf %lf %f %f", &d[0], &d[1], &d[2], &yaw, &pitch) == 5)
++                memcpy(fc.pos, d, sizeof d), fc.yaw = yaw, fc.pitch = pitch, fc.capture = 0;
+         } else if (!strncmp(colon + 1, "camreset", 8)) {
+             dbg_freecam_reset();
+         } else if (!strncmp(colon + 1, "camgo ", 6)) {      // camgo <dx> <dy> <dz> <yaw> <pitch>: the free camera moved by hand
+@@ -1103,6 +1247,8 @@ static void test_script(uint64_t tick) {
+             rt_log("debug: tick %llu: %d places hold %llu as %u bytes%s, searched in %.0f ms; first %#llx", (unsigned long long)tick,
+                    n, value, size, over ? " (and more)" : "", (double)(plat_now_ns() - t0) / 1e6,
+                    (unsigned long long)dbg_search_addr(0));
++        } else if (!strncmp(colon + 1, "mark", 4)) {   // mark this moment, as F9 does (boot.c mark_poll)
++            __atomic_store_n(&mark_asked, 1, __ATOMIC_RELEASE);
+         } else if (!strncmp(colon + 1, "show", 4)) {
+             float p[3] = {0, 0, 0}, sp = dbg_speed_factor();
+             int n = dbg_flags_refresh(), set = 0, found = 0;
+diff --git a/runtime/debug_tools.h b/runtime/debug_tools.h
+index 2128618..b661d56 100644
+--- a/runtime/debug_tools.h
++++ b/runtime/debug_tools.h
+@@ -7,7 +7,9 @@
+ void dbg_tick(Cpu *c);                 // the game's thread, at its pad read (ov_input.c): does what the menu asked for
+ // ... and the pad's state before the game gets it: the free camera takes the sticks and four buttons while it flies
+ void dbg_pad(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry);
+-void dbg_freecam_host(Cpu *c);         // the free camera's patch site (recomp/patches-v111.txt, set freecam)
++void dbg_freecam_host(Cpu *c);
++#include <stdio.h>
++void dbg_mark_probe(FILE *f);         // the free camera's patch site (recomp/patches-v111.txt, set freecam)
+ #endif
+ 
+ #ifdef __cplusplus
+@@ -64,6 +66,11 @@ int dbg_freeze(uint64_t addr, uint64_t value, int size, int on);   // written ev
+ int dbg_frozen(uint64_t addr);
+ int dbg_frozen_count(void);
+ void dbg_unfreeze_all(void);
++// A mark's recipe (boot.c mark_poll): dbg_mark_take answers 1 once after the test script's "mark"
++int dbg_mark_take(void);
++// Writes the moment's recipe to path (recipe v1: area, Link's place, age, camera, game data); mark: the "# mark:" text.
++// 0 without a save loaded (no area or no Link) or when the file cannot be written.
++int dbg_mark_recipe(const char *path, const char *mark);
+ #ifdef __cplusplus
+ }
+ #endif
+-- 
+2.56.0
+

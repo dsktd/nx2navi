@@ -14,6 +14,8 @@
 #  6 VRAM + live textures after a fixed 4-round teleport loop (load-cell, one run)
 #  7 fixed-position shots (the standing runs' final.png) kept in .lab/suite/<exe>/ and paired with the parent build's
 #    (builds.tsv) by tools/visual-pair: visual.tsv row, heatmap, auto-same or flagged (never pass/fail)
+#  8 repro round-trip (tools/repro-cell, 2 boots): mark -> recipe -> repro -> mark compares area, position, game data,
+#    shot; builds without patch 0106 (no mark recipe) are skipped
 R=$HOME/claude/nx2navi; B=$R/NX2navi/build/v111
 exe=$1 reps=${2:-${SUITE_REPS:-3}}
 [ -n "$exe" ] || { sed -n 2,3p $0; exit 2; }
@@ -42,6 +44,8 @@ for sc in west grave; do   # cold loads: the standing runs' own save loads (load
 done
 plan env RESULTS_NOTE=noisy $R/tools/suite-run $exe $tag-run $reps
 plan $R/tools/load-cell $exe $tag-loop 4
+if grep -aq NX2NAVI_MARK_RECIPE $R/NX2navi/build/v111/nx2navi.$exe 2>/dev/null; then plan $R/tools/repro-cell $exe
+else echo "suite $exe: no NX2NAVI_MARK_RECIPE in the exe: repro round-trip skipped"; fi
 if [ -z "$SUITE_DRY" ]; then
   $R/tools/results-add vram teleport-loop-4 $R/.lab/lc-$tag-loop/run.log
   # shots vs the parent build's: a visual pair each (tools/visual-pair), for Cal's eyes only when flagged

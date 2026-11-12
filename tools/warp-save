@@ -5,7 +5,14 @@ Teleport by save edit: rewrites progress.sav in a profile COPY so loading it put
 Refuses Cal's live profile. Edits every slot_*/progress.sav (or only slot=<n>) under <profile>/save/<uid>/.
 scene: a tools/scenes.toml name, matched case/space/underscore-insensitively, with the age suffix tried
 (scene="lost woods" age=child -> LostWood_Child). entrance: index or name in the scene's StartPos list (default 0);
-pos/yaw override it. age defaults from the scene suffix, else the save's own. time= is not supported yet.
+pos/yaw override it. NOTE 2026-11-12: the game ignores the yaw keys on load (yaw 0/90/150 spawn Link facing the same
+way); position is applied exactly. age defaults from the scene suffix, else the save's own. time= is not supported yet.
+gd=<recipe file>: also writes the recipe's `# gd <kind> <hash> <value hex>` lines (a mark's game data, recipe v1) into
+the save: each into the pair of that hash in the save's section of that kind (the save holds the game data's kinds in
+order, each section opened by a pair {0, kind}); values of kinds kept inline (bool 0, int 2, float 4, enum 6, uint 20)
+only, and `# gda <kind> <hash> <count> <index>:<value hex>...` arrays of 4-byte elements (int 3, float 5, enum 7,
+uint 21; the save holds a u32 count, then the elements, at the pair's offset; elements not listed are 0; an array whose
+count differs is left). Applied before scene/pos/yaw/age, so those win. Prints how many changed and how many hashes the save lacks.
 Save layout (1.1.1, found 2026-11-11): magic 04030201, then (u32 murmur3 hash, u32 value) pairs from 0x28;
 String64/Vector3 values are offsets to the data. Keys used: 0x1d6189da current scene (String64), Player_Pos_For_Map
 + 0x960ad56a, 0xc884818d, 0x8773f02d (Vector3, all hold Link's position), Player_Rot_For_Map + 0xa4aee8cd (float
@@ -34,7 +41,7 @@ def parse(args):
         if not v: die(f"bad argument {a!r}")
         spec[k] = v
     for k in spec:
-        if k not in ("scene", "entrance", "pos", "yaw", "age", "slot", "time"): die(f"unknown key {k}")
+        if k not in ("scene", "entrance", "pos", "yaw", "age", "slot", "time", "gd"): die(f"unknown key {k}")
     if "time" in spec: die("time= is not supported yet")
     if "scene" not in spec: die("scene= is required")
     return spec
@@ -50,9 +57,52 @@ def find_scene(scenes, want, age):
     die(f"no scene {want!r} (see tools/scenes.toml)")
 
 
-def edit(path, scene, pos, yaw, child):
+INLINE = {0, 2, 4, 6, 20}
+
+
+ARRAYS = {3, 5, 7, 21}
+
+
+def read_gd(path):
+    """{(kind, hash): u32 | (count, {index: u32})} from a recipe's # gd / # gda lines."""
+    gd = {}
+    for l in open(path):
+        f = l.split()
+        if len(f) == 5 and f[:2] == ["#", "gd"] and int(f[2]) in INLINE:
+            gd[(int(f[2]), int(f[3], 16))] = int(f[4], 16)
+        elif len(f) >= 5 and f[:2] == ["#", "gda"] and int(f[2]) in ARRAYS:
+            el = {int(i): int(v, 16) for i, v in (x.split(":") for x in f[5:])}
+            gd[(int(f[2]), int(f[3], 16))] = (int(f[4]), el)
+    return gd
+
+
+def apply_gd(b, gd):
+    """{(kind, hash): u32} into the save's sections; returns (changed, missing)."""
+    kind, seen, changed = 0, set(), 0
+    for o in range(0x28, struct.unpack_from("<I", b, 8)[0], 8):   # +8: where the pairs end and their data starts
+        h, v = struct.unpack_from("<II", b, o)
+        if h == 0:
+            if v <= kind: break
+            kind = v
+            continue
+        want = gd.get((kind, h))
+        if want is None: continue
+        seen.add((kind, h))
+        if isinstance(want, tuple):
+            n, el = want
+            if struct.unpack_from("<I", b, v)[0] != n: continue
+            new = struct.pack(f"<{n}I", *(el.get(i, 0) for i in range(n)))
+            if b[v + 4:v + 4 + 4 * n] != new: b[v + 4:v + 4 + 4 * n] = new; changed += 1
+        elif want != v: struct.pack_into("<I", b, o + 4, want); changed += 1
+    return changed, len(gd) - len(seen)
+
+
+def edit(path, scene, pos, yaw, child, gd=None):
     b = bytearray(open(path, "rb").read())
     if b[:4] != b"\x04\x03\x02\x01": die(f"{path}: not a progress.sav")
+    if gd:
+        changed, missing = apply_gd(b, gd)
+        print(f"warp-save: {path}: game data {changed} values changed, {missing} not in the save")
     idx = {}
     for o in range(0x28, len(b) - 8, 8):
         h = struct.unpack_from("<I", b, o)[0]
@@ -91,7 +141,8 @@ def main():
     pat = f"slot_{int(spec['slot']):02d}" if "slot" in spec else "slot_*"
     files = sorted(glob.glob(os.path.join(prof, "save", "*", pat, "progress.sav")))
     if not files: die(f"no {pat}/progress.sav under {prof}/save")
-    for f in files: edit(f, name, pos, yaw, child)
+    gd = read_gd(spec["gd"]) if "gd" in spec else None
+    for f in files: edit(f, name, pos, yaw, child, gd)
     print(f"warp-save: {name} entrance {ent[0] if ent else '-'!r} pos {pos} yaw {yaw} age {age or 'kept'}, {len(files)} slot(s)")
 
 
