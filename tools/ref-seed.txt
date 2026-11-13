@@ -1,0 +1,24 @@
+# area url t=.. [len=..] [step=..]   (public YouTube Switch 2 / "Remake" playthroughs; `tools/ref seed tools/ref-seed.txt`)
+# Verified by contact sheet 2026-11-11. Still without footage: castle_courtyard, gerudo_valley (no segment found yet).
+kokiri_forest https://www.youtube.com/watch?v=vPNIYMPFwNI t=0:30 len=30
+kokiri_forest https://www.youtube.com/watch?v=oaxkaEmKmVU t=1:00 len=30
+lost_woods https://www.youtube.com/watch?v=5jcdJ-2ad94 t=0:20 len=30
+hyrule_field_day https://www.youtube.com/watch?v=LVA1H5fd5TE t=1:00 len=120 step=10
+hyrule_field_night https://www.youtube.com/watch?v=k5wUM1YlckI t=3:00 len=30
+kakariko https://www.youtube.com/watch?v=oJ6WBdseRC8 t=0:40 len=30
+graveyard https://www.youtube.com/watch?v=oJ6WBdseRC8 t=10:00 len=120 step=10
+market https://www.youtube.com/watch?v=s1BElOIu8us t=0:00 len=120 step=10
+death_mountain https://www.youtube.com/watch?v=JWfkKrXvNnw t=0:30 len=30
+goron_city https://www.youtube.com/watch?v=JWfkKrXvNnw t=6:40 len=30
+zoras_domain https://www.youtube.com/watch?v=4qiwYP8KTeM t=0:30 len=30
+zoras_domain https://www.youtube.com/watch?v=_JlV0qIyLdI t=10:00 len=120 step=10
+lake_hylia https://www.youtube.com/watch?v=zmy1H7PYIao t=1:00 len=30
+temple_of_time https://www.youtube.com/watch?v=A_0ZUaRxxAE t=0:10 len=120 step=10
+deku_tree https://www.youtube.com/watch?v=XcDU0IY8olU t=1:00 len=30
+dodongos_cavern https://www.youtube.com/watch?v=KPnFHjW_U_w t=1:00 len=30
+jabu_jabu https://www.youtube.com/watch?v=ob9h8tDUqNU t=1:00 len=30
+forest_temple https://www.youtube.com/watch?v=lP0b1dWdjBA t=1:00 len=30
+fire_temple https://www.youtube.com/watch?v=COcJcr-SGIM t=1:00 len=30
+water_temple https://www.youtube.com/watch?v=_0kdHdCqKdc t=1:00 len=30
+shadow_temple https://www.youtube.com/watch?v=nQfMHRg8FRM t=1:00 len=30
+ice_cavern https://www.youtube.com/watch?v=UPAwZ0_19Yg t=1:00 len=30

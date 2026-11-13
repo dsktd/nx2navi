@@ -621,6 +621,36 @@ apart. `COLD=west|grave` is one boot with the save's own load only (the only for
 `tools/load-stat [--table] .lab/lc-*/run.log` prints per load the longest gap between two pictures, the time lost
 beyond 60 fps, and upstream's held-picture line; `--table` gives mean and min..max per build and area.
 
+## Switch 2 reference library (tools/ref)
+
+Short public-footage segments per area, to ask "does our picture look like the real one here". Frames, ORB features and
+comparisons live in `~/claude/nx2navi-ref/` (`REF_DIR`; PRIVATE, never committed: footage is Nintendo's). Git holds only
+`tools/ref` (wrapper: one `nix shell` with python+opencv+numpy+ffmpeg+yt-dlp), `tools/ref.py`, `tools/ref-areas.json`
+(area names, aliases, scene ids, search queries), `tools/ref-index.json` (URL + start second per segment) and
+`tools/ref-seed.txt`. Commands (`tools/ref` with no arguments prints them):
+
+- `ref areas`: area key, scene id, name, segment count.
+- `ref add <url> [t=1:23] [len=40] [step=2] [area=<name>] [keep]`: video-only <=720p section via yt-dlp, a frame every
+  `step` s (640 wide) into `frames/<area>/<id>_<t>/f001.jpg...`, ORB+HSV features in `feat.npz`, entry in the index.
+  Segments are capped at 120 s. The cut video is deleted unless `keep`.
+- `ref find <area|scene id> [search]`: scene id, stored segments with `&t=` URLs; `search` (or no segments) lists YouTube hits.
+- `ref candidates [area...]`: gameplay-looking hits (1-40 min, no OST) to choose seeds from; `ref sheet <area>`: contact sheet.
+- `ref move <from-area> <id>_<t> <to-area|drop>`, `ref batch <file>` (one ref command per line), `ref reindex`
+  (recompute features), `ref sheet all` (one tile per segment, to check the seeds). Probe a video with
+  `ref add <url> t=.. len=120 step=10 area=unsorted`, look at `ref sheet unsorted`, then `move` the good ones.
+- `ref compare <shot.png> [area]`: scores every stored frame (0.3 x HSV histogram correlation + 0.4 x 8x4 Lab colour
+  layout + 0.3 x ORB RANSAC inliers capped at 60; the HUD corners and text box are masked out), writes the top 3 as side-by-sides to `$REF_GALLERY` (default `~/claude/nx2navi/.lab/gallery/`, as
+  `ref-<shot>-<rank>-<area>.png`) and prints score lines with the `&t=` URL of the reference frame.
+- `ref seed <file>` / `ref sync`: add many from a seed file / re-fetch what the index lists but the machine lacks.
+
+Seeded 2026-11-11: 21 segments over 20 areas (plus `market`); `castle_courtyard` and `gerudo_valley` have no footage yet
+(`ref find <area> search` lists candidates; segment starts in the seed file were found by probing, several first guesses
+showed menus or interiors). Compare scores are weak across different camera spots (ORB inliers are mostly 0-30, the
+layout/histogram terms pick similar-looking scenes): judge the side-by-side, not the number. Area names are the
+shared vocabulary with teleport. Scene ids are OoT decomp table numbers from memory; neither
+`romfs_index.py` nor the docs carry a scene table, so they are unverified for the Switch 2 data.
+Example: `tools/ref compare build/v111/logs/shot-3.png kokiri_forest`.
+
 ## Profiling with Tracy
 
 Opt-in, patch 0023. `just game tracy=1` builds `build/v111/nx2navi.tracy` (`build-linux.py --tracy --exe nx2navi.tracy`:
