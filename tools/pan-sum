@@ -1,0 +1,46 @@
+#!/usr/bin/env python3
+# pan-sum <run.log> <still_from> <pan_from> <pan_to>: one line per window of a pan-cell run (tools/pan-cell).
+# fps, 1% low (mean of the slowest 1% of present intervals, as fps), max present interval (ms) from the per-present
+# lines (NX2NAVI_TRACE=present); textures uploaded / re-uploaded per 60 frames from the perf lines; with patch 0115 the
+# CPU-written textures made, of them again after a drop past the size cap, and the released entries' MiB by kind.
+import re, sys
+
+log, still, pan, end = sys.argv[1], *map(int, sys.argv[2:5])
+s = open(log, errors="replace").read()
+pres = [(int(m[1]), float(m[2])) for m in re.finditer(r"present: frame (\d+) interval ([\d.]+) ms", s)]
+perf = [(int(m[1]), int(m[2]), int(m[3])) for m in
+        re.finditer(r"perf: frame (\d+): interval avg .*?textures uploaded (\d+) re-uploaded (\d+)", s)]
+made = [(int(m[1]), int(m[2]), int(m[3]), int(m[4])) for m in
+        re.finditer(r"perf: frame (\d+): CPU-written textures made (\d+): again after a drop of their key (\d+) "
+                    r"\(past the size cap (\d+)", s)]
+rel = [(int(m[1]), float(m[2]), float(m[3]), float(m[4]), float(m[5])) for m in
+       re.finditer(r"perf: frame (\d+): released entries by kind: intact, stale and idle .*? \d+ \(([\d.]+) MiB\), "
+                    r"intact and not yet \d+ \(([\d.]+) MiB\), overwritten \d+ \(([\d.]+) MiB\), with content only in "
+                    r"their image \d+ \(([\d.]+) MiB\)", s)]
+
+
+def window(name, lo, hi):
+    iv = sorted(d for f, d in pres if lo <= f < hi)
+    if not iv:
+        return f"{name} no presents"
+    n = len(iv)
+    k = max(1, n // 100)
+    low = sum(iv[-k:]) / k
+    # a perf line at frame F covers the 60 frames before it
+    w = [p for p in perf if lo + 60 <= p[0] <= hi]
+    up = sum(p[1] for p in w) / len(w) if w else float("nan")
+    ru = sum(p[2] for p in w) / len(w) if w else float("nan")
+    out = (f"{name} f{lo}-{hi} fps {1000 * n / sum(iv):.1f} 1%low {1000 / low:.1f} max {iv[-1]:.1f} ms "
+           f"up/60 {up:.0f} reup/60 {ru:.0f}")
+    m = [x for x in made if lo + 60 <= x[0] <= hi]
+    if m:
+        out += (f" | made/60 {sum(x[1] for x in m) / len(m):.0f} again {sum(x[2] for x in m) / len(m):.0f}"
+                f" cap {sum(x[3] for x in m) / len(m):.0f}")
+    r = [x for x in rel if lo + 60 <= x[0] <= hi]
+    if r:
+        last = r[-1]
+        out += f" | rel MiB idle {last[1]:.0f} young {last[2]:.0f} ovw {last[3]:.0f} img {last[4]:.0f}"
+    return out
+
+
+print(window("still", still, pan), "||", window("pan", pan + 60, end))

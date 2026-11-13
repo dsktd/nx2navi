@@ -1,0 +1,39 @@
+#!/bin/bash
+# pan-cell <exe> <tag> <reps> [KEY=VAL...]: camera-turn cell (patch 0115 work, tex-churn agent, 2026-11-12).
+# Boots the lab on tools/scenarios/${PAN_SCENARIO:-grotto-pan}.dbg (a recipe: tools/warp-save writes its place and game
+# data into a copy of the base profile, .lab/parity/load-west.txt's A presses load it), then holds the right stick
+# (the game's own camera turns around a standing Link) from frame PAN_FROM to PAN_TO; nothing else is pressed.
+# Windows: still = STILL_FROM..PAN_FROM, pan = PAN_FROM+60..PAN_TO. Per window: fps, 1% low (mean of the slowest 1% of
+# present intervals, as fps), max present interval, textures uploaded / re-uploaded per 60 frames, and from exes with
+# patch 0115 where the made textures came from (perf "made" lines). Cal's play knobs (skysh run of 2026-11-12, sync
+# replay as his shell had it); the arm's KEY=VAL come last. Lab caches .lab/parity scR/pcR.bin. Stops when Cal plays.
+# Out: .lab/pan-<tag>-<i>/run.log, one summary line per run in .lab/pan-<tag>.txt (tools/pan-sum reads it again).
+R=$HOME/claude/nx2navi; P=$R/.lab/parity; B=$R/NX2navi/build/v111
+[ $# -ge 3 ] || { sed -n 2,9p "$0"; exit 2; }
+exe=$1 tag=$2 reps=$3; shift 3
+grep -q "^$exe	" $R/builds.tsv 2>/dev/null || { echo "no builds.tsv row for $exe: run tools/builds-add first"; exit 8; }
+$R/tools/store-build verify $exe || [ $? = 2 ] || exit 8
+sc=${PAN_SCENARIO:-grotto-pan} from=${PAN_FROM:-2400} to=${PAN_TO:-4200} still=${STILL_FROM:-1800}
+frame=$((to + 60))
+. $R/tools/cell-lib.sh
+SCENARIO_RECIPES=1 cell_scenario $sc
+[ -n "$w" ] || { echo "pan-cell: no scenario $sc"; exit 2; }
+rec=$R/.lab/pan-rec-$from-$to.txt
+{ grep -v LSTICK $P/load-west.txt; echo "$from RSTICK ${PAN_X:-32767} 0 $((to - from))"; } > $rec
+start=$(ls -t $B/logs/play-*.log | head -1)
+for i in $(seq 1 $reps); do
+  log=$(ls -t $B/logs/play-*.log | head -1)
+  [ "$log" != "$start" ] || [ $(( $(date +%s) - $(stat -c %Y $log) )) -lt 180 ] && { echo "CAL PLAYING"; exit 9; }
+  name=pan-$tag-$i
+  l0=$(cell_wait); cache=$(cell_cache $P/scR $P/pcR.bin)
+  echo "$name start load $(cut -d' ' -f1-3 /proc/loadavg)" >&2
+  (cd $R && LAB_EXE=nx2navi.$exe LAB_TIMEOUT=${LAB_TIMEOUT:-600} tools/lab-run --warp "$w" $rec $frame $name \
+    NX2NAVI_ALIAS_EXTRA_MIB=512 NX2NAVI_ASYNC_GATE=1 NX2NAVI_ASYNC_HOLD=25a4c7f00:100 NX2NAVI_GPU_WAIT=0 \
+    NX2NAVI_MARK_CHORD=off NX2NAVI_NVIDIA=0 NX2NAVI_PIPE_SKIP=any NX2NAVI_POOL_IDLE_MS=8 NX2NAVI_REPLAY_ASYNC=0 \
+    NX2NAVI_SHADOW_BULK_WRITE=1 NX2NAVI_SHADOW_PRESYNC=1 NX2NAVI_SHADOW_TOUCH_LOCK=1 NX2NAVI_STALL_MS=100 \
+    NX2NAVI_TEX_DESC_STRICT=1 NX2NAVI_TEX_RELEASED_MB=3072 NX2NAVI_VK_RECORDER=1 NX2NAVI_TRACE=perf,present \
+    NX2NAVI_RUN_NAME=$name NX2NAVI_XLATE=$(cell_xlate $exe) NX2NAVI_SHADER_CACHE=$P/scR NX2NAVI_PIPELINE_CACHE=$P/pcR.bin \
+    "$@" > $R/.lab/$name.out 2>&1)
+  cell_note $name $cache "$rhash" $l0
+  python3 -I $R/tools/pan-sum $R/.lab/$name/run.log $still $from $to | sed "s/^/$name /"
+done | tee -a $R/.lab/pan-$tag.txt
