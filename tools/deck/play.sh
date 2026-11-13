@@ -8,6 +8,8 @@ unset LD_PRELOAD LD_LIBRARY_PATH
 exec 9>"$N/.game.lock"; flock -n 9 || { echo "NX2navi is already running" >&2; exit 3; }
 # a measurement cell (cell.sh) hands its settings over in cell.env and takes the log
 LOG="logs/play-$(date +%Y%m%d-%H%M%S).log"
+# play.env (kept; KEY=VALUE lines, no user-facing settings): which exe the entry runs. Delete the file for deck2 again
+if [ -f "$N/play.env" ]; then set -a; . "$N/play.env"; set +a; fi
 if [ -f "$N/cell.env" ]; then set -a; . "$N/cell.env"; set +a; rm -f "$N/cell.env"; LOG=$CELL_LOG; fi
 export RADV_DEBUG="${RADV_DEBUG-nogpl}" NX2NAVI_PIPE_SKIP="${NX2NAVI_PIPE_SKIP:-strict}"
 export NX2NAVI_RUN_NAME="${NX2NAVI_RUN_NAME:-deck-play50}"

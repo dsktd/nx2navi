@@ -49,3 +49,13 @@ Undo: delete the lines (or the file); the Steam Deck device profile of the runti
 - Test 14:29-14:35 (`offline-test.sh`, root): deck3 = deck2 + a 1.2 KB patch built inside `unshare -n` in 243 s. For the
   game run an nft table `inet nx2cut` dropped everything but ssh and loopback for about a minute; it was deleted at the
   end (checked: gone). Steam went offline for that minute and logged on again at 14:34.
+
+## Steam entry exe, deck4, offline tree for the new base (2026-11-13 15:10-15:40, deck agent 2)
+- play.sh reads ~/nx2navi/play.env (kept): NX2NAVI_EXE=deck4 (d2d2e64 = upstream v0.10.1 5ae55db merged with the deck
+  stack) and its own pipeline cache build/v111/pipeline-cache-deck4.bin. No play.env = deck2 (kept as play.env.deck4).
+- show.sh / direct.sh: one foreground start through the entry / one pinned field run on DISPLAY=:1 without Steam.
+- The entry stopped starting the game at 14:29 because Steam shows a "cloud sync failed" dialog for the controller
+  configs (app 241100) since the offline test's network cut: press "Play anyway" or restart Steam.
+- /home/purplg (the offline build tree) was gone at 15:01 (removed by someone else); recreated by root for the new
+  base (2.3 GB, owned by deck), deckbuild.sh now builds .lab/wt-rebase6 into v111-rebase6. Undo: sudo rm -rf /home/purplg
+

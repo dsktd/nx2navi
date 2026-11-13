@@ -775,3 +775,29 @@ All figures: entry as named, exe=nx2navi.play50 commit=15d14ce xlate=xlate-play3
 - **Settle detector pitfalls** (`tools/deck/stable.py`): the title scene and loading screens are steady too. A void
   "50 fps" (entry base-1, GPU 8.5 ms) was the title scene; the detector now needs a loading screen (GPU < 2 ms) first.
   No 3-run cell result exists yet: every arm of `tools/deck/plan.sh` is still to run.
+- **Upstream 0.10.1 on the Deck: exe deck4** (d2d2e64, branch `rebase6`, `.lab/wt-rebase6`, 2026-11-13): upstream
+  `5ae55db` (v0.10.1, 175 commits past a01910d) MERGED into the deck stack (deckres e90b9a0), not rebased commit by
+  commit: 32 conflict hunks in 14 files, then three build fixes (0003's shader reload moved onto upstream's
+  `spv_store.h`: `gfx_shader_set_spirv` now returns the old words; 0115's `AGE_N` renamed `MADE_AGE_N`; 0116's
+  `dbg_camera_watch` renamed `dbg_camera_watch_pub` beside upstream's own). Built with `.lab/brb6.sh` into
+  `build/v111-rebase6` with its own lift cache `build/extracted-rebase6` (upstream's `recomp/simd_c.py` and
+  `patches-v111.txt` changed: every lifted file compiles again). Translator unchanged in use (xlate-play33; upstream's
+  pool length went 32768 -> 40960 in `tools/xlate/Program.cs`, and the runtime still takes the old length).
+  **Upstream has no new Steam Deck profile in this range**: the `DECK` table in `cfg.c` (40 fps, 4 cores, ASTC as BC)
+  is the one play50 already had. What is new and matters there: `mem_budget.c` (levels from the card's budget and from
+  MemAvailable / cgroup limits, `platform/linux.c plat_commit_info`), idle SPIR-V kept zstd-compressed
+  (`spv_store.h`), unused pipelines given back under pressure (`PIPE_RELEASE`), overwritten render targets handed on
+  (217fb32, 1dbecd4), released textures held by time (`TEX_RELEASED_HOLD`), `low_end_gpu` leaves async replay off.
+  State: ONE direct run on the Deck (entry d4-1) booted, prewarmed and reached the save load (1,227 presents, no
+  FATAL), stopped before the field. No frame rate, no desktop boot, no A/B yet.
+- **Why the Steam entry "stopped launching" (14:29)**: Steam's `webhelper_js.txt` logs `SynchronizingControllerConfig
+  syncfailed` and `showing cloud sync failed dialog 241100` for each `steam://rungameid`: after the offline test cut the
+  network, every launch waits behind that dialog for "Play anyway" (or a Steam restart). `console_log.txt` only shows
+  `ExecuteSteamURL`. `tools/deck/direct.sh <exe> <tag>` starts a pinned field run on gamescope's `DISPLAY=:1` without
+  Steam (not on the panel) for such times.
+- **Which exe the entry runs**: `~/nx2navi/play.env` (read by play.sh, kept): `NX2NAVI_EXE`, its own
+  `NX2NAVI_PIPELINE_CACHE`. No file = deck2. `tools/deck/show.sh [exe] [scenario]` is one foreground start through the
+  entry from a copy of a scenario save with the overlay on.
+- **The Deck's offline build tree was deleted at 15:01 (not by this work) and recreated for the new base**:
+  `/home/purplg/claude/nx2navi` (2.3 GB: `.lab/wt-rebase6` as a plain git snapshot, kit venv, lift cache, deck4's
+  objects; no .ccache), `deckbuild.sh` points at it. Same dev shell store paths. Not test-built there.
