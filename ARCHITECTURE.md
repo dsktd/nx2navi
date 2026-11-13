@@ -218,6 +218,13 @@ the rock fs `e99e29b92bdf88e6` (spirv-cross of `dump/f3781/sh_e99e29b92bdf88e6.s
   queues the words that changed since the previous submission's copy; `vk_mem_mirror_prologue` writes them into the
   mirror (`hold_record`, vkCmdUpdateBuffer) after the uploads and before the write-back merge's base copies, and
   `mirror_sync` leaves the ranges out (`pend_add`). A range whose pool has no mirror is left as before.
+- 0118 `NX2NAVI_SSBO_SNAPSHOT=1` (default 0; exe ssnap, `runs/ssnap.sh`): the same ordering for storage buffers the
+  game binds with nvnCommandBufferBindStorageBuffer, up to 256 KiB from the bound address: `vk_usnap.c` `collect`
+  copies them at the submit call with the uniform blocks, and `vk_exec_draw.c` `ssbo_info` binds the copy when the
+  shader only reads it (drop and in-flight rules as for uniforms; the arena has storage usage). For a Zora whose
+  lighting flickered in daylight under async replay (Cal 2026-11-12 on texchurn, dump f9583; REPLAY_ASYNC=0 fixed it).
+  Not covered: buffers shaders reach through addresses in constants (`r->ptr`, such as the sky-SH bake's), which
+  stay with 0114's list.
 
 ### Texture cache (`runtime/vk_texture.c`)
 

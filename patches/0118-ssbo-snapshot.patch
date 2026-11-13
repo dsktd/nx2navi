@@ -1,0 +1,96 @@
+From a01af7b6227cb0a2e76d939eb69a8eb4818871dc Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Thu, 12 Nov 2026 22:49:33 -0500
+Subject: [PATCH] NX2NAVI_SSBO_SNAPSHOT: storage buffers the game binds are
+ copied at the submit call, and read-only bindings use the copy
+
+With async replay the GPU read what the game wrote into bound storage buffers after the submit call: a Zora's lighting
+flickered in daylight and REPLAY_ASYNC=0 fixed it. The uniform snapshot's copy, drop and in-flight rules now cover
+storage buffers bound through nvnCommandBufferBindStorageBuffer up to 256 KiB from the bound address. Default 0: off.
+---
+ runtime/vk.h           |  1 +
+ runtime/vk_exec_draw.c |  6 ++++++
+ runtime/vk_usnap.c     | 24 +++++++++++++++++++++++-
+ 3 files changed, 30 insertions(+), 1 deletion(-)
+
+diff --git a/runtime/vk.h b/runtime/vk.h
+index 6fd3aaa..644c92a 100644
+--- a/runtime/vk.h
++++ b/runtime/vk.h
+@@ -345,6 +345,7 @@ void vk_usnap_begin(const uint64_t *handles, int n, uint64_t fence);
+ // NX2NAVI_REPLAY_ASYNC: the submitting thread takes the copy before it queues the submission; vk_usnap_begin on the
+ // replay thread then uses it.
+ void vk_usnap_take(const uint64_t *handles, int n);
++int vk_usnap_ssbo(void);   // NX2NAVI_SSBO_SNAPSHOT: bound storage buffers are copied too (vk_usnap.c)
+ // NX2NAVI_ASYNC_HOLD (vk_memory.c): ranges whose CPU writes reach the VRAM mirror in submission order under async
+ // replay. vk_mem_hold_bytes: their total size, 0 when off; vk_mem_hold_take copies them at the submit call;
+ // vk_mem_hold_begin, the replay at the submission's start, queues the words that changed for its first prologue.
+diff --git a/runtime/vk_exec_draw.c b/runtime/vk_exec_draw.c
+index c9a3ee7..186788e 100644
+--- a/runtime/vk_exec_draw.c
++++ b/runtime/vk_exec_draw.c
+@@ -1572,6 +1572,12 @@ static VkDescriptorBufferInfo ssbo_info(VkExec *ex, int st, const GfxShaderRes *
+     if (b) {
+         // vk_caps.c: shaders translated for sbuf_align address the buffer from its address rounded down to it.
+         uint64_t lead = vk_caps.sbuf_align ? b->addr & (vk_caps.sbuf_align - 1) : 0;
++        // NX2NAVI_SSBO_SNAPSHOT: a binding the shader only reads takes the bytes as of the submit call (vk_usnap.c)
++        if (!written && !r->ptr && b->size && vk_usnap_ssbo() &&
++            vk_usnap_find(b->addr - lead, b->size + lead < max ? b->size + lead : max, align, &bi)) {
++            count_use(ex->dc, VK_MCLS_SCRATCH, VK_MUSE_SSBO, bi.range);
++            return bi;
++        }
+         if (bind_range(ex, b->addr - lead, b->size ? b->size + lead : 0, align, max, ubo ? VK_MUSE_UBO : VK_MUSE_SSBO,
+                        written, &bi)) {
+             if (written && bi.buffer != VK_NULL_HANDLE) note_written(ex, b->addr - lead, bi.range);
+diff --git a/runtime/vk_usnap.c b/runtime/vk_usnap.c
+index 521d45b..b6400ad 100644
+--- a/runtime/vk_usnap.c
++++ b/runtime/vk_usnap.c
+@@ -32,6 +32,20 @@
+ 
+ #define ALIGN 256u
+ #define MAX_RANGE (64u << 10)
++// NX2NAVI_SSBO_SNAPSHOT=1 (default 0): storage buffers the game binds (nvnCommandBufferBindStorageBuffer, not the
++// addresses shaders load from constants) are copied too, up to SSBO_RANGE from the bound address, and a binding that
++// only reads one uses the copy (vk_exec_draw.c ssbo_info): with NX2NAVI_REPLAY_ASYNC the GPU otherwise reads what the
++// game wrote there after the submit call (a Zora's lighting flickered in daylight, 2026-11-12; REPLAY_ASYNC=0 fixed it).
++// The drop and in-flight rules are the uniform copies'.
++#define SSBO_RANGE (256u << 10)
++static int ssbo_mode = -1;
++int vk_usnap_ssbo(void) {
++    if (ssbo_mode < 0) {
++        ssbo_mode = rt_knob("SSBO_SNAPSHOT", "0");
++        if (RT_KNOB_ON(ssbo_mode)) rt_log("vk_usnap: storage buffers the game binds are copied at the submit call too (NX2NAVI_SSBO_SNAPSHOT)");
++    }
++    return RT_KNOB_ON(ssbo_mode);
++}
+ #define ARENA_MIN (4u << 20)
+ #define CALL_DEPTH 16
+ 
+@@ -111,7 +125,8 @@ static Arena *arena_get(uint64_t need) {
+     a->size = need < ARENA_MIN ? ARENA_MIN : (need + (1u << 20) - 1) & ~(uint64_t)((1u << 20) - 1);
+     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = a->size,
+                              // transfer source: DLAA copies the camera block out (vk_dlaa.c mv_pass)
+-                             .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT};
++                             .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
++                                      VK_BUFFER_USAGE_TRANSFER_SRC_BIT};
+     // Device-local through the BAR when the device has it (the GPU reads constants on every draw), else host memory.
+     VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+                                   .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+@@ -185,6 +200,13 @@ static void collect(const op_hdr *h, int depth) {
+             continue;
+         }
+         if (h->op == OP_CALL && depth < CALL_DEPTH) collect(nvn_op_first(((const p_jump *)a)->target), depth + 1);
++        if (h->op == OP_BIND_SSBO && vk_usnap_ssbo()) {   // NX2NAVI_SSBO_SNAPSHOT
++            const p_bind_buf *b = a;
++            if (b->addr && b->size) {
++                if (U.ncol == U.ccol) U.col = grow(U.col, &U.ccol, sizeof *U.col);
++                U.col[U.ncol++] = (Rng){b->addr & ~(uint64_t)(ALIGN - 1), b->addr + (b->size < SSBO_RANGE ? b->size : SSBO_RANGE)};
++            }
++        }
+         if (h->op == OP_BIND_UBO) {
+             const p_bind_buf *b = a;
+             if (b->addr && b->size) {
+-- 
+2.56.0
+
