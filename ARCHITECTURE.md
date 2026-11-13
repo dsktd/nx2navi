@@ -490,6 +490,25 @@ registrations wait until the submission is queued, `vk_backend.c`), slope depth 
 `LOW_END_GPU=1`. Our `POOL_IDLE_MS` lookup and `POOL_LOAD_FIT` sit beside upstream's make-time accounting
 (57a15e2 `vk_texture_pool_make_ns_take`): FIT still times the whole refresh. Translator sources unchanged: xlate-play33.
 
+**Upstream rebase 2026-11-13, v0.9.2-12** (branch `rebase5` in `.lab/wt-rebase5`: skysh a01af7b's 70 commits (play49
++ 0114 + 0118) + 0115 + 0116 onto origin/main a01910d, 10 upstream commits past a32597b; exe `play50`). All 72 kept,
+none covered upstream; 8 conflict hunks, context only (WATCH beside the early tail's `op_update_ub` branch, cfg rows
+beside the new co-op keys, TRACE item `coop` gone with the 0.8 co-op so 0022/0035 drop it, exit timing beside
+`coop_shutdown`, crosshair beside `coop_draws`, `debug_tools.h` include). **The perf/multicore-replay branch is
+already in a32597b**: its 7 commits are on main as 85af8a8, 3010a63, 4fc32e8, 7534193, 77ae0f6, a0a7548 (query slots
+in stream order) and 9fe3dd3, so play49's "REPLAY_WORKERS=3 no gain" was measured with the slot-order fix; merging
+`origin/perf/multicore-replay` again gives ~100 hunks only because the same changes carry other SHAs. New upstream,
+all off by default: `NX2NAVI_TAIL_EARLY` (aec5e72, vk_exec.c "the early tail", vk_sync.c `vk_sync_tail_hold/release`):
+from the temporal upscaler's `evaluate` (vk_dlaa.c) the replay records the frame's tail into its own command buffer and,
+when the tail hands the CPU only timestamps, writes no pool memory and reads no guest memory late, queues the
+write-backs before it with the executed timeline's signal, so the game's wait ends before the upscaler+HUD run. It
+needs a temporal upscaler (DLSS, FSR 4, FSR 3.1: on Linux only through 0112's `NX2NAVI_FFX_LIB`), `WB_SPLIT` (off under
+shadow storage, on with #730 dma-bufs), native mesh shaders, and no dump; a tail that binds a pool with no VRAM mirror
+(`vk_mem_note_live`: an import, host pointer or #730 dma-buf, vk_memory.c `vk_mem_use`) is refused, so count tails in the `perf: early tail:` line
+(TRACE=perf, per 600) before reading an fps change. `NX2NAVI_REPLAY_SMALL=N` (8613145, needs `REPLAY_PIPE`): a group of
+N+ draws too small to cut goes whole to one worker. 0109 GATE, 0114 HOLD (prologue of the first part, before the tail's
+cut) and 0118 snapshots sit before any tail cut, so they are untouched by it. Translator sources unchanged: xlate-play33.
+
 ## 11. Working rules and tooling
 
 - **cfg rule.** Every key read with `cfg_value`/`cfg_bool`/`cfg_int`/`cfg_double` needs a row in the settings table in `runtime/cfg.c`, or the game stops at start with `cfg: X has no row in the settings table` (play6, fixed by 0069). `cfg_get` alone does not need one.

@@ -1,36 +1,38 @@
-From ef565c691f85e4c39a84cb6e0a1cb75afb62ea5b Mon Sep 17 00:00:00 2001
+From e9f331b05dab8e88dae50e87beeb099a4d37790a Mon Sep 17 00:00:00 2001
 From: desocketed <desocketed@users.noreply.github.com>
 Date: Mon, 9 Nov 2026 23:46:52 -0500
-Subject: [PATCH 31/32] NX2NAVI_TRACE=nvn: each guest thread's time per host
- function and SVC, guest code as the rest, every 600 presents (#132)
+Subject: [PATCH] NX2NAVI_TRACE=nvn: each guest thread's time per host function
+ and SVC, guest code as the rest, every 600 presents (#132)
 
 hostfn_entry and rt_svc time every call (rdtsc, exclusive of the calls inside it) into a table of the calling thread; a wait
 still running at a report is booked to its innermost call. The presenting thread logs itself and the six threads with the most
 guest code. Field, 25.9 ms frame: the presenting thread only waits for the main thread; the main thread spends 9.3 ms in
 nvnQueueSubmitCommands (the finish wait), 7.9 ms waiting for its job workers (svc 0x34), 4.1 ms in guest code.
 ---
- runtime/host.h   |   6 +-
+ runtime/host.h   |   8 ++-
  runtime/hostfn.c | 171 ++++++++++++++++++++++++++++++++++++++++++++++-
  runtime/kernel.c |   2 +
  runtime/main.c   |   4 +-
  runtime/svc.c    |  11 +++
- 5 files changed, 190 insertions(+), 4 deletions(-)
+ 5 files changed, 191 insertions(+), 5 deletions(-)
 
 diff --git a/runtime/host.h b/runtime/host.h
-index c34b55e..ea4cc7a 100644
+index 2fec4d5..03dde03 100644
 --- a/runtime/host.h
 +++ b/runtime/host.h
-@@ -25,7 +25,8 @@ void rt_log_raw(const char *p, size_t n);
- const char *rt_log_path(void);                  // the log file, NULL when this run writes none
+@@ -26,8 +26,9 @@ const char *rt_log_path(void);                  // the log file, NULL when this
+ void rt_log_sync(void);                         // writes the queued log lines now; later lines are written as they are made
  enum { RT_TRACE_SVC = 1, RT_TRACE_HOSTCALL = 2, RT_TRACE_IPC = 4, RT_TRACE_FS = 8, RT_TRACE_GFX = 16, RT_TRACE_PERF = 32,
         RT_TRACE_SCHED = 64, RT_TRACE_AUDIO = 128, RT_TRACE_PRESENT = 256,
--       RT_TRACE_COUNTERS = 512, RT_TRACE_TEX = 1024 };   // tex: texture upload classes every 600 frames (#132)   // counters: a present/clock line per 60 presents and every voice start (#128 lab)
-+       RT_TRACE_COUNTERS = 512, RT_TRACE_TEX = 1024,
-+       RT_TRACE_NVN = 2048 };   // nvn: each guest thread's time per host function and SVC, every 600 presents (hostfn.c, #132)   // tex: texture upload classes every 600 frames (#132)   // counters: a present/clock line per 60 presents and every voice start (#128 lab)
- extern unsigned rt_trace;                       // from NX2NAVI_TRACE=svc,host,ipc,fs,gfx,perf,sched,audio,present (or all)
+-       RT_TRACE_COUNTERS = 1024 };   // counters: a present/clock line per 60 presents and every voice start (#128 lab)
+-extern unsigned rt_trace;                       // from NX2NAVI_TRACE=svc,host,ipc,fs,gfx,perf,sched,audio,present,counters (or all)
++       RT_TRACE_COUNTERS = 1024,   // counters: a present/clock line per 60 presents and every voice start (#128 lab)
++       RT_TRACE_NVN = 2048 };   // nvn: each guest thread's time per host function and SVC, every 600 presents (hostfn.c, #132)
++extern unsigned rt_trace;                       // from NX2NAVI_TRACE=svc,host,ipc,fs,gfx,perf,sched,audio,present,counters,nvn (or all)
  // prof_win.c: NX2NAVI_PROFILE=<path> sampling profiler; NX2NAVI_TRACE=perf frame timing (waits of the render thread)
  // PERF_TEX: texture uploads on the render thread (deswizzle, decode, staging), PERF_ASTC included
-@@ -118,6 +119,8 @@ const char *hostfn_name(uint64_t addr);                    // name registered at
+ enum { PERF_PACE, PERF_FENCE, PERF_DRAIN, PERF_PIPE, PERF_XLATE, PERF_TEX, PERF_ASTC, PERF_N };
+@@ -173,6 +174,8 @@ const char *hostfn_name(uint64_t addr);                    // name registered at
  void hostfn_seal(void);                                    // build the dispatch table (rt_dispatch_init over every
                                                             // linked module); idempotent; registration ends here
  uint64_t hostfn_calls(void);                               // host-function calls so far, all threads
@@ -39,7 +41,7 @@ index c34b55e..ea4cc7a 100644
  void hostfn_report(void);                                  // call count per host function to stderr, busiest first
  int hostfn_table_size(int observers);                      // linked HOST_OVERRIDE (0) / HOST_OBSERVER (1) entries
  const char *hostfn_table_name(int observers, int i);       // symbol of linked entry i, NULL past the end
-@@ -237,6 +240,7 @@ void kern_signal_system_event(uint64_t ev);                // any thread
+@@ -327,6 +330,7 @@ void kern_signal_system_event(uint64_t ev);                // any thread
  void kern_clear_system_event(uint64_t ev);                 // any thread; a bound, live event only
  int kern_svc(Cpu *c, uint32_t imm);                        // thread/sync SVCs; 1 if handled
  uint64_t kern_now_ns(void);
@@ -255,11 +257,11 @@ index d5ba2b2..c649e3b 100644
      if (__builtin_expect(!n && (rt_trace & RT_TRACE_HOSTCALL), 0)) {
          char lr[96];
 diff --git a/runtime/kernel.c b/runtime/kernel.c
-index 8c4d5a6..f834ea4 100644
+index 990813d..31701e7 100644
 --- a/runtime/kernel.c
 +++ b/runtime/kernel.c
-@@ -1053,6 +1053,8 @@ static uint32_t block(RtThread *t, int kind, int64_t ns) {
-     return r;
+@@ -998,6 +998,8 @@ static void wait_watch(void *arg) {
+     rt_log("kernel: %d long waits logged: no more", lines);
  }
  
 +uint32_t kern_cur_handle(void) { return tcur ? tcur->handle : 0; }
@@ -268,13 +270,13 @@ index 8c4d5a6..f834ea4 100644
      RtThread *t = tcur;
      if (!t || t->cur_core < 0) return 0;
 diff --git a/runtime/main.c b/runtime/main.c
-index fd52f9d..a1b3642 100644
+index 4d18970..635bc4c 100644
 --- a/runtime/main.c
 +++ b/runtime/main.c
-@@ -136,13 +136,13 @@ static void parse_trace(void) {
+@@ -175,13 +175,13 @@ static void parse_trace(void) {
      static const struct { const char *name; unsigned bit; } names[] = {
          {"svc", RT_TRACE_SVC}, {"host", RT_TRACE_HOSTCALL}, {"ipc", RT_TRACE_IPC}, {"fs", RT_TRACE_FS},
-         {"gfx", RT_TRACE_GFX}, {"perf", RT_TRACE_PERF}, {"tex", RT_TRACE_TEX}, {"sched", RT_TRACE_SCHED}, {"audio", RT_TRACE_AUDIO},
+         {"gfx", RT_TRACE_GFX}, {"perf", RT_TRACE_PERF}, {"sched", RT_TRACE_SCHED}, {"audio", RT_TRACE_AUDIO},
 -        {"present", RT_TRACE_PRESENT}, {"counters", RT_TRACE_COUNTERS}, {"all", ~0u}};
 +        {"present", RT_TRACE_PRESENT}, {"counters", RT_TRACE_COUNTERS}, {"nvn", RT_TRACE_NVN}, {"all", ~0u}};
      for (const char *p = e; *p;) {
@@ -283,15 +285,15 @@ index fd52f9d..a1b3642 100644
          for (unsigned i = 0; i < sizeof names / sizeof *names; i++)
              if (strlen(names[i].name) == n && !strncmp(p, names[i].name, n)) rt_trace |= names[i].bit, known = 1;
 -        if (!known && n) rt_log("NX2NAVI_TRACE: unknown item '%.*s' (svc, host, ipc, fs, gfx, perf, sched, audio, present, counters, all)", (int)n, p);
-+        if (!known && n) rt_log("NX2NAVI_TRACE: unknown item '%.*s' (svc, host, ipc, fs, gfx, perf, sched, audio, present, counters, tex, nvn, all)", (int)n, p);
++        if (!known && n) rt_log("NX2NAVI_TRACE: unknown item '%.*s' (svc, host, ipc, fs, gfx, perf, sched, audio, present, counters, nvn, all)", (int)n, p);
          p += n + (p[n] == ',');
      }
  }
 diff --git a/runtime/svc.c b/runtime/svc.c
-index 386b995..ca5e422 100644
+index 7ce3955..283ac8b 100644
 --- a/runtime/svc.c
 +++ b/runtime/svc.c
-@@ -135,8 +135,19 @@ static void get_info(Cpu *c, uint64_t pc) {
+@@ -136,8 +136,19 @@ static void get_info(Cpu *c, uint64_t pc) {
  }
  
  static void svc_body(Cpu *c, uint32_t imm, uint64_t pc);

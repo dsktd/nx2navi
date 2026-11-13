@@ -1,4 +1,4 @@
-From e4bc0f51a5620cc1cb94f17caf10d3ad304a241a Mon Sep 17 00:00:00 2001
+From 8b2dbc21335a05537d7a02915fac6e10b0e109d4 Mon Sep 17 00:00:00 2001
 From: desocketed <desocketed@users.noreply.github.com>
 Date: Mon, 9 Nov 2026 17:15:21 -0500
 Subject: [PATCH] vk_device: under a RenderDoc capture (NX2NAVI_RDOC)
@@ -12,10 +12,10 @@ extension is neither required nor enabled. Inert without NX2NAVI_RDOC.
  1 file changed, 8 insertions(+), 2 deletions(-)
 
 diff --git a/runtime/vk_device.c b/runtime/vk_device.c
-index 83bed0d..50348bf 100644
+index 6ad94c8..867aea2 100644
 --- a/runtime/vk_device.c
 +++ b/runtime/vk_device.c
-@@ -113,6 +113,11 @@ static const char *const k_required_ext[] = {
+@@ -213,6 +213,11 @@ static const char *const k_required_ext[] = {
      VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME, VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME,
      VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME};
  
@@ -27,7 +27,7 @@ index 83bed0d..50348bf 100644
  // Name of the first missing required extension, or NULL.
  static const char *missing_required(VkPhysicalDevice pd) {
      uint32_t n = 0;
-@@ -121,7 +126,7 @@ static const char *missing_required(VkPhysicalDevice pd) {
+@@ -221,7 +226,7 @@ static const char *missing_required(VkPhysicalDevice pd) {
      vkEnumerateDeviceExtensionProperties(pd, NULL, &n, e);
      const char *miss = NULL;
      for (size_t i = 0; i < sizeof k_required_ext / sizeof *k_required_ext && !miss; i++)
@@ -36,7 +36,7 @@ index 83bed0d..50348bf 100644
      free(e);
      return miss;
  }
-@@ -242,7 +247,8 @@ static int create_device(void) {
+@@ -405,7 +410,8 @@ static int create_device(void) {
      vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, ep);
      const char *ext[64];
      uint32_t n_ext = 0;

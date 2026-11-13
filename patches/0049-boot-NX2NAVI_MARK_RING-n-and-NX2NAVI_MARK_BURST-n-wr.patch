@@ -1,4 +1,4 @@
-From 7abe4e71e99945fe771a522a60321ec9900bd682 Mon Sep 17 00:00:00 2001
+From da8e62fb63ca6550dbf2249998420ef1b354ddf0 Mon Sep 17 00:00:00 2001
 From: desocketed <desocketed@users.noreply.github.com>
 Date: Tue, 10 Nov 2026 15:44:32 -0500
 Subject: [PATCH] boot: NX2NAVI_MARK_RING=<n> and NX2NAVI_MARK_BURST=<n> write
@@ -7,15 +7,15 @@ Subject: [PATCH] boot: NX2NAVI_MARK_RING=<n> and NX2NAVI_MARK_BURST=<n> write
 
 ---
  runtime/boot.c   | 93 +++++++++++++++++++++++++++++++++++-------------
- runtime/cfg.c    |  2 +-
+ runtime/cfg.c    |  1 +
  runtime/flight.h |  2 +-
- 3 files changed, 71 insertions(+), 26 deletions(-)
+ 3 files changed, 71 insertions(+), 25 deletions(-)
 
 diff --git a/runtime/boot.c b/runtime/boot.c
-index dd95bcb..0ed026b 100644
+index 253b91e..451c77e 100644
 --- a/runtime/boot.c
 +++ b/runtime/boot.c
-@@ -336,27 +336,67 @@ static void series_shot(const tex_t *t, const int crop[4], uint64_t n) {
+@@ -343,27 +343,67 @@ static void series_shot(const tex_t *t, const int crop[4], uint64_t n) {
  // counted by the back end only.
  // Mark this moment: F9, the gamepad chord (input.c, NX2NAVI_MARK_CHORD, default L3+R3 held 0.5 s) or a file mark.req
  // beside the shader cache folder (any tool: `touch build/v111/mark.req`). A mark logs "mark N at present P", saves this
@@ -92,7 +92,7 @@ index dd95bcb..0ed026b 100644
  static void mark_poll(uint64_t n) {
      static int init, dump_req, marks;
      static char mark_req[PLAT_PATH_MAX], dump_path[PLAT_PATH_MAX];
-@@ -365,8 +405,13 @@ static void mark_poll(uint64_t n) {
+@@ -372,8 +412,13 @@ static void mark_poll(uint64_t n) {
          if (!gfx_shader_beside_cache("mark.req", mark_req, sizeof mark_req)) mark_req[0] = 0;
          dump_req = cfg_get("NX2NAVI_DUMP_REQ") && atoi(cfg_get("NX2NAVI_DUMP_REQ")) == 1 &&
                     gfx_shader_beside_cache("dump.req", dump_path, sizeof dump_path);
@@ -108,7 +108,7 @@ index dd95bcb..0ed026b 100644
              mark_ring_on = 1;
          }
      }
-@@ -379,21 +424,21 @@ static void mark_poll(uint64_t n) {
+@@ -386,21 +431,21 @@ static void mark_poll(uint64_t n) {
          FILE *f = fopen(dump_path, "w");
          if (f) fclose(f);
      }
@@ -144,23 +144,22 @@ index dd95bcb..0ed026b 100644
  }
  
 diff --git a/runtime/cfg.c b/runtime/cfg.c
-index e373b59..70a4e58 100644
+index 5a65db4..4a0bac7 100644
 --- a/runtime/cfg.c
 +++ b/runtime/cfg.c
-@@ -45,7 +45,7 @@ static const char *const known[] = {
-     "FLIGHT_SPIKE_MS", "FLIGHT_THUMBS", "FLUSH_SPAN", "FOV", "FOV_PATCH", "FG_HUDLESS_SHOW", "FPS60", "FPS_LIMIT", "FRAMEGEN", "FREEZE_IDLE", "FREE_CORES",
-     "FULLSCREEN", "FXAA", "GAME_ASPECT", "GAME_RES", "GPA", "GPA_EMPTY", "GPA_TWIN", "GPL", "GPL_DRAW_BUILD", "GPU", "GPU_INDEX", "GPU_NAME", "HDR", "HDR_GAME_NITS", "HDR_HUE",
-     "HDR_PEAK_NITS", "HDR_UI_NITS", "HIGHFPS_FIX", "INPUT", "INPUT_RECORD", "INPUT_SCRIPT", "LANG", "LIB_PREBUILD",
--    "LIB_PREBUILD_KEEP", "LIB_PREBUILD_THREADS", "LOCALE", "LOD_GUARD", "LSTICK_DEADZONE", "MARK_CHORD", "MARK_HOLD_MS", "MARK_RING", "MEMORY", "MENU_LANG", "MENU_SOUND_VOLUME", "MENU_TEST",
-+    "LIB_PREBUILD_KEEP", "LIB_PREBUILD_THREADS", "LOCALE", "LOD_GUARD", "LSTICK_DEADZONE", "MARK_BURST", "MARK_CHORD", "MARK_HOLD_MS", "MARK_RING", "MEMORY", "MENU_LANG", "MENU_SOUND_VOLUME", "MENU_TEST",
-     "MENU_CURSOR", "MENU_CURSOR_LOG", "MENU_TEST_DIR", "MENU_TEST_SET", "MINIMAL_LAYOUT", "MIRROR_GAP", "MODS_DIR", "MODS_DISABLED", "MODS_ORDER", "MODS_REBUILD", "MOTION", "MOTION_PAD", "MOUSE_MODE", "MOUSE_DIRECT_PATCH", "MOUSE_SENS", "MOVIE_HOST", "MOVIE_PACE",
-     "MVOBJ_ALL", "MVOBJ_BANKS", "MVOBJ_EQUAL", "MVOBJ_EXACT", "MVOBJ_EXEC", "MVOBJ_NOC4", "MVOBJ_ONLY", "MVOBJ_TIMES", "MVPREV_CHECK", "MVPREV_GROW", "MVPREV_SKIP", "MVPREV_TRUST", "MV_CHECK",
-     "MV_SURVEY",
+@@ -94,6 +94,7 @@ static const char *const known[] = {
+     "MOTION_PAD",
+     "AO",
+     "AO_TRACE",
++    "MARK_BURST",
+ };
+ 
+ // The nx2navi.ini section a key cfg_set may write goes to when the file lacks it (nx2navi.ini.example's sections).
 diff --git a/runtime/flight.h b/runtime/flight.h
-index 2c6a9c7..bb17a8c 100644
+index 41bf2f1..34c5d69 100644
 --- a/runtime/flight.h
 +++ b/runtime/flight.h
-@@ -23,5 +23,5 @@ void vk_thumbs_frame(uint64_t frame);    // the present thread names the frame o
+@@ -53,5 +53,5 @@ void vk_thumbs_frame(uint64_t frame);    // the present thread names the frame o
  int vk_thumbs_read(uint64_t frame, uint8_t *rgba);
  uint64_t vk_thumbs_latest(void);   // the newest frame the ring holds complete, 0 for none
  

@@ -1,4 +1,4 @@
-From 9cd45a1e4e587fca520eadba0bc54d8bdc8979b8 Mon Sep 17 00:00:00 2001
+From 2de364341476065d20124acbbebf281817a39c87 Mon Sep 17 00:00:00 2001
 From: desocketed <desocketed@users.noreply.github.com>
 Date: Tue, 10 Nov 2026 18:20:29 -0500
 Subject: [PATCH] input, boot: debug keys F5 pick, Shift+F5 crosshair, F6 shot,
@@ -9,14 +9,14 @@ Subject: [PATCH] input, boot: debug keys F5 pick, Shift+F5 crosshair, F6 shot,
  runtime/boot.c      | 18 ++++++++++++++++++
  runtime/input.h     |  6 ++++++
  runtime/input_sdl.c | 10 +++++++++-
- runtime/input_win.c |  2 ++
- 4 files changed, 35 insertions(+), 1 deletion(-)
+ runtime/input_win.c |  1 +
+ 4 files changed, 34 insertions(+), 1 deletion(-)
 
 diff --git a/runtime/boot.c b/runtime/boot.c
-index e8793bf..bda6271 100644
+index f36c3fd..6f52d2f 100644
 --- a/runtime/boot.c
 +++ b/runtime/boot.c
-@@ -502,6 +502,22 @@ static void watch_req_poll(uint64_t n) {
+@@ -509,6 +509,22 @@ static void watch_req_poll(uint64_t n) {
      }
  }
  
@@ -39,7 +39,7 @@ index e8793bf..bda6271 100644
  static void mark_poll(uint64_t n) {
      static int init, dump_req, marks;
      static char mark_req[PLAT_PATH_MAX], dump_path[PLAT_PATH_MAX];
-@@ -532,6 +548,8 @@ static void mark_poll(uint64_t n) {
+@@ -539,6 +555,8 @@ static void mark_poll(uint64_t n) {
      }
      watch_req_poll(n);
      plat_write_trace_rearm();
@@ -49,10 +49,10 @@ index e8793bf..bda6271 100644
      if (!why && mark_req[0] && n % 4 == 0 && plat_file_exists(mark_req)) why = "mark.req", plat_file_delete(mark_req);
      if (!why) return;
 diff --git a/runtime/input.h b/runtime/input.h
-index 82fbcf1..47f3166 100644
+index 5ba0348..dd05e06 100644
 --- a/runtime/input.h
 +++ b/runtime/input.h
-@@ -66,6 +66,12 @@ int input_flight_key(void);
+@@ -77,6 +77,12 @@ int input_dump_key(void);
  // Mark this moment (boot.c rt_frame_presented): input_mark_key, F9 pressed since the last call (once per press);
  // input_mark_take, the gamepad chord NX2NAVI_MARK_CHORD held NX2NAVI_MARK_HOLD_MS since the last call (once per hold).
  int input_mark_key(void);
@@ -66,29 +66,29 @@ index 82fbcf1..47f3166 100644
  
  // Mouse camera and cursor (input_win.c, Win32 window thread). The window procedure calls input_window_msg first for raw
 diff --git a/runtime/input_sdl.c b/runtime/input_sdl.c
-index a0e067e..1639dcf 100644
+index 5207916..da90a12 100644
 --- a/runtime/input_sdl.c
 +++ b/runtime/input_sdl.c
-@@ -19,7 +19,7 @@
+@@ -20,7 +20,7 @@
  
  static SDL_Window *win;
  static volatile uint8_t key_held[KEY_COUNT];
--static volatile int32_t esc_held, f8_held, f9_mark, focused;
-+static volatile int32_t esc_held, f8_held, f9_mark, focused, dbg_keys;
+-static volatile int32_t esc_held, f8_held, insert_held, f9_mark, focused;
++static volatile int32_t esc_held, f8_held, insert_held, f9_mark, focused, dbg_keys;
  static volatile int32_t mouse_dx, mouse_dy;   // relative motion since the last ikb_mouse_take, whole counts
  static float rem_x, rem_y;                    // window thread: the fractions SDL reported beyond them
  static volatile int32_t captured;             // relative mouse mode is on
-@@ -117,6 +117,7 @@ uint32_t input_key_char(int key) {
- int input_flight_key(void) { return focused && f8_held; }
- 
- int input_mark_key(void) { return plat_xchg32(&f9_mark, 0); }
+@@ -120,6 +120,7 @@ int input_flight_key(void) { return focused && f8_held; }
+ int input_dump_key(void) { return focused && insert_held; }
+ // F9 marks while the debug menu, which F9 opens, is off (menu_debug_enabled)
+ int input_mark_key(void) { return plat_xchg32(&f9_mark, 0) && !menu_debug_enabled(); }
 +int input_debug_keys(void) { return dbg_keys ? plat_xchg32(&dbg_keys, 0) : 0; }
  
  // ---- the cursor (window thread)
  static void cursor_apply(void) {
-@@ -179,6 +180,13 @@ void input_sdl_event(const SDL_Event *e) {
-         }
+@@ -183,6 +184,13 @@ void input_sdl_event(const SDL_Event *e) {
          if (e->key.scancode == SDL_SCANCODE_F8) plat_xchg32(&f8_held, down);
+         if (e->key.scancode == SDL_SCANCODE_INSERT) plat_xchg32(&insert_held, down);
          if (e->key.scancode == SDL_SCANCODE_F9 && down && !e->key.repeat) plat_xchg32(&f9_mark, 1);   // mark this moment (boot.c)
 +        if (down && !e->key.repeat) {   // the debug keys (input.h input_debug_keys)
 +            int sh = (e->key.mod & SDL_KMOD_SHIFT) != 0, bit = 0;
@@ -101,18 +101,17 @@ index a0e067e..1639dcf 100644
          if (k) key_held[k] = (uint8_t)down;
          break;
 diff --git a/runtime/input_win.c b/runtime/input_win.c
-index cbed869..1bee412 100644
+index ff622d3..7c46ac6 100644
 --- a/runtime/input_win.c
 +++ b/runtime/input_win.c
-@@ -193,6 +193,8 @@ int input_flight_key(void) {
-     return w && w == GetForegroundWindow() && key_down(VK_F8);
+@@ -196,6 +196,7 @@ int input_flight_key(void) {
  }
  
+ int input_dump_key(void) { return key_down(VK_INSERT); }
 +int input_debug_keys(void) { return 0; }   // Linux only for now
-+
+ 
  int input_mark_key(void) {   // F9's press, once
      static int was;
-     HWND w = gfx_window_handle();
 -- 
 2.56.0
 

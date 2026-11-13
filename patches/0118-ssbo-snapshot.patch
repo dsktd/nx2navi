@@ -1,4 +1,4 @@
-From a01af7b6227cb0a2e76d939eb69a8eb4818871dc Mon Sep 17 00:00:00 2001
+From 047ca59ae069e5acdaaf791b88ffc0de3a951d89 Mon Sep 17 00:00:00 2001
 From: desocketed <desocketed@users.noreply.github.com>
 Date: Thu, 12 Nov 2026 22:49:33 -0500
 Subject: [PATCH] NX2NAVI_SSBO_SNAPSHOT: storage buffers the game binds are
@@ -14,7 +14,7 @@ storage buffers bound through nvnCommandBufferBindStorageBuffer up to 256 KiB fr
  3 files changed, 30 insertions(+), 1 deletion(-)
 
 diff --git a/runtime/vk.h b/runtime/vk.h
-index 6fd3aaa..644c92a 100644
+index 4df4ed4..3aacfce 100644
 --- a/runtime/vk.h
 +++ b/runtime/vk.h
 @@ -345,6 +345,7 @@ void vk_usnap_begin(const uint64_t *handles, int n, uint64_t fence);
@@ -26,7 +26,7 @@ index 6fd3aaa..644c92a 100644
  // replay. vk_mem_hold_bytes: their total size, 0 when off; vk_mem_hold_take copies them at the submit call;
  // vk_mem_hold_begin, the replay at the submission's start, queues the words that changed for its first prologue.
 diff --git a/runtime/vk_exec_draw.c b/runtime/vk_exec_draw.c
-index c9a3ee7..186788e 100644
+index fe49819..2488d30 100644
 --- a/runtime/vk_exec_draw.c
 +++ b/runtime/vk_exec_draw.c
 @@ -1572,6 +1572,12 @@ static VkDescriptorBufferInfo ssbo_info(VkExec *ex, int st, const GfxShaderRes *

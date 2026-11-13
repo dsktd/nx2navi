@@ -1,4 +1,4 @@
-From d9e8adfe6d5f1506b79482bd8e7ccb93dc0d0c6c Mon Sep 17 00:00:00 2001
+From 15d14cea01c3be45d2ead2c9ee391297bae07c60 Mon Sep 17 00:00:00 2001
 From: desocketed <desocketed@users.noreply.github.com>
 Date: Thu, 12 Nov 2026 22:10:03 -0500
 Subject: [PATCH] NX2NAVI_STATE_PUB / NX2NAVI_STATE_FOLLOW: a game publishes
@@ -13,7 +13,7 @@ Subject: [PATCH] NX2NAVI_STATE_PUB / NX2NAVI_STATE_FOLLOW: a game publishes
  3 files changed, 504 insertions(+), 16 deletions(-)
 
 diff --git a/runtime/boot.c b/runtime/boot.c
-index 61dcf10..ec727d0 100644
+index b6d9b7a..8cefec0 100644
 --- a/runtime/boot.c
 +++ b/runtime/boot.c
 @@ -12,6 +12,9 @@
@@ -121,7 +121,7 @@ index 61dcf10..ec727d0 100644
      int keys = input_debug_keys();
      if (keys) debug_keys(keys, n, dump_req ? dump_path : NULL);
 diff --git a/runtime/debug_tools.c b/runtime/debug_tools.c
-index 10e070a..b483095 100644
+index 1dd939f..5556234 100644
 --- a/runtime/debug_tools.c
 +++ b/runtime/debug_tools.c
 @@ -77,6 +77,7 @@ int dbg_player_pos(float xyz[3]) {
@@ -161,7 +161,7 @@ index 10e070a..b483095 100644
              list[count++] = pl;
          }
      }
-@@ -810,6 +821,10 @@ static struct {
+@@ -812,6 +823,10 @@ static struct {
      uint64_t last_ns, updates;
      float ground[9], ground_tan, ground_aspect;   // dbg_freecam_ground's, under ground_lock
      volatile uint64_t ground_ns;        // and when; 0 none
@@ -172,7 +172,7 @@ index 10e070a..b483095 100644
  } fc = {.sticks = 1, .speed = 8.0f, .reach = 5.0};
  static PlatMutex ground_lock = PLAT_MUTEX_INIT;
  
-@@ -892,7 +907,14 @@ static int scene_camera(uint64_t state) {
+@@ -894,7 +909,14 @@ static int scene_camera(uint64_t state) {
  // the game version's patches.h, which has the page's address.
  void dbg_freecam_host(Cpu *c) {
      fc.updates++;
@@ -188,7 +188,7 @@ index 10e070a..b483095 100644
          if (fc.capture) {   // start where the game's camera is, looking where it looks
              double d[3] = {reg_d(c, 3) - reg_d(c, 0), reg_d(c, 4) - reg_d(c, 1), reg_d(c, 5) - reg_d(c, 2)};
              double len = sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
-@@ -921,7 +943,17 @@ void dbg_freecam_set(int on, int sticks, float speed) {
+@@ -923,7 +945,17 @@ void dbg_freecam_set(int on, int sticks, float speed) {
      if (on && !fc.on) fc.capture = 1;
      if ((on != 0) != fc.on) rt_log("debug: free camera %s", on ? "on" : "off");   // what a tester changed, for the log
      fc.on = on != 0;
@@ -207,7 +207,7 @@ index 10e070a..b483095 100644
  }
  
  void dbg_freecam_reset(void) { fc.capture = 1; }   // back to the game's view, and free from there
-@@ -1085,13 +1117,56 @@ static void hex_line(FILE *f, const char *what, uint64_t a, size_t n) {
+@@ -1087,13 +1119,56 @@ static void hex_line(FILE *f, const char *what, uint64_t a, size_t n) {
  // game data's layout, found 2026-11-12 (1.1.1; kinds = the save's sections, each entry begins with its kind's vtable):
  // bool 0x18 a entry, value byte +0x16; int 2, float 4, uint 20: 0x28, value +0x1c (+0x20 holds the same at a load);
  // enum 6: 0x38, the value's name hash +0x1c; int/float/uint arrays 3/5/21: 0x40, enum arrays 7: 0x50, the element
@@ -266,7 +266,7 @@ index 10e070a..b483095 100644
  static int gd_write(FILE *f) {
      uint64_t m = gmd();
      int lines = 0;
-@@ -1131,7 +1206,7 @@ static int gd_write(FILE *f) {
+@@ -1133,7 +1208,7 @@ static int gd_write(FILE *f) {
              }
          free(pairs), free(raw);
      }
@@ -275,7 +275,7 @@ index 10e070a..b483095 100644
  }
  
  // Link's facing: the actor's rotation matrix, 3x3 floats row by row at +0x328 (a second copy at +0x60c), a turn about
-@@ -1156,7 +1231,9 @@ int dbg_mark_recipe(const char *path, const char *mark) {
+@@ -1158,7 +1233,9 @@ int dbg_mark_recipe(const char *path, const char *mark) {
      if (!has_area || !has_pos) return 0;   // no area or no Link (title, menus before a save): nothing to recreate
      FILE *f = fopen(path, "w");
      if (!f) return 0;
@@ -286,7 +286,7 @@ index 10e070a..b483095 100644
      fprintf(f, "# warp: scene=%s pos=%.4f,%.4f,%.4f", area, p[0], p[1], p[2]);
      if (has_yaw) fprintf(f, " face=%.3f", yaw * 57.29578f);
      if (has_age) fprintf(f, " age=%s", young & 1 ? "child" : "adult");
-@@ -1174,18 +1251,339 @@ int dbg_mark_recipe(const char *path, const char *mark) {
+@@ -1176,18 +1253,339 @@ int dbg_mark_recipe(const char *path, const char *mark) {
      if (fc.on)   // the free camera where it stands: on without sticks, then placed
          fprintf(f, "1:freecam 1 0 %.1f\n2:camset %.4f %.4f %.4f %.4f %.4f\n", fc.speed, fc.pos[0], fc.pos[1], fc.pos[2],
                  fc.yaw, fc.pitch);
@@ -629,7 +629,7 @@ index 10e070a..b483095 100644
  // NX2NAVI_MARK_RECIPE=2: the game data's sections and the player actor raw, for finding their layout
  static void facing_scan(FILE *f, float y);
  void dbg_mark_probe(FILE *f) {
-@@ -1289,11 +1687,13 @@ static void test_script(uint64_t tick) {
+@@ -1291,11 +1689,13 @@ static void test_script(uint64_t tick) {
              int cam_on = 0, sticks = 1;
              float speed = 8;
              if (sscanf(colon + 9, "%d %d %f", &cam_on, &sticks, &speed) >= 1) dbg_freecam_set(cam_on, sticks, speed);
@@ -646,7 +646,7 @@ index 10e070a..b483095 100644
          } else if (!strncmp(colon + 1, "camreset", 8)) {
              dbg_freecam_reset();
          } else if (!strncmp(colon + 1, "camgo ", 6)) {      // camgo <dx> <dy> <dz> <yaw> <pitch>: the free camera moved by hand
-@@ -1409,11 +1809,12 @@ static void test_script(uint64_t tick) {
+@@ -1411,11 +1811,12 @@ static void test_script(uint64_t tick) {
  
  // The game's thread, at its pad read.
  void dbg_tick(Cpu *c) {
@@ -662,10 +662,10 @@ index 10e070a..b483095 100644
      int n;
      plat_mutex_lock(&q_lock);
 diff --git a/runtime/debug_tools.h b/runtime/debug_tools.h
-index 5f9a498..5265363 100644
+index fb9032e..8e68250 100644
 --- a/runtime/debug_tools.h
 +++ b/runtime/debug_tools.h
-@@ -72,9 +72,13 @@ int dbg_frozen_count(void);
+@@ -73,9 +73,13 @@ int dbg_frozen_count(void);
  void dbg_unfreeze_all(void);
  // A mark's recipe (boot.c mark_poll): dbg_mark_take answers 1 once after the test script's "mark"
  int dbg_mark_take(void);

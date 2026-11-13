@@ -1,4 +1,4 @@
-From efe944f916571c25faa429fe7cfe315a177bfeb2 Mon Sep 17 00:00:00 2001
+From 88bdf2fe1f569afd52564cd3e60a6e9154b492fb Mon Sep 17 00:00:00 2001
 From: desocketed <desocketed@users.noreply.github.com>
 Date: Thu, 12 Nov 2026 13:01:21 -0500
 Subject: [PATCH] debug_tools: NX2NAVI_MARK_RECIPE (default 1; 0 off, 2 also a
@@ -10,12 +10,12 @@ Subject: [PATCH] debug_tools: NX2NAVI_MARK_RECIPE (default 1; 0 off, 2 also a
 
 ---
  runtime/boot.c        |  34 +++++++++-
- runtime/debug_tools.c | 148 +++++++++++++++++++++++++++++++++++++++++-
+ runtime/debug_tools.c | 147 +++++++++++++++++++++++++++++++++++++++++-
  runtime/debug_tools.h |   9 ++-
- 3 files changed, 188 insertions(+), 3 deletions(-)
+ 3 files changed, 187 insertions(+), 3 deletions(-)
 
 diff --git a/runtime/boot.c b/runtime/boot.c
-index c4f9277..a62b901 100644
+index 2b00a3d..b6d9b7a 100644
 --- a/runtime/boot.c
 +++ b/runtime/boot.c
 @@ -16,6 +16,7 @@
@@ -23,8 +23,8 @@ index c4f9277..a62b901 100644
  
  #include "cfg.h"
 +#include "debug_tools.h"
- #include "cheats.h"
  #include "coop.h"
+ #include "cheats.h"
  #include "fs.h"
 @@ -256,6 +257,7 @@ static void save_shot(const tex_t *t, const char *path) {
  // pictures show what a player sees.
@@ -92,10 +92,10 @@ index c4f9277..a62b901 100644
          FILE *f = fopen(dump_path, "w");
          if (f) fclose(f);
 diff --git a/runtime/debug_tools.c b/runtime/debug_tools.c
-index 725911b..c8d8d91 100644
+index cd4b660..6e9dcc7 100644
 --- a/runtime/debug_tools.c
 +++ b/runtime/debug_tools.c
-@@ -990,10 +990,149 @@ void dbg_pad(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *
+@@ -1029,11 +1029,149 @@ void dbg_pad(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *
      *buttons &= ~(zl | zr | l | r);
  }
  
@@ -240,13 +240,13 @@ index 725911b..c8d8d91 100644
  // ---- NX2NAVI_DBG_TEST="<tick>:flag <hash hex> <0|1>;<tick>:speed <factor>;<tick>:find <value> <size>;
  // <tick>:next <mode> <value>;<tick>:setfirst <value>;<tick>:holdfirst <value>;<tick>:show [<hash hex>];
  // <tick>:warp <area> [<start position>];<tick>:event <name>;<tick>:text <game data text's name>;
--// <tick>:freecam <0|1> <sticks 0|1> <speed>;<tick>:camgo <dx> <dy> <dz> [<yaw> <pitch>];<tick>:camreset;<tick>:campos":
-+// <tick>:freecam <0|1> <sticks 0|1> <speed>;<tick>:camgo <dx> <dy> <dz> [<yaw> <pitch>];<tick>:camreset;<tick>:campos;
-+// <tick>:camset <x> <y> <z> <yaw> <pitch>;<tick>:mark":
+ // <tick>:freecam <0|1> <sticks 0|1> <speed>;<tick>:camavoid <0|1>;<tick>:camgo <dx> <dy> <dz> [<yaw> <pitch>];
+-// <tick>:camreset;<tick>:campos":
++// <tick>:camreset;<tick>:campos;<tick>:camset <x> <y> <z> <yaw> <pitch>;<tick>:mark":
  // the menu's requests without the menu, for test runs. Ticks count the game's pad reads from the player's first appearance.
  static void test_script(uint64_t tick) {
      static char buf[2048];
-@@ -1024,6 +1163,11 @@ static void test_script(uint64_t tick) {
+@@ -1066,6 +1204,11 @@ static void test_script(uint64_t tick) {
              int cam_on = 0, sticks = 1;
              float speed = 8;
              if (sscanf(colon + 9, "%d %d %f", &cam_on, &sticks, &speed) >= 1) dbg_freecam_set(cam_on, sticks, speed);
@@ -258,7 +258,7 @@ index 725911b..c8d8d91 100644
          } else if (!strncmp(colon + 1, "camreset", 8)) {
              dbg_freecam_reset();
          } else if (!strncmp(colon + 1, "camgo ", 6)) {      // camgo <dx> <dy> <dz> <yaw> <pitch>: the free camera moved by hand
-@@ -1103,6 +1247,8 @@ static void test_script(uint64_t tick) {
+@@ -1145,6 +1288,8 @@ static void test_script(uint64_t tick) {
              rt_log("debug: tick %llu: %d places hold %llu as %u bytes%s, searched in %.0f ms; first %#llx", (unsigned long long)tick,
                     n, value, size, over ? " (and more)" : "", (double)(plat_now_ns() - t0) / 1e6,
                     (unsigned long long)dbg_search_addr(0));
@@ -268,7 +268,7 @@ index 725911b..c8d8d91 100644
              float p[3] = {0, 0, 0}, sp = dbg_speed_factor();
              int n = dbg_flags_refresh(), set = 0, found = 0;
 diff --git a/runtime/debug_tools.h b/runtime/debug_tools.h
-index 2128618..b661d56 100644
+index 06e11ca..fb9032e 100644
 --- a/runtime/debug_tools.h
 +++ b/runtime/debug_tools.h
 @@ -7,7 +7,9 @@
@@ -282,7 +282,7 @@ index 2128618..b661d56 100644
  #endif
  
  #ifdef __cplusplus
-@@ -64,6 +66,11 @@ int dbg_freeze(uint64_t addr, uint64_t value, int size, int on);   // written ev
+@@ -69,6 +71,11 @@ int dbg_freeze(uint64_t addr, uint64_t value, int size, int on);   // written ev
  int dbg_frozen(uint64_t addr);
  int dbg_frozen_count(void);
  void dbg_unfreeze_all(void);

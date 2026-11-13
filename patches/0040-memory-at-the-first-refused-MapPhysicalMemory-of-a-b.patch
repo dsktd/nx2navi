@@ -1,4 +1,4 @@
-From 8c7b76ed4bedbb3e7e778fc8203f2f2da499b580 Mon Sep 17 00:00:00 2001
+From ce16ef4bbeb2c7017629b51bc9ee153263d4addc Mon Sep 17 00:00:00 2001
 From: desocketed <desocketed@users.noreply.github.com>
 Date: Tue, 10 Nov 2026 01:27:39 -0500
 Subject: [PATCH] memory: at the first refused MapPhysicalMemory of a burst,
@@ -9,10 +9,10 @@ Subject: [PATCH] memory: at the first refused MapPhysicalMemory of a burst,
  1 file changed, 21 insertions(+), 1 deletion(-)
 
 diff --git a/runtime/memory.c b/runtime/memory.c
-index 9d2d17a..5eac4b2 100644
+index cc855ac..46e5255 100644
 --- a/runtime/memory.c
 +++ b/runtime/memory.c
-@@ -457,6 +457,8 @@ static uint32_t alias_map(int unmap, uint64_t a, uint64_t n) {
+@@ -1497,6 +1497,8 @@ static uint32_t alias_map(int unmap, uint64_t a, uint64_t n) {
      plat_mutex_lock(&lock);
      uint32_t r = R_OK;
      uint64_t high = 0, again_n = 0, again_freed = 0, again_ms = 0;
@@ -21,7 +21,7 @@ index 9d2d17a..5eac4b2 100644
      if (unmap) {
          for (unsigned i = 0; i < nstack_maps; i++)
              if (overlaps(a, n, stack_maps[i].src, stack_maps[i].size)) {
-@@ -473,7 +475,7 @@ static uint32_t alias_map(int unmap, uint64_t a, uint64_t n) {
+@@ -1513,7 +1515,7 @@ static uint32_t alias_map(int unmap, uint64_t a, uint64_t n) {
          for (uint64_t i = 0; i < count; i++) fresh += !alias_pages[first + i];
          if (fresh * PAGE + alias_bytes + heap_size + image_bytes() > L.pool + alias_extra) {
              r = R_LIMIT_REACHED;   // the SDK maps LimitReached to its recoverable out-of-memory result
@@ -30,7 +30,7 @@ index 9d2d17a..5eac4b2 100644
              goto out;
          }
          alias_runs(first, count, 0, 1);
-@@ -482,7 +484,25 @@ static uint32_t alias_map(int unmap, uint64_t a, uint64_t n) {
+@@ -1522,9 +1524,27 @@ static uint32_t alias_map(int unmap, uint64_t a, uint64_t n) {
          if (fresh && refused_n) again_n = refused_n, again_freed = refused_freed, again_ms = plat_now_ms() - refused_ms, refused_n = 0;
      }
  out:
@@ -46,7 +46,9 @@ index 9d2d17a..5eac4b2 100644
 +            i = j;
 +        }
 +    }
+     __atomic_store_n(&map_gen, map_gen + 1, __ATOMIC_RELEASE);
      plat_mutex_unlock(&lock);
+     perf_mark_end(PERF_M_GMEM, t0, n);
 +    if (census)
 +        rt_log("mem: alias census at a refusal: runs <64K %llu (%llu MiB), <256K %llu (%llu MiB), <1M %llu (%llu MiB), <4M %llu "
 +               "(%llu MiB), <16M %llu (%llu MiB), larger %llu (%llu MiB)", (unsigned long long)cn[0], (unsigned long long)(cb[0] >> 20),

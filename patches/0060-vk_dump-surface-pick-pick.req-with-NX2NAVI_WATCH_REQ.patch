@@ -1,4 +1,4 @@
-From 2fb3726aad95042f44d798fbb774a9533a98e9ab Mon Sep 17 00:00:00 2001
+From 729d07f8dcb67da16f6a00857009c3b8b91f761a Mon Sep 17 00:00:00 2001
 From: desocketed <desocketed@users.noreply.github.com>
 Date: Tue, 10 Nov 2026 18:14:10 -0500
 Subject: [PATCH] vk_dump: surface pick (pick.req with NX2NAVI_WATCH_REQ=1):
@@ -23,10 +23,10 @@ Subject: [PATCH] vk_dump: surface pick (pick.req with NX2NAVI_WATCH_REQ=1):
  12 files changed, 240 insertions(+), 12 deletions(-)
 
 diff --git a/runtime/boot.c b/runtime/boot.c
-index b1f9e5b..e8793bf 100644
+index 3f50fca..f36c3fd 100644
 --- a/runtime/boot.c
 +++ b/runtime/boot.c
-@@ -402,7 +402,8 @@ static int mark_knob(const char *name) {
+@@ -409,7 +409,8 @@ static int mark_knob(const char *name) {
  // NX2NAVI_WATCH_PC does at start; each new watch.req replaces the range, and one holding "off" disarms it. peek.req holds up to 4 lines <addr>:<size>:<presents> (hex, hex, decimal) and
  // logs the guest words of each range (at most 512 bytes) as floats and hex once per present for that many presents.
  // Pages that are not committed are left out. buf.req holds <addr>:<size>[:<frames>[:<pass>]] and starts a live GPU
@@ -36,7 +36,7 @@ index b1f9e5b..e8793bf 100644
  typedef struct { uint64_t a, n; int left; } Peek;
  static Peek peeks[4];
  
-@@ -431,12 +432,13 @@ static void peek_log(uint64_t n) {
+@@ -438,12 +439,13 @@ static void peek_log(uint64_t n) {
  
  static void watch_req_poll(uint64_t n) {
      static int init;
@@ -52,7 +52,7 @@ index b1f9e5b..e8793bf 100644
              wreq[0] = 0;
          else
              rt_log("watch-req: polling %s, %s and %s (NX2NAVI_WATCH_REQ)", wreq, preq, breq);
-@@ -464,6 +466,13 @@ static void watch_req_poll(uint64_t n) {
+@@ -471,6 +473,13 @@ static void watch_req_poll(uint64_t n) {
              plat_write_trace(a, len);
          }
      }
@@ -67,10 +67,10 @@ index b1f9e5b..e8793bf 100644
          plat_file_delete(breq);
          char t[128];
 diff --git a/runtime/gfx.h b/runtime/gfx.h
-index 733078a..83f7508 100644
+index e112d5b..46e9af0 100644
 --- a/runtime/gfx.h
 +++ b/runtime/gfx.h
-@@ -93,6 +93,7 @@ int gfx_shader_reload_start(void);                                     // NX2NAV
+@@ -110,6 +110,7 @@ int gfx_shader_reload_start(void);                                     // NX2NAV
  const GfxShader *gfx_shader_reload_next(uint32_t **spirv, uint64_t *words);
  void gfx_shader_set_spirv(const GfxShader *s, uint32_t *spirv, uint64_t words);
  void gfx_shader_name(const GfxShader *s, char out[17]);
@@ -79,10 +79,10 @@ index 733078a..83f7508 100644
  // A shader of the runtime's own (SPIR-V and a .res.json text as the translator writes them), outside the cache and
  // never freed; its key is the sha256 of both. NULL when the SPIR-V is malformed.
 diff --git a/runtime/gfx_shader.c b/runtime/gfx_shader.c
-index 8e81e39..18595bd 100644
+index 20a90ba..11482fe 100644
 --- a/runtime/gfx_shader.c
 +++ b/runtime/gfx_shader.c
-@@ -1929,6 +1929,12 @@ int gfx_shader_beside_cache(const char *name, char *out, size_t n) {
+@@ -2689,6 +2689,12 @@ int gfx_shader_beside_cache(const char *name, char *out, size_t n) {
      paths();
      return cache_dir[0] && snprintf(out, n, "%s/../%s", cache_dir, name) < (int)n;
  }
@@ -96,11 +96,11 @@ index 8e81e39..18595bd 100644
      char hex[65];
      key_hex(s->key, hex);
 diff --git a/runtime/ui/menu.cpp b/runtime/ui/menu.cpp
-index 1fa84b4..61d14c2 100644
+index e7dc2a0..08ee756 100644
 --- a/runtime/ui/menu.cpp
 +++ b/runtime/ui/menu.cpp
-@@ -1444,6 +1444,25 @@ static void perf_draw(const MenuTarget *t, float scale) {
-     dl->AddText(ImVec2(p.x + pad, p.y + pad), IM_COL32(255, 255, 255, 235), g_perf_text);
+@@ -2051,6 +2051,25 @@ static void perf_draw(const MenuTarget *t, float scale) {
+     dl->AddText(ImVec2(p.x + padx, p.y + pady), SKIN_TEXT, g_perf_text);
  }
  
 +// The surface pick's crosshair (#165, vk_dump.c vk_pick_*): a cross around the window's centre pixel, which stays clear
@@ -122,43 +122,43 @@ index 1fa84b4..61d14c2 100644
 +    }
 +}
 +
- extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const char **shot) {
+ static int overlay_frame(uint64_t frame, const MenuTarget *t, const char **shot) {
      *shot = NULL;
-     menu_art_start();      // the game's interface textures decode on a worker from the first present on
-@@ -1462,7 +1481,7 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
-             g_tab_request = 0;
+     if (t->phys && t->phys != g_gpu_vendor_of) {   // the GPU's vendor for the rows that depend on it (dlss_offered)
+@@ -2084,7 +2103,7 @@ static int overlay_frame(uint64_t frame, const MenuTarget *t, const char **shot)
+             if (g_debug.load()) debug_menu_tab(0);
              set_open(1);
              open = true;
--        } else if (!g_perf_mode) {
-+        } else if (!g_perf_mode && !g_crosshair.load(std::memory_order_relaxed)) {
+-        } else if (!g_perf_mode && !coop_draws) {
++        } else if (!g_perf_mode && !coop_draws && !g_crosshair.load(std::memory_order_relaxed)) {
              return 0;
          }
      }
-@@ -1516,6 +1535,7 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
-     ImGui::NewFrame();
-     if (open) layout_menu(t->width, t->height, scale);
+@@ -2151,6 +2170,7 @@ static int overlay_frame(uint64_t frame, const MenuTarget *t, const char **shot)
+     }
      perf_draw(t, scale);
+     if (coop_draws) coop_overlay_draw((float)t->width, (float)t->height, scale, open);
 +    crosshair_draw(t, scale);
      ImGui::Render();
      if (open) g_save_pending = opt_save_tick(0);
      g_cost_ns += plat_now_ns() - t0;
 diff --git a/runtime/ui/menu.h b/runtime/ui/menu.h
-index 82eeeba..025af60 100644
+index cbcf2f4..e78d678 100644
 --- a/runtime/ui/menu.h
 +++ b/runtime/ui/menu.h
 @@ -26,6 +26,7 @@ extern "C" {
  int menu_is_open(void);
- void menu_toggle(void);                   // F1 / Esc on the keyboard, Minus+Plus on the pad
+ void menu_toggle(void);                   // F1 / Esc on the keyboard, Minus+Plus on the pad; not before the game's first frame
  void menu_perf_cycle(void);               // F10: the performance overlay off, fps, full
 +int menu_crosshair_toggle(void);          // the surface pick's centre crosshair on or off (#165); returns the new state
  
  // ---- events from the window adapter, used only while the menu is open. key: an ImGuiKey; coordinates in pixels of the
  // window's client area, which is the swapchain image.
 diff --git a/runtime/vk.h b/runtime/vk.h
-index b501f4a..8e18a2f 100644
+index 5a57f40..3dc0f96 100644
 --- a/runtime/vk.h
 +++ b/runtime/vk.h
-@@ -482,6 +482,7 @@ int vk_sampler_params(int id, samp_par *out);       // parameters of a sampler s
+@@ -769,6 +769,7 @@ int vk_sampler_params(int id, samp_par *out);       // parameters of a sampler s
  void rt_write_png(const char *path, const uint8_t *rgba, uint32_t w, uint32_t h);
  // buf.req (boot.c polls it, NX2NAVI_WATCH_REQ=1): a live GPU buffer capture, vk_dump.c; present: names the file
  void vk_bufcap_request(const char *spec, uint64_t present);
@@ -167,23 +167,23 @@ index b501f4a..8e18a2f 100644
  // ---- submission, synchronisation, completion (vk_sync.c, vk_backend.c)
  // Fence values are ctx->timeline values: each submission signals the next one, in submit order. A value counts as done
 diff --git a/runtime/vk_backend.c b/runtime/vk_backend.c
-index c9d7373..985123c 100644
+index 56b1d2a..e71ec49 100644
 --- a/runtime/vk_backend.c
 +++ b/runtime/vk_backend.c
-@@ -106,6 +106,7 @@ static void present_image(const tex_t *t, const int crop[4], uint64_t at_ns, uin
-     vk_mvprev_frame();
+@@ -228,6 +228,7 @@ static void present_image(const tex_t *t, const int crop[4], uint64_t at_ns, uin
      vk_mem_census(frame);
+     vk_gpu_passes_frame(frame);
      if (vk_dump_armed) vk_dump_present(frame);
 +    if (__atomic_load_n(&vk_pick_armed, __ATOMIC_ACQUIRE)) vk_pick_present(frame);
      vk_pipeline_reload_poll();
      __atomic_store_n(&gfx_counters.validation_errors, (uint64_t)vk_validation_errors_total(), __ATOMIC_RELAXED);
      const VkTexImage *img = vk_texture_get(t);
 diff --git a/runtime/vk_dump.c b/runtime/vk_dump.c
-index 98668c1..c7db5e5 100644
+index f7ddc50..93f5d30 100644
 --- a/runtime/vk_dump.c
 +++ b/runtime/vk_dump.c
-@@ -1227,3 +1227,177 @@ void vk_dump_present(uint64_t frame) {
-         plat_mutex_unlock(&rec_lock);
+@@ -1553,3 +1553,177 @@ void vk_dump_present(uint64_t frame) {
+         rt_log("vk_dump: frame %llu goes to %s", (unsigned long long)dump_frame, dir);
      }
  }
 +
@@ -361,22 +361,22 @@ index 98668c1..c7db5e5 100644
 +    ex->recorded += 2;
 +}
 diff --git a/runtime/vk_exec.c b/runtime/vk_exec.c
-index f72b739..48081cf 100644
+index 7727c6c..28218a8 100644
 --- a/runtime/vk_exec.c
 +++ b/runtime/vk_exec.c
-@@ -662,6 +662,7 @@ void vk_exec_pass_end(VkExec *ex) {
+@@ -899,6 +899,7 @@ void vk_exec_pass_end(VkExec *ex) {
          if (ex->color[i].image && ex->color[i].img && ex->color[i].img->image != ex->color[i].image)
              bc_copy_back(ex, &ex->color[i]);
      if (vk_dump_armed) vk_dump_pass_end(ex);
 +    if (__atomic_load_n(&vk_pick_armed, __ATOMIC_RELAXED)) vk_pick_pass_end();
      if (__atomic_load_n(&vk_bufcap_on, __ATOMIC_ACQUIRE)) vk_bufcap_pass_end(ex);
      uint64_t stamp = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1;
-     for (int i = 0; i < 8; i++)
+     // The targets are marked written outside tfr_lock: vk_texture_gpu_written takes the texture lock, and a chunk that
 diff --git a/runtime/vk_exec.h b/runtime/vk_exec.h
-index 73aea74..27cbfda 100644
+index eb7a8b3..6764c88 100644
 --- a/runtime/vk_exec.h
 +++ b/runtime/vk_exec.h
-@@ -208,3 +208,13 @@ void vk_contact_flush(VkExec *ex);
+@@ -345,3 +345,13 @@ int vk_contact_pending(void);   // a contact shadows' pass waits for the next tr
  // when counting and none is active), and the open pass about to end (ends the active query).
  void vk_exec_oq_draw(VkExec *ex);
  void vk_exec_oq_pass_end(VkExec *ex);
@@ -391,36 +391,36 @@ index 73aea74..27cbfda 100644
 +void vk_pick_present(uint64_t frame);
 +#define VK_PICK(ex, call) do { if (__atomic_load_n(&vk_pick_armed, __ATOMIC_RELAXED) && vk_pick_pre(ex)) { call; vk_pick_post(ex); } call; } while (0)
 diff --git a/runtime/vk_exec_draw.c b/runtime/vk_exec_draw.c
-index 9e1a724..4989c44 100644
+index aae458d..ef14a2a 100644
 --- a/runtime/vk_exec_draw.c
 +++ b/runtime/vk_exec_draw.c
-@@ -3175,6 +3175,7 @@ static int prepare_draw_ex(VkExec *ex, int prim, int32_t count, int restart, int
-     feedback_written(ex, &s);
+@@ -4699,6 +4699,7 @@ static int prepare_draw_ex(VkExec *ex, int prim, int32_t count, int restart, int
+     feedback_written(ex, &s, fbl);
      if (!mesh) bind_vertex_buffers(ex);
-     if (vk_dump_armed && !mesh) vk_dump_draw(ex, &s, p, info);
+     if (vk_dump_armed) vk_dump_draw(ex, &s, p, info, mesh && !fb);
 +    if (__atomic_load_n(&vk_pick_armed, __ATOMIC_RELAXED)) vk_pick_note(&s, info);
      if (ao_trace_on() && fs) ao_trace(ex, fs, 1);
      if (vk_hdr_track) vk_hdr_draw(ex, info);
-     vk_exec_oq_draw(ex);
-@@ -3972,7 +3973,7 @@ static void op_draw_mesh(VkExec *ex, const p_draw_mesh *d) {
-         n_logged++;
-         rt_log("vk: mesh draw: %u workgroups, program %llu", d->count, (unsigned long long)ex->prog->serial);
+     if (vk_texture_deferred()) return 0;
+@@ -6068,7 +6069,7 @@ static void op_draw_mesh(VkExec *ex, const p_draw_mesh *d) {
      }
+     mesh_shading_rate(ex);
+     int q = vk_dump_armed ? vk_dump_mesh_begin(ex) : -1;
 -    rec_draw_mesh(fn, ex->cb, d->count, 1, 1);
 +    VK_PICK(ex, rec_draw_mesh(fn, ex->cb, d->count, 1, 1));
      ex->recorded++;
+     vk_dump_mesh_end(ex, q);
  }
- 
-@@ -4041,7 +4042,7 @@ static void op_draw_mesh_ind(VkExec *ex, const p_draw_mesh_ind *d) {
-         rt_log("vk: indirect mesh draw: arguments at %#llx, program %llu", (unsigned long long)d->ind,
-                (unsigned long long)ex->prog->serial);
+@@ -6277,7 +6278,7 @@ static void op_draw_mesh_ind(VkExec *ex, const p_draw_mesh_ind *d) {
      }
+     mesh_shading_rate(ex);
+     int q = vk_dump_armed ? vk_dump_mesh_begin(ex) : -1;
 -    rec_draw_mesh_ind(fn, ex->cb, mesh_ring, at, 1, 12);
 +    VK_PICK(ex, rec_draw_mesh_ind(fn, ex->cb, mesh_ring, at, 1, 12));
      ex->recorded++;
+     vk_dump_mesh_end(ex, q);
      vk_mem_count(ip.cls, VK_MUSE_IND, 4);
-     VK_MEM_BOUND(ip);
-@@ -4074,7 +4075,7 @@ static void op_draw(VkExec *ex, const p_draw *d) {
+@@ -6661,7 +6662,7 @@ static void op_draw(VkExec *ex, const p_draw *d) {
          }
          bind_index(ex, ix, sizeof *ix * 6 * q, VK_INDEX_TYPE_UINT32);
          free(ix);
@@ -429,7 +429,7 @@ index 9e1a724..4989c44 100644
      } else if (d->prim == NVN_DRAW_PRIMITIVE_LINE_LOOP && n >= 2) {   // a strip that returns to its first vertex
          uint32_t *ix = malloc(sizeof *ix * (n + 1));
          if (!ix) rt_fatal("vk: out of memory");
-@@ -4082,9 +4083,9 @@ static void op_draw(VkExec *ex, const p_draw *d) {
+@@ -6669,9 +6670,9 @@ static void op_draw(VkExec *ex, const p_draw *d) {
          ix[n] = first;
          bind_index(ex, ix, sizeof *ix * (n + 1), VK_INDEX_TYPE_UINT32);
          free(ix);
@@ -441,7 +441,7 @@ index 9e1a724..4989c44 100644
      }
      ex->recorded++;
  }
-@@ -4141,8 +4142,8 @@ static void op_draw_idx(VkExec *ex, const p_draw_idx *d) {
+@@ -6728,8 +6729,8 @@ static void op_draw_idx(VkExec *ex, const p_draw_idx *d) {
          vk_mem_count(sp.cls, VK_MUSE_IB, bytes);
          VK_MEM_BOUND(sp);
      }
@@ -452,7 +452,7 @@ index 9e1a724..4989c44 100644
      ex->recorded++;
      if (d->itype != NVN_INDEX_TYPE_UNSIGNED_BYTE) mvobj_draw(ex, d, sp.buffer, sp.offset);
  }
-@@ -4165,7 +4166,7 @@ static void op_draw_idx_ind(VkExec *ex, const p_draw_idx_ind *d) {
+@@ -6752,7 +6753,7 @@ static void op_draw_idx_ind(VkExec *ex, const p_draw_idx_ind *d) {
      VK_MEM_USE(ip);
      VK_MEM_USE(ib);
      vkCmdBindIndexBuffer(ex->cb, ib.buffer, ib.offset, d->itype == NVN_INDEX_TYPE_UNSIGNED_SHORT ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
@@ -461,7 +461,7 @@ index 9e1a724..4989c44 100644
      ex->recorded += 2;
      vk_mem_count(ip.cls, VK_MUSE_IND, sizeof(VkDrawIndexedIndirectCommand));
      VK_MEM_BOUND(ip);
-@@ -4451,6 +4452,7 @@ static void op_dispatch(VkExec *ex, const p_dispatch *d) {
+@@ -7231,6 +7232,7 @@ static void op_dispatch(VkExec *ex, const p_dispatch *d) {
      vk_pass_mark_end(ex->cb, m);
      ex->recorded++;
      if (vk_dump_armed) vk_dump_dispatch(ex, cs, p, info, d);
@@ -469,7 +469,7 @@ index 9e1a724..4989c44 100644
      if (ao_trace_on()) ao_trace(ex, cs, 0);
      if (!ao_on() && ao_hash(cs) == 0x561cf523be84578bull) ao_clear(ex);
  }
-@@ -4498,6 +4500,7 @@ static void op_dispatch_ind(VkExec *ex, const p_dispatch_ind *d) {
+@@ -7287,6 +7289,7 @@ static void op_dispatch_ind(VkExec *ex, const p_dispatch_ind *d) {
      vk_mem_count(ip.cls, VK_MUSE_IND, sizeof(VkDispatchIndirectCommand));
      VK_MEM_BOUND(ip);
      if (vk_dump_armed) vk_dump_dispatch(ex, cs, p, info, &(p_dispatch){0, 0, 0, d->caller});
@@ -478,17 +478,17 @@ index 9e1a724..4989c44 100644
  
  static void op_update_ub(VkExec *ex, const p_update_ub *u) {
 diff --git a/runtime/vk_exec_xfer.c b/runtime/vk_exec_xfer.c
-index 7199537..8d62c68 100644
+index ce2e7ff..754d4ab 100644
 --- a/runtime/vk_exec_xfer.c
 +++ b/runtime/vk_exec_xfer.c
-@@ -262,6 +262,7 @@ void vk_exec_oq_draw(VkExec *ex) {
+@@ -426,6 +426,7 @@ void vk_exec_oq_draw(VkExec *ex) {
  }
  
  void vk_exec_oq_pass_end(VkExec *ex) { oq_close(ex); }
 +int vk_exec_oq_active(void) { return oq_open >= 0; }
  
- void vk_exec_xfer_shutdown(void) {
-     if (oq_state > 0) vkDestroyQueryPool(vk_ctx()->device, oq_pool, NULL);
+ static void oq_batch_drop(void);   // the results kept by the completion thread (oq_take)
+ 
 -- 
 2.56.0
 

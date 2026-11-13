@@ -1,7 +1,7 @@
-From 087f7bcf7db481e6a8590babec794e2b91db95d4 Mon Sep 17 00:00:00 2001
+From 7dd23a8d135f72568645e3708ddafc144428f2d7 Mon Sep 17 00:00:00 2001
 From: desocketed <desocketed@users.noreply.github.com>
 Date: Sun, 8 Nov 2026 14:00:43 -0500
-Subject: [PATCH 1/2] Shader hot-reload test switch and on-request frame shots
+Subject: [PATCH] Shader hot-reload test switch and on-request frame shots
 
 NX2NAVI_SHADER_RELOAD=1 watches the shader cache folder (inotify). A rewritten
 <key>.spv of a shader in memory replaces its SPIR-V; its pipelines and stage
@@ -23,10 +23,10 @@ full size to logs/shot-<n>.png there and is deleted.
  8 files changed, 223 insertions(+), 6 deletions(-)
 
 diff --git a/runtime/boot.c b/runtime/boot.c
-index 33cc0b5..f510cea 100644
+index 9acf751..9d0122e 100644
 --- a/runtime/boot.c
 +++ b/runtime/boot.c
-@@ -261,7 +261,16 @@ static void series_shot(const tex_t *t, uint64_t n) {
+@@ -268,7 +268,16 @@ static void series_shot(const tex_t *t, uint64_t n) {
          if (hi) plat_file_mkdir_p(dir);
          parsed = 1;
      }
@@ -44,7 +44,7 @@ index 33cc0b5..f510cea 100644
          int64_t w = frame_step_world_us();
          if (w < 0 || (unsigned long long)w < next || next > hi) return;
          while (next <= (unsigned long long)w) next += step;
-@@ -271,7 +280,7 @@ static void series_shot(const tex_t *t, uint64_t n) {
+@@ -278,7 +287,7 @@ static void series_shot(const tex_t *t, uint64_t n) {
      int fmt = t->d.format;
      int bgra = fmt == NVN_FORMAT_BGRA8 || fmt == NVN_FORMAT_BGRA8_SRGB;
      if (!bgra && fmt != NVN_FORMAT_RGBA8 && fmt != NVN_FORMAT_RGBA8_SRGB) return;
@@ -53,7 +53,7 @@ index 33cc0b5..f510cea 100644
      uint8_t *px = malloc(4ull * w * h), *out = malloc(4ull * ow * oh);
      if (!px || !out) rt_fatal("boot: out of memory for a NX2NAVI_SHOTS frame");
      view_t view;
-@@ -294,7 +303,13 @@ static void series_shot(const tex_t *t, uint64_t n) {
+@@ -301,7 +310,13 @@ static void series_shot(const tex_t *t, uint64_t n) {
          }
      char path[PLAT_PATH_MAX];
      snprintf(path, sizeof path, "%s/f%05llu.png", dir, (unsigned long long)n);
@@ -68,26 +68,26 @@ index 33cc0b5..f510cea 100644
      free(px);
  }
 diff --git a/runtime/cfg.c b/runtime/cfg.c
-index 73fc3ef..346cf85 100644
+index 6eeac1c..8b15569 100644
 --- a/runtime/cfg.c
 +++ b/runtime/cfg.c
-@@ -55,7 +55,7 @@ static const char *const known[] = {
-     "RENDER_SCALE", "REPLAY_ASYNC", "RTSS",
+@@ -67,7 +67,7 @@ static const char *const known[] = {
+     "PRESNAP_PLACE",
      "REPLAY_CHECK", "RESOLVE_CHECK", "RESTART_WAIT", "ROMFS", "ROMFS_INDEX", "ROMFS_MMAP", "ROMFS_MODS", "ROMFS_PATCHES",
      "ROMFS_PROOF_DIR", "ROMFS_VERIFY", "RSTICK_DEADZONE", "RUMBLE", "RUMBLE_CURVE", "RUMBLE_STRENGTH", "RUMBLE_TRIGGERS", "SHADER_CACHE",
--    "SHADER_MEMO", "SHADOW_COMPARE", "SHADOW_RANGE", "SHADOW_RES", "SHADOW_SCALE", "SHARED_FONTS", "SHARPNESS", "SHOTS", "SHOTS_DIR",
-+    "SHADER_MEMO", "SHADER_RELOAD", "SHADOW_COMPARE", "SHADOW_RANGE", "SHADOW_RES", "SHADOW_SCALE", "SHARED_FONTS", "SHARPNESS", "SHOTS", "SHOTS_DIR",
-     "SHOTS_FULL", "SPEED_PROBE", "SPIN", "SPIN_HANDOFF_US", "SPLIT_DRAWS", "SPLIT_US", "STICK_DEADZONE", "STICK_SENS",
+-    "SHADER_CACHE_FLUSH", "SHADER_CARRY", "SHADER_MEMO", "SHADOW_BULK_WRITE", "SHADOW_CHECK", "SHADOW_COMPARE", "SHADOW_RANGE", "SHADOW_RES", "SHADOW_SCALE", "SHADOW_TABLE_STORES", "SHARED_FONTS", "SHARPNESS", "SHOTS", "SHOTS_DIR",
++    "SHADER_CACHE_FLUSH", "SHADER_CARRY", "SHADER_MEMO", "SHADER_RELOAD", "SHADOW_BULK_WRITE", "SHADOW_CHECK", "SHADOW_COMPARE", "SHADOW_RANGE", "SHADOW_RES", "SHADOW_SCALE", "SHADOW_TABLE_STORES", "SHARED_FONTS", "SHARPNESS", "SHOTS", "SHOTS_DIR",
+     "SVC_SLOW_MS",
+     "SHOTS_FULL", "SPEED_PROBE", "SPIN", "SPIN_HANDOFF_US", "SPLIT_DRAWS", "SPLIT_IDLE", "SPLIT_IN_PASS", "SPLIT_US", "SPV_MARK_TEST", "SPV_OVERRIDE", "STICK_DEADZONE", "STICK_SENS",
      "SWKBD_ANSWER",
-     "SWKBD_TEST", "TAA", "TEST_PAD", "TEST_PAD_AT", "TEST_PREPARE_SHADERS", "TEX_ALIAS", "TEX_MEMO", "TEX_VRAM_PRESSURE", "TIMER_1MS", "TRACE", "TXD_TRANSPOSE", "UBO_SNAPSHOT", "UPSCALER", "VK_DYN_A2C", "VK_DYN_VERTEX", "VK_NOOPT", "VK_NO_FLOAT64",
 diff --git a/runtime/gfx.h b/runtime/gfx.h
-index 15e55e2..cb67e01 100644
+index 8a71bf3..7a99a01 100644
 --- a/runtime/gfx.h
 +++ b/runtime/gfx.h
-@@ -89,6 +89,11 @@ size_t gfx_shader_warm_list(GfxWarmEnt **out);              // malloc'd; recorde
- const GfxShader *gfx_shader_load_private(const uint8_t iid[32], int *owned);
- void gfx_shader_release_private(const GfxShader *s);
+@@ -106,6 +106,11 @@ void gfx_shader_release_private(const GfxShader *s);
  const uint32_t *gfx_shader_spirv(const GfxShader *s, uint64_t *words);
+ const char *gfx_shader_res_json(const GfxShader *s);        // the translator's .res.json text
+ int gfx_shader_write_code(const GfxShader *s, const char *path);   // the guest program, from the stored inputs
 +int gfx_shader_reload_start(void);                                     // NX2NAVI_SHADER_RELOAD (test)
 +const GfxShader *gfx_shader_reload_next(uint32_t **spirv, uint64_t *words);
 +void gfx_shader_set_spirv(const GfxShader *s, uint32_t *spirv, uint64_t words);
@@ -97,11 +97,11 @@ index 15e55e2..cb67e01 100644
  // never freed; its key is the sha256 of both. NULL when the SPIR-V is malformed.
  const GfxShader *gfx_shader_own(const uint32_t *spirv, uint64_t words, const char *res_json);
 diff --git a/runtime/gfx_shader.c b/runtime/gfx_shader.c
-index 879cb0a..8e81e39 100644
+index 7fd3bdf..20a90ba 100644
 --- a/runtime/gfx_shader.c
 +++ b/runtime/gfx_shader.c
-@@ -1875,6 +1875,71 @@ const uint32_t *gfx_shader_spirv(const GfxShader *s, uint64_t *words) {
-     return s->spirv;
+@@ -2635,6 +2635,71 @@ int gfx_shader_write_code(const GfxShader *s, const char *path) {
+     return ok;
  }
  
 +// NX2NAVI_SHADER_RELOAD=1 (test): an inotify watch on the cache folder. gfx_shader_reload_next hands out a shader in
@@ -173,12 +173,12 @@ index 879cb0a..8e81e39 100644
  
  int gfx_shader_resources(const GfxShader *s, int kind, const GfxShaderRes **res) {
 diff --git a/runtime/vk.h b/runtime/vk.h
-index 205eb09..fe626e5 100644
+index d85ac1c..2c6c1af 100644
 --- a/runtime/vk.h
 +++ b/runtime/vk.h
-@@ -622,6 +622,8 @@ typedef struct { uint64_t graphics, compute, failures, hits, layouts, push_layou
- void vk_pipeline_stats(VkPipeStats *s);
- void vk_pipeline_save(void);               // writes the VkPipelineCache to pipeline-cache.bin next to nx2navi.exe
+@@ -1019,6 +1019,8 @@ void vk_pipeline_save(void);               // writes the VkPipelineCache to pipe
+ void vk_pipeline_save_exit(void);          // vk_pipeline_save as the process ends: new builds wait while it waits for
+                                            // the running ones
  void vk_pipeline_autosave(void);           // vk_pipeline_save at most every 20 s, when pipelines were built since
 +void vk_pipeline_reload_poll(void);         // NX2NAVI_SHADER_RELOAD=1 (test): swaps in rewritten cache .spv files
 +extern volatile uint32_t vk_pipeline_epoch; // bumped when a reload drops pipelines: draw memos look again
@@ -186,49 +186,49 @@ index 205eb09..fe626e5 100644
                                             // cache; before vk_shutdown
  int vk_pipeline_selftest(void);            // one graphics and one compute pipeline from census shaders; 0 on success
 diff --git a/runtime/vk_backend.c b/runtime/vk_backend.c
-index b8f22ac..36e29d4 100644
+index d80d6cd..3332c10 100644
 --- a/runtime/vk_backend.c
 +++ b/runtime/vk_backend.c
-@@ -106,6 +106,7 @@ static void present_image(const tex_t *t, const int crop[4], uint64_t at_ns, uin
-     vk_mvprev_frame();
+@@ -228,6 +228,7 @@ static void present_image(const tex_t *t, const int crop[4], uint64_t at_ns, uin
      vk_mem_census(frame);
+     vk_gpu_passes_frame(frame);
      if (vk_dump_armed) vk_dump_present(frame);
 +    vk_pipeline_reload_poll();
      __atomic_store_n(&gfx_counters.validation_errors, (uint64_t)vk_validation_errors_total(), __ATOMIC_RELAXED);
      const VkTexImage *img = vk_texture_get(t);
-     if (!img || !(img->aspect & VK_IMAGE_ASPECT_COLOR_BIT)) {
+     int held = frame_hold(vk_exec_pending_draws_take(), vk_dlaa_resized_take(), frame);
 diff --git a/runtime/vk_exec_draw.c b/runtime/vk_exec_draw.c
-index 21f3fb9..4618e6c 100644
+index f5819e4..7a8ae07 100644
 --- a/runtime/vk_exec_draw.c
 +++ b/runtime/vk_exec_draw.c
-@@ -2811,7 +2811,7 @@ static int shader_memo_on(void) {
-     return SM.on;
- }
- 
--static struct { int on, valid; VkPipeState s; const VkPipeInfo *info; } PM = {-1};
-+static struct { int on, valid; uint32_t ep; VkPipeState s; const VkPipeInfo *info; } PM = {-1};
- 
- static int pipe_memo_on(void) {
-     if (PM.on < 0) PM.on = cfg_bool("NX2NAVI_PIPE_MEMO");
-@@ -2950,7 +2950,7 @@ static int prepare_draw_ex(VkExec *ex, int prim, int32_t count, int restart, int
-     VkPipeline p;
+@@ -291,7 +291,7 @@ typedef struct DrawCtx {
+     int mo_ovr_on;                       // per-object motion: mo_ovr replaces uniform bindings (ubo_info)
+     VkDescriptorBufferInfo mo_ovr[2][32];   // [vertex, fragment][slot]; buffer 0: not replaced
+     struct { int valid, has_fs; MemoKey k; const GfxShader *vs, *fs; } SM;   // the shader memo (shader_memo_on)
+-    struct { int valid; VkPipeState s; const VkPipeInfo *info; } PM;          // the pipeline memo (pipe_memo_on)
++    struct { int valid; uint32_t ep; VkPipeState s; const VkPipeInfo *info; } PM;          // the pipeline memo (pipe_memo_on)
+     void *fm;                            // feedback_scan's memo per texture handle (FmEnt[FM_N]), made at first use
+     void *mo_vm;                         // mvobj_pick's memo of the motion variant per vertex shader, made at first use
+     struct { const void *d; uint64_t ind; VkDeviceSize at; } ma[64];   // mesh_ring_entry: entries filled ahead
+@@ -4496,7 +4496,7 @@ static int prepare_draw_ex(VkExec *ex, int prim, int32_t count, int restart, int
      const char *why = NULL;
-     uint64_t w0 = 0;
--    if (pipe_memo_on() && PM.valid && !memcmp(&PM.s, &s, sizeof s)) {
-+    if (pipe_memo_on() && PM.valid && PM.ep == vk_pipeline_epoch && !memcmp(&PM.s, &s, sizeof s)) {
-         info = PM.info, pending = 0;
+     uint64_t w0 = 0, m0 = 0;   // m0: when the lookup missed (wait_note)
+     int kind = WK_LINK;
+-    if (pipe_memo_on() && cx->PM.valid && !memcmp(&cx->PM.s, &s, sizeof s)) {
++    if (pipe_memo_on() && cx->PM.valid && cx->PM.ep == vk_pipeline_epoch && !memcmp(&cx->PM.s, &s, sizeof s)) {
+         info = cx->PM.info, pending = 0;
          p = __atomic_load_n(&info->pipeline, __ATOMIC_ACQUIRE);
      } else {
-@@ -2968,7 +2968,7 @@ static int prepare_draw_ex(VkExec *ex, int prim, int32_t count, int restart, int
-             p = vk_pipeline_graphics_async(&s, &info, &pending, ONESHOT_WAIT_MS);
+@@ -4554,7 +4554,7 @@ static int prepare_draw_ex(VkExec *ex, int prim, int32_t count, int restart, int
          }
-         PM.valid = !pending && p && info;
--        if (PM.valid) PM.s = s, PM.info = info;
-+        if (PM.valid) PM.s = s, PM.info = info, PM.ep = vk_pipeline_epoch;
+         if (m0) wait_note(kind, m0, pending), draw_stats_tick();
+         cx->PM.valid = !pending && p && info;
+-        if (cx->PM.valid) cx->PM.s = s, cx->PM.info = info;
++        if (cx->PM.valid) cx->PM.s = s, cx->PM.info = info, cx->PM.ep = vk_pipeline_epoch;
      }
      uint64_t waited = w0 ? kern_now_ns() - w0 : 0;
      static int wait_logs;
-@@ -3591,7 +3591,9 @@ static void mvobj_draw_(VkExec *ex, const p_draw_idx *d, VkBuffer ib, VkDeviceSi
+@@ -5403,7 +5403,9 @@ static void mvobj_draw_(VkExec *ex, const p_draw_idx *d, VkBuffer ib, VkDeviceSi
      ms.ds.dt = 1, ms.ds.dw = 0, ms.ds.df = (uint64_t)df, ms.ds.st = 0;
      // the pipeline per state, kept: the lookup hashes and locks the whole state
      static struct { VkPipeState st; VkPipeline p; const VkPipeInfo *info; int used; } pmemo[64];
@@ -239,12 +239,12 @@ index 21f3fb9..4618e6c 100644
      if (plast >= 0 && pmemo[plast].used && !memcmp(&pmemo[plast].st, &ms, sizeof ms)) {
          pi = (uint32_t)plast;
 diff --git a/runtime/vk_pipeline.c b/runtime/vk_pipeline.c
-index 2ddded8..9fd9c2e 100644
+index 37f5981..eb39907 100644
 --- a/runtime/vk_pipeline.c
 +++ b/runtime/vk_pipeline.c
-@@ -3869,3 +3869,130 @@ int vk_pipeline_selftest(void) {
-     printf("vk_pipeline selftest: %s\n", ok ? "passed" : "FAILED");
-     return ok ? 0 : 1;
+@@ -8045,3 +8045,130 @@ void vk_pipeline_sizes(PerfSizes *s) {
+     perf_size(s, "pipeline jobs queued or running", jobs, 0, PERF_SIZE_NONE);
+     perf_size(s, "pipeline keys seen", seen, 0, seen_b);
  }
 +
 +// ---- NX2NAVI_SHADER_RELOAD=1 (test): a rewritten <key>.spv in the shader cache replaces that shader's SPIR-V in
@@ -373,45 +373,6 @@ index 2ddded8..9fd9c2e 100644
 +    }
 +    plat_mutex_unlock(&P.lock);
 +}
--- 
-2.56.0
-
-
-From 1afe95a4510517f15894ebc33afaf5c43215a6a5 Mon Sep 17 00:00:00 2001
-From: desocketed <desocketed@users.noreply.github.com>
-Date: Sun, 8 Nov 2026 14:06:11 -0500
-Subject: [PATCH 2/2] Shader reload: a shader without pipelines swaps at once;
- 256 pending reloads
-
----
- runtime/vk_pipeline.c | 7 ++++++-
- 1 file changed, 6 insertions(+), 1 deletion(-)
-
-diff --git a/runtime/vk_pipeline.c b/runtime/vk_pipeline.c
-index 9fd9c2e..40270f4 100644
---- a/runtime/vk_pipeline.c
-+++ b/runtime/vk_pipeline.c
-@@ -3876,7 +3876,7 @@ int vk_pipeline_selftest(void) {
- // build of the new SPIR-V that fails puts the old SPIR-V and the old entries back. One log line per reload.
- volatile uint32_t vk_pipeline_epoch;
- typedef struct { const GfxShader *s; uint32_t *old; uint64_t old_words; Pipe *pipes; Lib *libs; int frames; } Reload;
--static Reload RL[32];
-+static Reload RL[256];
- static int n_rl;
- 
- static int key_has(const uint8_t *key, size_t n, const GfxShader *s) {
-@@ -3985,6 +3985,11 @@ void vk_pipeline_reload_poll(void) {
-         }
-         uint64_t ow;
-         uint32_t *old = (uint32_t *)gfx_shader_spirv(s, &ow);
-+        if (!r && !got && !RL[n_rl].libs) {   // nothing built from it: nothing to wait for
-+            gfx_shader_set_spirv(s, w, n);
-+            rt_log("vk_pipeline: reload %s ok: not in use", hex);
-+            continue;
-+        }
-         if (r) {
-             free(old);   // the previous reload's SPIR-V; r keeps the original
-         } else {
 -- 
 2.56.0
 

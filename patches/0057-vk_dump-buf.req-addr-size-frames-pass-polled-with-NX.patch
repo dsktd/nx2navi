@@ -1,4 +1,4 @@
-From ff43bf7dae0e7b1487c0d7fad0059f308487b3b8 Mon Sep 17 00:00:00 2001
+From 8185db174e19ff9a31e2985d9e59623cd14a0789 Mon Sep 17 00:00:00 2001
 From: desocketed <desocketed@users.noreply.github.com>
 Date: Tue, 10 Nov 2026 18:06:10 -0500
 Subject: [PATCH] vk_dump: buf.req (<addr>:<size>[:<frames>[:<pass>]], polled
@@ -15,10 +15,10 @@ Subject: [PATCH] vk_dump: buf.req (<addr>:<size>[:<frames>[:<pass>]], polled
  5 files changed, 134 insertions(+), 16 deletions(-)
 
 diff --git a/runtime/boot.c b/runtime/boot.c
-index 13d598b..b1f9e5b 100644
+index 72ff018..3f50fca 100644
 --- a/runtime/boot.c
 +++ b/runtime/boot.c
-@@ -401,7 +401,8 @@ static int mark_knob(const char *name) {
+@@ -408,7 +408,8 @@ static int mark_knob(const char *name) {
  // watch.req holds <addr>:<size> (hex) and arms the write tracer (platform.h plat_write_trace) on that range, as
  // NX2NAVI_WATCH_PC does at start; each new watch.req replaces the range, and one holding "off" disarms it. peek.req holds up to 4 lines <addr>:<size>:<presents> (hex, hex, decimal) and
  // logs the guest words of each range (at most 512 bytes) as floats and hex once per present for that many presents.
@@ -28,7 +28,7 @@ index 13d598b..b1f9e5b 100644
  typedef struct { uint64_t a, n; int left; } Peek;
  static Peek peeks[4];
  
-@@ -430,15 +431,15 @@ static void peek_log(uint64_t n) {
+@@ -437,15 +438,15 @@ static void peek_log(uint64_t n) {
  
  static void watch_req_poll(uint64_t n) {
      static int init;
@@ -47,7 +47,7 @@ index 13d598b..b1f9e5b 100644
      }
      if (!wreq[0]) return;
      peek_log(n);
-@@ -463,6 +464,13 @@ static void watch_req_poll(uint64_t n) {
+@@ -470,6 +471,13 @@ static void watch_req_poll(uint64_t n) {
              plat_write_trace(a, len);
          }
      }
@@ -62,10 +62,10 @@ index 13d598b..b1f9e5b 100644
          plat_file_delete(preq);
          char *t = malloc(sz + 1);
 diff --git a/runtime/vk.h b/runtime/vk.h
-index 1c0704e..b501f4a 100644
+index 8eb894d..5a57f40 100644
 --- a/runtime/vk.h
 +++ b/runtime/vk.h
-@@ -480,6 +480,8 @@ int vk_sampler_params(int id, samp_par *out);       // parameters of a sampler s
+@@ -767,6 +767,8 @@ int vk_sampler_params(int id, samp_par *out);       // parameters of a sampler s
  
  // 8-bit RGBA PNG with stored deflate blocks (boot.c); stops with rt_fatal when the file cannot be written.
  void rt_write_png(const char *path, const uint8_t *rgba, uint32_t w, uint32_t h);
@@ -75,10 +75,10 @@ index 1c0704e..b501f4a 100644
  // ---- submission, synchronisation, completion (vk_sync.c, vk_backend.c)
  // Fence values are ctx->timeline values: each submission signals the next one, in submit order. A value counts as done
 diff --git a/runtime/vk_dump.c b/runtime/vk_dump.c
-index 451e531..7399805 100644
+index 0142e87..5d70f34 100644
 --- a/runtime/vk_dump.c
 +++ b/runtime/vk_dump.c
-@@ -429,23 +429,103 @@ static void buf_done(void *arg) {
+@@ -443,23 +443,103 @@ static void buf_done(void *arg) {
      free(j);
  }
  
@@ -191,7 +191,7 @@ index 451e531..7399805 100644
      VkMemoryBarrier2 mb[2] = {
          {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
           .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT, .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
-@@ -456,12 +536,37 @@ static void buf_snap(VkExec *ex, int pass) {
+@@ -470,12 +550,37 @@ static void buf_snap(VkExec *ex, int pass) {
           .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT}};
      VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb[0]};
      vkCmdPipelineBarrier2(ex->cb, &di);
@@ -231,24 +231,24 @@ index 451e531..7399805 100644
 +    plat_mutex_unlock(&cap_lock);
  }
  
- static int active(void) {
+ static int active(void) {   // passes_f is NULL before a dump that opens its files when it starts (open_files)
 diff --git a/runtime/vk_exec.c b/runtime/vk_exec.c
-index fd939ac..f72b739 100644
+index 7b5ce35..7727c6c 100644
 --- a/runtime/vk_exec.c
 +++ b/runtime/vk_exec.c
-@@ -662,6 +662,7 @@ void vk_exec_pass_end(VkExec *ex) {
+@@ -899,6 +899,7 @@ void vk_exec_pass_end(VkExec *ex) {
          if (ex->color[i].image && ex->color[i].img && ex->color[i].img->image != ex->color[i].image)
              bc_copy_back(ex, &ex->color[i]);
      if (vk_dump_armed) vk_dump_pass_end(ex);
 +    if (__atomic_load_n(&vk_bufcap_on, __ATOMIC_ACQUIRE)) vk_bufcap_pass_end(ex);
      uint64_t stamp = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1;
-     for (int i = 0; i < 8; i++)
-         if (ex->color[i].image) vk_texture_gpu_written(ex->color[i].tex), tfr_note(&ex->color[i], stamp);
+     // The targets are marked written outside tfr_lock: vk_texture_gpu_written takes the texture lock, and a chunk that
+     // holds the texture lock can end its pass here (a lookup's alias copy, vk_exec_inline_begin) and then wait for
 diff --git a/runtime/vk_exec.h b/runtime/vk_exec.h
-index d4615c2..73aea74 100644
+index 6130852..eb7a8b3 100644
 --- a/runtime/vk_exec.h
 +++ b/runtime/vk_exec.h
-@@ -170,6 +170,8 @@ void vk_exec_frame_log(const tex_t *presented, uint64_t frame);
+@@ -257,6 +257,8 @@ int vk_exec_pool_loading(void);
  // textures, samplers) and images.txt (per image value statistics). The hooks run only when vk_dump_armed is set.
  extern int vk_dump_armed;
  int vk_dump_active(void); // vk_dump.c: this frame is being dumped (the draw ops format their arguments only then)
@@ -256,7 +256,7 @@ index d4615c2..73aea74 100644
 +void vk_bufcap_pass_end(VkExec *ex);     // vk_exec_pass_end while vk_bufcap_on
  void vk_dump_init(void);                 // reads the environment; vk_exec_record's first call
  void vk_dump_pass_end(VkExec *ex);       // after vkCmdEndRendering
- void vk_dump_draw(VkExec *ex, const VkPipeState *s, VkPipeline p, const VkPipeInfo *info);   // after a draw's binds
+ // after a draw's binds; mesh: a mesh draw (s->vs is its mesh stage, s->ts its task stage or NULL)
 -- 
 2.56.0
 

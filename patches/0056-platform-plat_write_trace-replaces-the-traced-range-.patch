@@ -1,4 +1,4 @@
-From a43ed06fc8216a91763df685d574571e63356861 Mon Sep 17 00:00:00 2001
+From 2eb7df99c522aa1419a3ce01a93119a3a8046b49 Mon Sep 17 00:00:00 2001
 From: desocketed <desocketed@users.noreply.github.com>
 Date: Tue, 10 Nov 2026 18:03:11 -0500
 Subject: [PATCH] platform: plat_write_trace replaces the traced range on a
@@ -12,10 +12,10 @@ Subject: [PATCH] platform: plat_write_trace replaces the traced range on a
  3 files changed, 25 insertions(+), 8 deletions(-)
 
 diff --git a/runtime/boot.c b/runtime/boot.c
-index a8ce86d..13d598b 100644
+index f11fc36..72ff018 100644
 --- a/runtime/boot.c
 +++ b/runtime/boot.c
-@@ -398,8 +398,8 @@ static int mark_knob(const char *name) {
+@@ -405,8 +405,8 @@ static int mark_knob(const char *name) {
  }
  
  // NX2NAVI_WATCH_REQ=1 (debug, off, #164): two request files beside the shader cache, polled every 4th present.
@@ -26,7 +26,7 @@ index a8ce86d..13d598b 100644
  // logs the guest words of each range (at most 512 bytes) as floats and hex once per present for that many presents.
  // Pages that are not committed are left out.
  typedef struct { uint64_t a, n; int left; } Peek;
-@@ -429,7 +429,7 @@ static void peek_log(uint64_t n) {
+@@ -436,7 +436,7 @@ static void peek_log(uint64_t n) {
  }
  
  static void watch_req_poll(uint64_t n) {
@@ -35,7 +35,7 @@ index a8ce86d..13d598b 100644
      static char wreq[PLAT_PATH_MAX], preq[PLAT_PATH_MAX];
      if (!init) {
          init = 1;
-@@ -452,9 +452,12 @@ static void watch_req_poll(uint64_t n) {
+@@ -459,9 +459,12 @@ static void watch_req_poll(uint64_t n) {
          free(b);
          char *x;
          uint64_t a = strtoull(t, &x, 16), len = *x == ':' ? strtoull(x + 1, NULL, 16) : 0x1000;
@@ -52,12 +52,12 @@ index a8ce86d..13d598b 100644
                     (unsigned long long)len, (unsigned long long)n);
              plat_write_trace(a, len);
 diff --git a/runtime/platform/linux.c b/runtime/platform/linux.c
-index e73b613..3bbe8bd 100644
+index fbe7fc3..72b636c 100644
 --- a/runtime/platform/linux.c
 +++ b/runtime/platform/linux.c
-@@ -1029,8 +1029,21 @@ void plat_mem_fault_hook(int (*fn)(uint64_t addr)) {
- 
- void plat_crash_context(const char *s) { crash_ctx = s; }
+@@ -1427,8 +1427,21 @@ __attribute__((noinline)) int plat_frame_capture(PlatJmp *out, int (*want)(uintp
+     return w.found;
+ }
  
 +// A second call replaces the range: the old range's committed pages are made writable again first (a write that faults
 +// in between is still in range and opens its page), then the new one is protected; n = 0 only disarms. The writers
@@ -79,11 +79,11 @@ index e73b613..3bbe8bd 100644
      wt_opened = 1;
      plat_write_trace_rearm();
 diff --git a/runtime/platform/platform.h b/runtime/platform/platform.h
-index f053e8c..e987594 100644
+index 8807d30..0ffbf9f 100644
 --- a/runtime/platform/platform.h
 +++ b/runtime/platform/platform.h
-@@ -221,7 +221,8 @@ uint64_t plat_mem_written(uint64_t addr, uint64_t n, uint64_t *pages, uint64_t m
- void plat_mem_fault_hook(int (*fn)(uint64_t addr));
+@@ -267,7 +267,8 @@ void plat_mem_fault_hook(int (*fn)(uint64_t addr));
+ void plat_mem_access_hook(int (*fn)(uint64_t addr, int write, uint64_t ip));
  // Debug (NX2NAVI_WATCH_PC): makes the committed pages of addr+n read-only; the first write to each page faults, logs
  // the writing instruction once per distinct one (module + offset, to resolve with nm) and makes that page writable
 -// again. plat_write_trace_rearm protects the range again (once per present). A no-op where unsupported.

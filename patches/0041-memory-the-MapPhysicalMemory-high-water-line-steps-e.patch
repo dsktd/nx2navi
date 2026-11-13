@@ -1,4 +1,4 @@
-From 161b818df678f1540677007b5354bbf4a5c55b82 Mon Sep 17 00:00:00 2001
+From b2b4fcc0715e3671d1811ef882e59b5135c917c3 Mon Sep 17 00:00:00 2001
 From: desocketed <desocketed@users.noreply.github.com>
 Date: Tue, 10 Nov 2026 01:49:01 -0500
 Subject: [PATCH] memory: the MapPhysicalMemory high-water line steps every 16
@@ -9,10 +9,10 @@ Subject: [PATCH] memory: the MapPhysicalMemory high-water line steps every 16
  1 file changed, 7 insertions(+), 3 deletions(-)
 
 diff --git a/runtime/memory.c b/runtime/memory.c
-index 5eac4b2..874ea45 100644
+index 46e5255..16c5d21 100644
 --- a/runtime/memory.c
 +++ b/runtime/memory.c
-@@ -458,6 +458,7 @@ static uint32_t alias_map(int unmap, uint64_t a, uint64_t n) {
+@@ -1498,6 +1498,7 @@ static uint32_t alias_map(int unmap, uint64_t a, uint64_t n) {
      uint32_t r = R_OK;
      uint64_t high = 0, again_n = 0, again_freed = 0, again_ms = 0;
      int census = 0;
@@ -20,7 +20,7 @@ index 5eac4b2..874ea45 100644
      uint64_t cn[6] = {0}, cb[6] = {0};   // mapped runs under 64 KiB, 256 KiB, 1 MiB, 4 MiB, 16 MiB, and larger
      if (unmap) {
          for (unsigned i = 0; i < nstack_maps; i++)
-@@ -480,7 +481,9 @@ static uint32_t alias_map(int unmap, uint64_t a, uint64_t n) {
+@@ -1520,7 +1521,9 @@ static uint32_t alias_map(int unmap, uint64_t a, uint64_t n) {
          }
          alias_runs(first, count, 0, 1);
          alias_bytes += fresh * PAGE;
@@ -31,7 +31,7 @@ index 5eac4b2..874ea45 100644
          if (fresh && refused_n) again_n = refused_n, again_freed = refused_freed, again_ms = plat_now_ms() - refused_ms, refused_n = 0;
      }
  out:
-@@ -504,8 +507,9 @@ out:
+@@ -1546,8 +1549,9 @@ out:
                 (unsigned long long)cn[3], (unsigned long long)(cb[3] >> 20), (unsigned long long)cn[4], (unsigned long long)(cb[4] >> 20),
                 (unsigned long long)cn[5], (unsigned long long)(cb[5] >> 20));
      if (high)   // the high-water mark of MapPhysicalMemory, every 256 MiB: how much the game takes when the pool allows it

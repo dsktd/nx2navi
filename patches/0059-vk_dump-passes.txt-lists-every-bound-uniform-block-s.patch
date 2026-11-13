@@ -1,19 +1,19 @@
-From d9d6aa82af8554f07795510e72e39f38c0b5334e Mon Sep 17 00:00:00 2001
+From f991801a848a155516152caab446ca6c390ad063 Mon Sep 17 00:00:00 2001
 From: desocketed <desocketed@users.noreply.github.com>
 Date: Tue, 10 Nov 2026 18:09:19 -0500
-Subject: [PATCH 59/59] vk_dump: passes.txt lists every bound uniform block's
- address and size (c3 and up) without NX2NAVI_DUMP_UBO, and NX2NAVI_DUMP_DRAWS
- lines carry each draw's own c-bank addresses (#165)
+Subject: [PATCH] vk_dump: passes.txt lists every bound uniform block's address
+ and size (c3 and up) without NX2NAVI_DUMP_UBO, and NX2NAVI_DUMP_DRAWS lines
+ carry each draw's own c-bank addresses (#165)
 
 ---
  runtime/vk_dump.c | 25 +++++++++++++++++++++----
  1 file changed, 21 insertions(+), 4 deletions(-)
 
 diff --git a/runtime/vk_dump.c b/runtime/vk_dump.c
-index 77418ce..98668c1 100644
+index 1621382..f7ddc50 100644
 --- a/runtime/vk_dump.c
 +++ b/runtime/vk_dump.c
-@@ -730,12 +730,13 @@ static void describe_bindings(Str *b, const VkExec *ex, const VkPipeInfo *info)
+@@ -784,12 +784,13 @@ static void describe_bindings(Str *b, const VkExec *ex, const VkPipeInfo *info)
              }
              continue;
          }
@@ -29,7 +29,7 @@ index 77418ce..98668c1 100644
                  uint64_t n = u->size && u->size < ms.avail ? u->size : ms.avail;
                  const float *f = (const float *)(uintptr_t)u->addr;
                  for (uint64_t k = 0; k < (uint64_t)dump_ubo && (k + 1) * 16 <= n; k++)
-@@ -814,6 +815,19 @@ static void describe_bindings(Str *b, const VkExec *ex, const VkPipeInfo *info)
+@@ -874,6 +875,19 @@ static void describe_bindings(Str *b, const VkExec *ex, const VkPipeInfo *info)
      }
  }
  
@@ -49,7 +49,7 @@ index 77418ce..98668c1 100644
  static uint64_t bindings_hash(const VkExec *ex, const VkPipeInfo *info) {
      uint64_t h = 0xcbf29ce484222325ull;
      for (uint32_t i = 0; i < info->n_bindings; i++) {
-@@ -838,9 +852,12 @@ void vk_dump_draw(VkExec *ex, const VkPipeState *s, VkPipeline p, const VkPipeIn
+@@ -998,9 +1012,12 @@ void vk_dump_draw(VkExec *ex, const VkPipeState *s, VkPipeline p, const VkPipeIn
      int pipe = -1;
      for (int i = 0; i < nents; i++)
          if (ents[i].p == p && ents[i].th == th) { pipe = i; break; }

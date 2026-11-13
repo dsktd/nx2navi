@@ -1,4 +1,4 @@
-From 6bd10d816716042b6dc32f5130f5485a648427a0 Mon Sep 17 00:00:00 2001
+From c47d8b8e8f5268ff01c0955145bc3e317169a34f Mon Sep 17 00:00:00 2001
 From: desocketed <desocketed@users.noreply.github.com>
 Date: Mon, 9 Nov 2026 13:45:52 -0500
 Subject: [PATCH] Tracy profiler zones: rt_tracy.h, opt-in with build-linux.py
@@ -10,18 +10,18 @@ macro compiles to nothing without TRACY_ENABLE. The prebuilt client installs cra
 plat_fault_reinstall puts the runtime's back for 300 presents after each connection.
 ---
  runtime/audio_mixer.c    |  7 +++++++
- runtime/nvn_api_core.c   | 10 +++++++++-
+ runtime/nvn_api_core.c   |  6 ++++++
  runtime/perf.c           |  3 +++
  runtime/platform/linux.c | 20 +++++++++++++++-----
  runtime/rt_tracy.h       | 34 ++++++++++++++++++++++++++++++++++
  runtime/vk_exec_draw.c   |  3 +++
- runtime/vk_memory.c      | 17 +++++++++++++++--
+ runtime/vk_memory.c      |  7 +++++++
  runtime/vk_texture.c     | 16 ++++++++++++++++
- 8 files changed, 102 insertions(+), 8 deletions(-)
+ 8 files changed, 91 insertions(+), 5 deletions(-)
  create mode 100644 runtime/rt_tracy.h
 
 diff --git a/runtime/audio_mixer.c b/runtime/audio_mixer.c
-index 9397e09..d770fdb 100644
+index bb0c266..818b0a4 100644
 --- a/runtime/audio_mixer.c
 +++ b/runtime/audio_mixer.c
 @@ -31,6 +31,7 @@
@@ -32,7 +32,7 @@ index 9397e09..d770fdb 100644
  #include "nvn_api.h"   // gfx_counters.frames for the voice start lines
  #include "ipc.h"
  
-@@ -820,8 +821,14 @@ static void voice_start_note(AudioRenderer *r, int i, const ServerVoice *v) {
+@@ -1051,8 +1052,14 @@ static void voice_start_note(AudioRenderer *r, int i, const ServerVoice *v) {
             (unsigned long long)r->elapsed_frames);
  }
  
@@ -48,54 +48,57 @@ index 9397e09..d770fdb 100644
      const int frames = m->frame, mc = r->param.submix_count + 1;
      memset(m->buf, 0, (size_t)m->nbuf * (size_t)frames * sizeof(float));
 diff --git a/runtime/nvn_api_core.c b/runtime/nvn_api_core.c
-index 3cf36d7..7855d15 100644
+index e62c4cf..c2d63e0 100644
 --- a/runtime/nvn_api_core.c
 +++ b/runtime/nvn_api_core.c
-@@ -12,6 +12,7 @@
- #include "cfg.h"
+@@ -13,6 +13,7 @@
  #include "gfx.h"
+ #include "motion_owner.h"
  #include "host.h"
 +#include "rt_tracy.h"
  #include "nvn_api.h"
  #include "nvn_pool_index.h"
  #include "platform/platform.h"
-@@ -658,7 +659,10 @@ NVN_API(nvnQueueSubmitCommands) {
+@@ -719,6 +720,8 @@ NVN_API(nvnQueueSubmitCommands) {
+     uint64_t no = __atomic_add_fetch(&lod_entered, 1, __ATOMIC_SEQ_CST);
      q->submits++;
-     // Prepared and replayed in the order the GPU would run it: a part waiting for an event that a later submission
-     // signals is held back until that one is issued (nvn_api_cmd.c, "event waits"); f is 0 when all of it is held.
+     uint64_t f;
 +    RT_ZONE(zs, "nvn submit");
 +    RT_ZONE_VALUE(zs, n);
-     uint64_t f = nvn_submit_ordered(q, h, n);
-+    RT_ZONE_END(zs);
-     __atomic_store_n(&lod_fence[no % LOD_RING], f, __ATOMIC_RELAXED);
-     __atomic_store_n(&lod_issued, no, __ATOMIC_SEQ_CST);
-     // The first submission of a frame (since the last present) returns once the GPU has run it. NVN starts the GPU when
-@@ -677,7 +681,11 @@ NVN_API(nvnQueueSubmitCommands) {
-         if (e && *e && finish_mask == 1 && !(e[0] == '0' && (e[1] == 'x' || e[1] == 'X'))) finish_mask = -1;   // "1": all
+     if (gfx_replay_async()) {
+         // Prepare and queue under one lock: submit numbers follow queue order (gfx_replayed_submits).
+         static PlatMutex submit_lock = PLAT_MUTEX_INIT;
+@@ -737,6 +740,7 @@ NVN_API(nvnQueueSubmitCommands) {
+         f = gfx_backend()->submit(h, n);
+         gfx_submit_queue = 0;
      }
-     int idx = nvn_submits_in_frame++;
--    if (finish_mask && f && (finish_mask == -1 || (idx < 63 && (finish_mask >> idx & 1)))) gfx_backend()->fence_wait(f, UINT64_MAX);
-+    if (finish_mask && f && (finish_mask == -1 || (idx < 63 && (finish_mask >> idx & 1)))) {
++    RT_ZONE_END(zs);
+     uint64_t prev = __atomic_load_n(&last_fence, __ATOMIC_RELAXED);
+     while (f > prev && !__atomic_compare_exchange_n(&last_fence, &prev, f, 1, __ATOMIC_RELEASE, __ATOMIC_RELAXED)) {}
+     __atomic_store_n(&lod_fence[no % LOD_RING], f, __ATOMIC_RELAXED);
+@@ -768,7 +772,9 @@ NVN_API(nvnQueueSubmitCommands) {
+     int idx = __atomic_fetch_add(&nvn_submits_in_frame, 1, __ATOMIC_RELAXED);
+     if (finish_mask && f && (finish_mask == -1 || (idx < 63 && (finish_mask >> idx & 1)))) {
+         gfx_tl_note('W', 0, f, 0);
 +        RT_ZONE(zw, "submit finish wait");
-+        gfx_backend()->fence_wait(f, UINT64_MAX);
+         gfx_backend()->exec_wait(f, UINT64_MAX);
 +        RT_ZONE_END(zw);
-+    }
- }
- 
- // The producer (1.2.1 main f_70008c6460) releases the read lock on obj+0x538 at lr 0x70008c70c8; when
+         gfx_tl_note('w', 0, 0, 0);
+     }
+     nvn_call_note(0, (uintptr_t)q, 0);
 diff --git a/runtime/perf.c b/runtime/perf.c
-index 9f89be7..979dd26 100644
+index 459e29c..fb0d0c8 100644
 --- a/runtime/perf.c
 +++ b/runtime/perf.c
-@@ -9,6 +9,7 @@
- #include "flight.h"
+@@ -10,6 +10,7 @@
  #include "gfx.h"
  #include "host.h"
+ #include "nvn_api.h"
 +#include "rt_tracy.h"
  #include "perfmon.h"
  #include "prof.h"
  #include "platform/platform.h"
-@@ -264,6 +265,8 @@ void perf_present(uint64_t frame) {
+@@ -813,6 +814,8 @@ void perf_present(uint64_t frame) {
      if (rt_trace & RT_TRACE_SCHED) kern_sched_report(frame);
      uint64_t now = kern_now_ns(), d = last ? now - last : 0;
      prof_sampler_frame(frame, now, last ? d : 0);
@@ -105,10 +108,10 @@ index 9f89be7..979dd26 100644
      uint64_t rep = ft_frame(frame, now, d);   // d is 0 on the first present: it only starts the period
      ab_b += rt_ab();
 diff --git a/runtime/platform/linux.c b/runtime/platform/linux.c
-index 4f64b30..a63f49d 100644
+index 8ffa3b4..38760f2 100644
 --- a/runtime/platform/linux.c
 +++ b/runtime/platform/linux.c
-@@ -948,11 +948,7 @@ static void fault_handler(int sig, siginfo_t *si, void *uc) {
+@@ -1269,11 +1269,7 @@ static void fault_handler(int sig, siginfo_t *si, void *uc) {
      signal(sig, SIG_DFL);   // returns into the faulting instruction, which faults again with the default action
  }
  
@@ -121,7 +124,7 @@ index 4f64b30..a63f49d 100644
      struct sigaction sa = {.sa_sigaction = fault_handler, .sa_flags = SA_SIGINFO | SA_ONSTACK | SA_NODEFER};
      sigemptyset(&sa.sa_mask);
      sigaction(SIGSEGV, &sa, NULL);
-@@ -961,6 +957,20 @@ static void fault_install(void) {
+@@ -1282,6 +1278,20 @@ static void fault_install(void) {
      sigaction(SIGFPE, &sa, NULL);
  }
  
@@ -183,29 +186,29 @@ index 0000000..03f1763
 +#define RT_PLOT(name, v) ((void)0)
 +#endif
 diff --git a/runtime/vk_exec_draw.c b/runtime/vk_exec_draw.c
-index 3c7a493..3ff4818 100644
+index 220c6ff..1670209 100644
 --- a/runtime/vk_exec_draw.c
 +++ b/runtime/vk_exec_draw.c
-@@ -20,6 +20,7 @@
- 
+@@ -21,6 +21,7 @@
  #include "cfg.h"
+ #include "flight.h"
  #include "host.h"
 +#include "rt_tracy.h"
  #include "nvn_api.h"
  #include "nvn_hmap.h"
  #include "vk.h"
-@@ -2653,7 +2654,9 @@ static void bind_resources(VkExec *ex, const VkPipeInfo *info) {
- static void bind_pipeline(VkExec *ex, VkPipelineBindPoint bp, VkPipeline p) {
+@@ -3903,7 +3904,9 @@ static void bind_pipeline(VkExec *ex, VkPipelineBindPoint bp, VkPipeline p) {
+     DrawCtx *const cx = ex->dc;
      int k = bp == VK_PIPELINE_BIND_POINT_COMPUTE;
-     if (B.pipe[k] == p) return;
+     if (cx->B.pipe[k] == p) return;
 +    RT_ZONE(zb, "bind pipeline");
      vkCmdBindPipeline(ex->cb, bp, p);
 +    RT_ZONE_END(zb);
      ex->recorded++;
-     B.pipe[k] = p;
-     if (!k) B.st_valid = 0;
+     cx->B.pipe[k] = p;
+     if (!k) cx->B.st_valid = 0;
 diff --git a/runtime/vk_memory.c b/runtime/vk_memory.c
-index 84e323d..1c72929 100644
+index 1d23714..116a3ab 100644
 --- a/runtime/vk_memory.c
 +++ b/runtime/vk_memory.c
 @@ -15,6 +15,7 @@
@@ -216,60 +219,56 @@ index 84e323d..1c72929 100644
  #include "nvn_api.h"
  #include "nvn_pool_index.h"
  #include "vk.h"
-@@ -1070,6 +1071,8 @@ static int cstracked;
+@@ -1759,6 +1760,8 @@ static uint64_t shadow_write_back(uint64_t addr, uint64_t size) {
+     plat_mutex_lock(&shadow_lock);
+     if (r && r->smap && addr >= r->import_lo && addr + size <= r->import_hi) {
+         if (w_hi && addr < w_hi && addr + size > w_lo) vk_watch("wb-fence", addr, size, 0, r->smap + (w_lo - r->import_lo));
++        RT_ZONE(zw, "write-back");
++        RT_ZONE_VALUE(zw, size);
+         uint64_t t0 = qpc();
+         mem_thaw(addr, size);
+         if (bulk) plat_mem_prepare_write(addr, size);
+@@ -1775,6 +1778,7 @@ static uint64_t shadow_write_back(uint64_t addr, uint64_t size) {
+             a = pe;
+         }
+         s_wb_bytes += moved, s_wb_seen += size, s_wb_ticks += qpc() - t0;
++        RT_ZONE_END(zw);
+     }
+     plat_mutex_unlock(&shadow_lock);
+     plat_mutex_unlock_shared(&pool_lock);
+@@ -2685,6 +2689,8 @@ static int shadow_pool_clean(const PoolRec *r, uint32_t epoch, int cpu) {
  
- void vk_mem_shadow_sync(void) {
+ void vk_mem_shadow_sync(uint64_t fence) {
      if (!shadow_on) return;
 +    RT_ZONE(zs, "shadow sync");
 +    RT_ZONE_VALUE(zs, nstouch);
      uint64_t t0 = qpc();
-     plat_mutex_lock(&shadow_lock);
-     if (nstouch) {
-@@ -1098,6 +1101,7 @@ void vk_mem_shadow_sync(void) {
-     for (int i = 0; i < nspend; i++) spend[i].sub = 1;   // the part goes to the GPU now
+     uint32_t epoch = vk_texture_epoch();
+     int cpu = vk_mirror_on && wb_no_reup();   // before the locks: its first call logs
+@@ -2729,6 +2735,7 @@ void vk_mem_shadow_sync(uint64_t fence) {
+     }
      s_ticks += qpc() - t0;
      plat_mutex_unlock(&shadow_lock);
 +    RT_ZONE_END(zs);
  }
  
- void vk_mem_gpu_pending(uint64_t addr, uint64_t size) {
-@@ -1176,9 +1180,18 @@ void vk_gpu_written(uint64_t addr, uint64_t size) {
-         const pidx_ent *e = pidx_find(&pool_index, addr, size);
-         PoolRec *r = e ? e->buf : NULL;
-         int wb = r && r->smap && addr >= r->import_lo && addr + size <= r->import_hi;
--        if (wb) shadow_diff(r, addr, addr + size);
-+        if (wb) {
-+            RT_ZONE(zd, "write-back compare");
-+            RT_ZONE_VALUE(zd, size);
-+            shadow_diff(r, addr, addr + size);
-+            RT_ZONE_END(zd);
-+        }
-         plat_mutex_lock(&shadow_lock);
--        if (wb) shadow_write_back(r, addr, addr + size);
-+        if (wb) {
-+            RT_ZONE(zw, "write-back");
-+            shadow_write_back(r, addr, addr + size);
-+            RT_ZONE_END(zw);
-+        }
-         int k = -1;   // the submitted entry, not a newer part's equal one
-         for (int i = 0; i < nspend && (k < 0 || !spend[k].sub); i++)
-             if (spend[i].lo == addr && spend[i].hi == addr + size) k = i;
+ // The replay workers (vk_exec.c) bind and write from several threads at once: while a chunk records, a mirror's first
 diff --git a/runtime/vk_texture.c b/runtime/vk_texture.c
-index 81dd830..10e1ae7 100644
+index 0005213..3f9af1b 100644
 --- a/runtime/vk_texture.c
 +++ b/runtime/vk_texture.c
-@@ -18,6 +18,7 @@
- #include "cfg.h"
+@@ -20,6 +20,7 @@
+ #include "flight.h"
  #include "gfx.h"
  #include "host.h"
 +#include "rt_tracy.h"
  #include "nvn_api.h"
  #include "nvn_hmap.h"
  #include "nvn_tex.h"
-@@ -667,7 +668,14 @@ static void destroy_tex(Tex *e) {
- // Dropping all of them at once when the count passed 4096 destroyed thousands of images in one frame: 333-422 ms
- // frames every 40-50 s on a GTX 1050 Ti, then the textures still in use were created and uploaded again.
- #define RELEASED_MAX 2048
+@@ -2265,7 +2266,14 @@ static int released_max(void) {
+     return max;
+ }
+ 
 +static void sweep_released_body(void);
  static void sweep_released(void) {
 +    RT_ZONE(zr, "released sweep");
@@ -278,13 +277,13 @@ index 81dd830..10e1ae7 100644
 +    RT_ZONE_END(zr);
 +}
 +static void sweep_released_body(void) {
-     if (rel_cap < 0) {
-         const char *s = cfg_get("NX2NAVI_TEX_RELEASED_MIB");
-         rel_cap = s && *s ? (int64_t)atoll(s) * 1048576 : 0;
-@@ -784,7 +792,15 @@ static void astc_check(const Tex *e, const uint8_t *raw, const VkAstcRegion *ar,
- #define UPLOAD_PART (32ull << 20)   // fits the staging pool (vk_staging takes up to half of its 64 MiB block)
+     int lim = released_max();
+     if (nreleased <= lim) return;
+     {
+@@ -3454,7 +3462,15 @@ static int chash_wanted(const Tex *e) {
+     return RT_KNOB_ON(mode) && e->t.L.size <= CHASH_BIG_MAX && e->chash_miss < CHASH_MISSES && !vk_exec_pool_loading();
+ }
  
- // Copies the whole storage into the image (every level and layer the image has).
 +static void upload_body(Tex *e);
  static void upload(Tex *e) {
 +    RT_ZONE(zu, "texture upload");
@@ -295,5 +294,8 @@ index 81dd830..10e1ae7 100644
 +}
 +static void upload_body(Tex *e) {
      static volatile int32_t n_bad, n_undecoded, n_split;
+     int no_mem = 0;   // a part's ASTC decode had no memory: the texture is uploaded again later
      const tex_t *t = &e->t;
-     const nvn_texdesc *d = &t->d;
+-- 
+2.56.0
+

@@ -1,4 +1,4 @@
-From 03909db2a0233e3448c69a84a7d91b49a5663ddb Mon Sep 17 00:00:00 2001
+From 7499e223f1adecef465da20810eda0e6d63335ca Mon Sep 17 00:00:00 2001
 From: desocketed <desocketed@users.noreply.github.com>
 Date: Mon, 9 Nov 2026 22:58:40 -0500
 Subject: [PATCH] platform: plat_fault_guard, so a driver fault inside
@@ -12,16 +12,16 @@ executable, the pipeline is not built, its draws are skipped, and the log names 
 module truncated to its header: same fault offset, 4 caught, the replay to frame 1500 completes.
 ---
  runtime/platform/linux.c    | 14 ++++++++++++++
- runtime/platform/platform.h | 15 +++++++++++++++
- runtime/vk_pipeline.c       |  1 -
- 3 files changed, 29 insertions(+), 1 deletion(-)
+ runtime/platform/platform.h | 16 ++++++++++++++++
+ runtime/vk_pipeline.c       | 22 +++++++++++++++++++---
+ 3 files changed, 49 insertions(+), 3 deletions(-)
 
 diff --git a/runtime/platform/linux.c b/runtime/platform/linux.c
-index 45487f3..84aeb78 100644
+index de4b4ae..3c387f1 100644
 --- a/runtime/platform/linux.c
 +++ b/runtime/platform/linux.c
-@@ -924,6 +924,8 @@ uint64_t plat_mem_written(uint64_t addr, uint64_t n, uint64_t *pages, uint64_t m
- static int (*fault_hook)(uint64_t addr);
+@@ -1242,6 +1242,8 @@ static int (*fault_hook)(uint64_t addr);
+ static int (*access_hook)(uint64_t addr, int write, uint64_t ip);   // every read or write fault, before fault_hook
  static void (*crash_fn)(const PlatCrash *c);
  static __thread const char *crash_ctx;   // plat_crash_context: what this thread is doing, for the crash report
 +static __thread PlatFaultJmp *fault_guard;   // plat_fault_guard: where a fault in another module jumps back to
@@ -29,7 +29,7 @@ index 45487f3..84aeb78 100644
  
  static void fault_handler(int sig, siginfo_t *si, void *uc) {
      ucontext_t *u = uc;
-@@ -931,6 +933,18 @@ static void fault_handler(int sig, siginfo_t *si, void *uc) {
+@@ -1252,6 +1254,18 @@ static void fault_handler(int sig, siginfo_t *si, void *uc) {
      if (sig == SIGSEGV && fault_hook && (err & 2) && fault_hook((uint64_t)(uintptr_t)si->si_addr)) return;
      uintptr_t rip = (uintptr_t)u->uc_mcontext.gregs[REG_RIP];
      Dl_info at, self;
@@ -49,13 +49,13 @@ index 45487f3..84aeb78 100644
          int found = dladdr((void *)rip, &at) && at.dli_fname;
          PlatCrash c = {sig == SIGSEGV ? "access violation" : sig == SIGBUS ? "bus error"
 diff --git a/runtime/platform/platform.h b/runtime/platform/platform.h
-index 6cd0b13..a50a807 100644
+index 1261242..298dde6 100644
 --- a/runtime/platform/platform.h
 +++ b/runtime/platform/platform.h
-@@ -247,6 +247,21 @@ void plat_crash_hook(void (*fn)(const PlatCrash *c));
- // What this thread is doing, named by the crash notes (a stack overflow leaves no room for the full report); NULL
- // clears it. s must stay valid until it is cleared.
- void plat_crash_context(const char *s);
+@@ -297,6 +297,22 @@ void plat_crash_context(const char *s);
+ // place (who: that filter's module and offset), 0 when it was still there. Windows only; 0 elsewhere.
+ int plat_crash_filter_reassert(char *who, size_t n);
+ const char *plat_crash_context_get(void);   // the calling thread's note, for the crash report (NULL: none)
 +// A fault guard around a call into another module (the GPU driver): plat_fault_guard(j) returns 0 and arms the guard;
 +// a fault of this thread at an instruction outside this executable then comes back to it a second time with 1 (the
 +// guard is disarmed, the fault is noted on stderr with the crash context) instead of ending the process. What the
@@ -66,6 +66,7 @@ index 6cd0b13..a50a807 100644
 +#define plat_fault_guard(j) ((void)(j), 0)
 +#define plat_fault_unguard() ((void)0)
 +#else
++#include <setjmp.h>
 +typedef struct { sigjmp_buf b; } PlatFaultJmp;
 +void plat_fault_guard_set(PlatFaultJmp *j);
 +#define plat_fault_guard(j) (plat_fault_guard_set(&(j)), sigsetjmp((j).b, 1))
@@ -75,17 +76,53 @@ index 6cd0b13..a50a807 100644
  int plat_mem_readable(uint64_t addr, uint64_t n);         // every page of [addr, addr + n) can be read; no fault
  void *plat_aligned_alloc(size_t size, size_t align);      // free with plat_aligned_free; NULL on failure
 diff --git a/runtime/vk_pipeline.c b/runtime/vk_pipeline.c
-index b757ccb..ef6dcb9 100644
+index c543196..5d49b2c 100644
 --- a/runtime/vk_pipeline.c
 +++ b/runtime/vk_pipeline.c
-@@ -969,7 +969,6 @@ static VkShaderModule make_module(const uint32_t *w, uint64_t words) {
-         w = fixed = pooled;
-     }
-     VkShaderModuleCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = (size_t)words * 4, .pCode = w};
--    { /*TESTHACK*/ static volatile int32_t nmod; const char *e = getenv("TESTHACK_BAD_MODULE"); if (e && plat_inc32(&nmod) % atoi(e) == 0) ci.codeSize = 20; }
-     VkShaderModule m = VK_NULL_HANDLE;
-     VkResult r = vkCreateShaderModule(P.device, &ci, NULL, &m);
-     free(fixed);
+@@ -583,9 +583,24 @@ static volatile uint32_t cache_merges;
+ // everything goes into P.cache as before.
+ static int prep_mode;   // a preparation mode (set before ensure_init): no play cache
+ 
++static __thread const char *pipe_note;   // crash_note's text of the pipeline this thread builds
++
++// A driver fault inside the create (RADV writes through the NULL spirv_to_nir returns for a module it rejects,
++// libvulkan_radeon.so+0x19be92) fails this one pipeline instead of ending the game (platform.h plat_fault_guard, Linux):
++// what the driver held is leaked, the pipeline's draws are skipped, and the log names its shaders.
+ static VkResult pipe_create_one(int kind, void *ci, VkPipeline *pipe, VkPipelineCache cache) {
+-    return kind == 2 ? vkCreateComputePipelines(P.device, cache, 1, ci, NULL, pipe)
+-                     : vkCreateGraphicsPipelines(P.device, cache, 1, ci, NULL, pipe);
++    PlatFaultJmp j;
++    if (plat_fault_guard(j)) {
++        static volatile int32_t n_faults;
++        *pipe = VK_NULL_HANDLE;
++        rt_log("vk_pipeline: the driver faulted %s: not built (%d so far)", pipe_note ? pipe_note : "building a pipeline",
++               plat_inc32(&n_faults));
++        return VK_ERROR_UNKNOWN;
++    }
++    VkResult r = kind == 2 ? vkCreateComputePipelines(P.device, cache, 1, ci, NULL, pipe)
++                           : vkCreateGraphicsPipelines(P.device, cache, 1, ci, NULL, pipe);
++    plat_fault_unguard();
++    return r;
+ }
+ 
+ static VkResult pipe_create_in(int kind, void *ci, VkPipeline *pipe, VkPipelineCache cache) {
+@@ -2682,6 +2697,7 @@ static void crash_note(const char *what, const GfxShader *a, const GfxShader *b,
+                           k[4], k[5], k[6], k[7]);
+         }
+     plat_crash_context(buf);
++    pipe_note = buf;
+ }
+ 
+ // One past the highest binding a shader uses (1 with no resources: binding 0 is the support buffer).
+@@ -4093,7 +4109,7 @@ static VkPipeline gpl_link(const VkPipeState *s, const GKey *k, const Layout *lc
+                  "vertex outputs added %#x)", s->fs ? "yes" : "none", k->n_color, k->depth, k->stencil, k->samples,
+                  pk.missing);
+         crash_note(what, s->vs, s->fs, NULL);
+-        if (vkCreateGraphicsPipelines(P.device, VK_NULL_HANDLE, 1, &pi, NULL, &pipe) != VK_SUCCESS) pipe = VK_NULL_HANDLE;
++        if (pipe_create_one(1, &pi, &pipe, VK_NULL_HANDLE) != VK_SUCCESS) pipe = VK_NULL_HANDLE;
+         plat_crash_context(NULL);
+         double ms = ms_since(t1);   // the link alone: library builds are counted apart
+         if (build) plat_mutex_lock(&P.lock);
 -- 
 2.56.0
 

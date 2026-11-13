@@ -1,4 +1,4 @@
-From bc36291fbb30a6412b45d92bfd49033967d54853 Mon Sep 17 00:00:00 2001
+From 1c44feaacbece268419587cb5cf21ed79466c675 Mon Sep 17 00:00:00 2001
 From: desocketed <desocketed@users.noreply.github.com>
 Date: Mon, 9 Nov 2026 22:53:41 -0500
 Subject: [PATCH] vk_pipeline: the cache save is skipped when the driver's data
@@ -7,15 +7,14 @@ Subject: [PATCH] vk_pipeline: the cache save is skipped when the driver's data
 
 The exit save of a 4.3 GB cache (copy, write, fsync) took about 23 s although the autosave had written the same data. The driver only adds to a VkPipelineCache, so an unchanged size means unchanged data.
 ---
- runtime/gfx_present.c |  9 +++++++
- runtime/vk_pipeline.c | 58 +++++++++++++++++++++++++++++++++++--------
- 2 files changed, 56 insertions(+), 11 deletions(-)
+ runtime/gfx_present.c | 9 +++++++++
+ 1 file changed, 9 insertions(+)
 
 diff --git a/runtime/gfx_present.c b/runtime/gfx_present.c
-index dd409db..5981d00 100644
+index 2db8a46..d8072f8 100644
 --- a/runtime/gfx_present.c
 +++ b/runtime/gfx_present.c
-@@ -71,11 +71,20 @@ void gfx_window_focus_changed(int in) {
+@@ -82,15 +82,24 @@ void gfx_window_focus_changed(int in) {
  void gfx_window_closed(void) {
      int restart = plat_cas32(&g_restart, 0, 0) != 0;
      rt_log("gfx: window closed; %s", restart ? "restarting" : "exiting");
@@ -23,10 +22,14 @@ index dd409db..5981d00 100644
 +    t[0] = plat_now_ms();
      cfg_save();   // a menu change saves 400 ms later on the render thread (option_rows.cpp); closing sooner kept the old file
 +    t[1] = plat_now_ms();
-     vk_pipeline_save();
+     // The window closed while the boot still built its pipelines: not the driver crash the marker is there to catch.
+     // Left in place, the next start took it for one and every later start skipped the prebuild (vk_pipeline.c pm_skipped).
+     vk_pipeline_prewarm_marker_clear();
+     vk_pipeline_save_exit();
 +    t[2] = plat_now_ms();
      prof_write();   // plat_exit runs no atexit handlers
      rtss_limit_restore();   // RivaTuner Statistics Server's profile as it was
+     coop_shutdown();   // leaves the room, before the process ends
 +    t[3] = plat_now_ms();
      fs_save_flush();   // last: the game's threads still run until plat_exit, and a Commit after this one is refused
 +    t[4] = plat_now_ms();
@@ -34,157 +37,8 @@ index dd409db..5981d00 100644
 +           (unsigned long long)(t[4] - t[0]), (unsigned long long)(t[1] - t[0]), (unsigned long long)(t[2] - t[1]),
 +           (unsigned long long)(t[3] - t[2]), (unsigned long long)(t[4] - t[3]));
      if (restart) {
-         plat_setenv("NX2NAVI_REEXEC", NULL);   // the new process counts its own address-space retries (memory.c)
+         cfg_setenv("NX2NAVI_REEXEC", NULL);   // the new process counts its own address-space retries (memory.c)
          if (!plat_restart()) rt_log("gfx: the restart could not start the game again");
-diff --git a/runtime/vk_pipeline.c b/runtime/vk_pipeline.c
-index 53b3b46..b757ccb 100644
---- a/runtime/vk_pipeline.c
-+++ b/runtime/vk_pipeline.c
-@@ -94,6 +94,7 @@ static struct {
-     PFN_vkCmdSetColorWriteMaskEXT set_wmask;
-     PFN_vkCmdSetAlphaToCoverageEnableEXT set_a2c;
-     char cache_path[PLAT_PATH_MAX * 2];
-+    size_t cache_saved;                // bytes of the cache data as last loaded or written (under save_lock)
-     VkPipeStats stats;
- } P = {.lock = PLAT_MUTEX_INIT};
- 
-@@ -164,6 +165,7 @@ static void cache_load(VkCtx *c) {
-     cache_path_init();
-     void *data = NULL;
-     size_t size = 0;
-+    uint64_t t0 = plat_now_ms();
-     FILE *f = P.cache_path[0] ? fopen(P.cache_path, "rb") : NULL;
-     if (f) {
-         fseek(f, 0, SEEK_END);
-@@ -181,6 +183,7 @@ static void cache_load(VkCtx *c) {
-             size = 0;
-         }
-     }
-+    uint64_t t1 = plat_now_ms();
-     VkPipelineCacheCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO, .initialDataSize = size,
-                                     .pInitialData = size ? data : NULL};
-     if (vkCreatePipelineCache(c->device, &ci, NULL, &P.cache) != VK_SUCCESS) {
-@@ -188,6 +191,11 @@ static void cache_load(VkCtx *c) {
-         if (vkCreatePipelineCache(c->device, &ci, NULL, &P.cache) != VK_SUCCESS) P.cache = VK_NULL_HANDLE;
-     }
-     free(data);
-+    // vk_pipeline_save compares the driver's data size with this: a cache that only gained nothing is not rewritten
-+    if (P.cache && vkGetPipelineCacheData(c->device, P.cache, &P.cache_saved, NULL) != VK_SUCCESS) P.cache_saved = 0;
-+    if (size)
-+        rt_log("vk_pipeline: pipeline cache %zu MB loaded (read %llu ms, driver import %llu ms)", size >> 20,
-+               (unsigned long long)(t1 - t0), (unsigned long long)(plat_now_ms() - t1));
- }
- 
- static void keys_open(void);
-@@ -961,6 +969,7 @@ static VkShaderModule make_module(const uint32_t *w, uint64_t words) {
-         w = fixed = pooled;
-     }
-     VkShaderModuleCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = (size_t)words * 4, .pCode = w};
-+    { /*TESTHACK*/ static volatile int32_t nmod; const char *e = getenv("TESTHACK_BAD_MODULE"); if (e && plat_inc32(&nmod) % atoi(e) == 0) ci.codeSize = 20; }
-     VkShaderModule m = VK_NULL_HANDLE;
-     VkResult r = vkCreateShaderModule(P.device, &ci, NULL, &m);
-     free(fixed);
-@@ -999,7 +1008,7 @@ static int is_mesh(const VkPipeState *s) { return s->vs && gfx_shader_stage(s->v
- 
- // The shaders of the pipeline this thread builds, for the crash notes (platform.h plat_crash_context): the first 8
- // bytes of each cache key, as gfx_shader.c names its cache files.
--static void crash_note(const char *what, const GfxShader *a, const GfxShader *b, const GfxShader *c) {
-+static const char *crash_note(const char *what, const GfxShader *a, const GfxShader *b, const GfxShader *c) {
-     static __thread char buf[160];
-     char *o = buf;
-     o += snprintf(o, 40, "building %s", what);
-@@ -1011,6 +1020,25 @@ static void crash_note(const char *what, const GfxShader *a, const GfxShader *b,
-                           k[4], k[5], k[6], k[7]);
-         }
-     plat_crash_context(buf);
-+    return buf;
-+}
-+
-+// vkCreateGraphicsPipelines / vkCreateComputePipelines (compute 1) for one pipeline under the platform's fault guard.
-+// RADV (Mesa 26.2.6 radv_shader_spirv_to_nir) writes through the NULL that spirv_to_nir returns for a module it
-+// rejects, which ended a play session (2026-11-09, libvulkan_radeon.so+0x19be92): such a fault now fails this one
-+// pipeline, whose draws are skipped, and the log names its shaders (note: crash_note's text).
-+static VkResult create_pipeline(int compute, VkPipelineCache cache, const void *ci, VkPipeline *pipe, const char *note) {
-+    PlatFaultJmp j;
-+    if (plat_fault_guard(j)) {
-+        static volatile int32_t n_faults;
-+        *pipe = VK_NULL_HANDLE;
-+        rt_log("vk_pipeline: the driver faulted %s: not built (%d so far)", note, plat_inc32(&n_faults));
-+        return VK_ERROR_UNKNOWN;
-+    }
-+    VkResult r = compute ? vkCreateComputePipelines(P.device, cache, 1, ci, NULL, pipe)
-+                         : vkCreateGraphicsPipelines(P.device, cache, 1, ci, NULL, pipe);
-+    plat_fault_unguard();
-+    return r;
- }
- 
- // One past the highest binding a shader uses (1 with no resources: binding 0 is the support buffer).
-@@ -1596,8 +1624,7 @@ static VkPipeline create_graphics(const VkPipeState *s, const GKey *k, const Lay
-     if (k->fbl & 1) pi.flags |= VK_PIPELINE_CREATE_COLOR_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT;
-     if (k->fbl & 2) pi.flags |= VK_PIPELINE_CREATE_DEPTH_STENCIL_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT;
-     uint64_t p0 = perf_begin();
--    crash_note("a graphics pipeline", s->vs, s->fs, s->ts);
--    VkResult r = vkCreateGraphicsPipelines(P.device, P.cache, 1, &pi, NULL, &pipe);
-+    VkResult r = create_pipeline(0, P.cache, &pi, &pipe, crash_note("a graphics pipeline", s->vs, s->fs, s->ts));
-     plat_crash_context(NULL);
-     perf_end(PERF_PIPE, p0);   // counts on the render thread only, so background builds stay out of it
-     if (r != VK_SUCCESS) {
-@@ -1751,8 +1778,8 @@ static VkPipeline lib_create(int kind, const VkPipeState *s, const GKey *k, VkPi
-         ri.depthAttachmentFormat = (VkFormat)k->depth, ri.stencilAttachmentFormat = (VkFormat)k->stencil;
-         pi.pColorBlendState = &cb, pi.pMultisampleState = &ms;
-     }
--    crash_note("a pipeline library", s->vs, s->fs, NULL);
--    if (vkCreateGraphicsPipelines(P.device, P.cache, 1, &pi, NULL, &pipe) != VK_SUCCESS) pipe = VK_NULL_HANDLE;
-+    if (create_pipeline(0, P.cache, &pi, &pipe, crash_note("a pipeline library", s->vs, s->fs, NULL)) != VK_SUCCESS)
-+        pipe = VK_NULL_HANDLE;
-     plat_crash_context(NULL);
- out:
-     if (m) vkDestroyShaderModule(P.device, m, NULL);
-@@ -1948,8 +1975,8 @@ static VkPipeline gpl_link(const VkPipeState *s, const GKey *k, const Layout *lc
-                                            .layout = l->layout};
-         if (build) plat_mutex_unlock(&P.lock);
-         uint64_t t1 = qpc();
--        crash_note("a library link", s->vs, s->fs, NULL);
--        if (vkCreateGraphicsPipelines(P.device, VK_NULL_HANDLE, 1, &pi, NULL, &pipe) != VK_SUCCESS) pipe = VK_NULL_HANDLE;
-+        if (create_pipeline(0, VK_NULL_HANDLE, &pi, &pipe, crash_note("a library link", s->vs, s->fs, NULL)) != VK_SUCCESS)
-+            pipe = VK_NULL_HANDLE;
-         plat_crash_context(NULL);
-         double ms = ms_since(t1);   // the link alone: library builds are counted apart
-         if (build) plat_mutex_lock(&P.lock);
-@@ -2845,8 +2872,8 @@ static VkPipeline compute_create(const GfxShader *cs, const Layout *l) {
-     if (P.f_full_subgroups && vk_caps.sg_size && lx && lx % vk_caps.sg_size == 0 && uses_subgroup_ops(code, words))
-         ci.stage.flags |= VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT;
-     VkPipeline pipe = VK_NULL_HANDLE;
--    crash_note("a compute pipeline", cs, NULL, NULL);
--    if (vkCreateComputePipelines(P.device, P.cache, 1, &ci, NULL, &pipe) != VK_SUCCESS) pipe = VK_NULL_HANDLE;
-+    if (create_pipeline(1, P.cache, &ci, &pipe, crash_note("a compute pipeline", cs, NULL, NULL)) != VK_SUCCESS)
-+        pipe = VK_NULL_HANDLE;
-     plat_crash_context(NULL);
-     vkDestroyShaderModule(P.device, m, NULL);
-     return pipe;
-@@ -3571,11 +3598,20 @@ void vk_pipeline_save(void) {
-         plat_mutex_unlock(&save_lock);
-         return;
-     }
-+    // The driver only adds to the cache, so the same data size means nothing new since the last load or write: the
-+    // exit save of a 4 GB cache (copy, write, fsync) took seconds although the autosave had written it already.
-     size_t size = 0;
-     void *data = NULL;
--    if (vkGetPipelineCacheData(P.device, P.cache, &size, NULL) == VK_SUCCESS && size && (data = malloc(size)) &&
--        vkGetPipelineCacheData(P.device, P.cache, &size, data) == VK_SUCCESS) {
-+    uint64_t t0 = plat_now_ms();
-+    if (vkGetPipelineCacheData(P.device, P.cache, &size, NULL) == VK_SUCCESS && size && size != P.cache_saved &&
-+        (data = malloc(size)) && vkGetPipelineCacheData(P.device, P.cache, &size, data) == VK_SUCCESS) {
-+        uint64_t t1 = plat_now_ms();
-         if (!plat_file_write_atomic(P.cache_path, data, size)) rt_log("vk_pipeline: cannot write %s", P.cache_path);
-+        else P.cache_saved = size;
-+        uint64_t t2 = plat_now_ms();
-+        if (t2 - t0 >= 100)
-+            rt_log("vk_pipeline: pipeline cache saved, %zu MB (copy %llu ms, write %llu ms)", size >> 20,
-+                   (unsigned long long)(t1 - t0), (unsigned long long)(t2 - t1));
-     }
-     free(data);
-     plat_mutex_unlock(&save_lock);
 -- 
 2.56.0
 

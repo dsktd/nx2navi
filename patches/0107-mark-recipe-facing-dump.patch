@@ -1,4 +1,4 @@
-From ee7f06965234c1788877d6642e2bfe7dccefc14d Mon Sep 17 00:00:00 2001
+From 7e7a696cb5c6600561528818a2beca11bac3c3d3 Mon Sep 17 00:00:00 2001
 From: desocketed <desocketed@users.noreply.github.com>
 Date: Thu, 12 Nov 2026 13:49:03 -0500
 Subject: [PATCH] debug_tools: a mark's recipe gives Link's facing (the actor's
@@ -12,10 +12,10 @@ Subject: [PATCH] debug_tools: a mark's recipe gives Link's facing (the actor's
  2 files changed, 60 insertions(+), 4 deletions(-)
 
 diff --git a/runtime/debug_tools.c b/runtime/debug_tools.c
-index c8d8d91..ade7c36 100644
+index 6e9dcc7..6b96198 100644
 --- a/runtime/debug_tools.c
 +++ b/runtime/debug_tools.c
-@@ -1059,11 +1059,16 @@ static int gd_write(FILE *f) {
+@@ -1098,11 +1098,16 @@ static int gd_write(FILE *f) {
      return lines;
  }
  
@@ -35,7 +35,7 @@ index c8d8d91..ade7c36 100644
  }
  
  int dbg_mark_recipe(const char *path, const char *mark) {
-@@ -1077,7 +1082,8 @@ int dbg_mark_recipe(const char *path, const char *mark) {
+@@ -1116,7 +1121,8 @@ int dbg_mark_recipe(const char *path, const char *mark) {
      FILE *f = fopen(path, "w");
      if (!f) return 0;
      fprintf(f, "# recipe v1\n# %s\n# mark: %s\n# base: .lab/scenarios/base-profile\n", rt_build_line(), mark);
@@ -45,7 +45,7 @@ index c8d8d91..ade7c36 100644
      if (has_age) fprintf(f, " age=%s", young & 1 ? "child" : "adult");
      fputc('\n', f);
      int best = -1;
-@@ -1106,10 +1112,13 @@ int dbg_mark_recipe(const char *path, const char *mark) {
+@@ -1145,10 +1151,13 @@ int dbg_mark_recipe(const char *path, const char *mark) {
  }
  
  // NX2NAVI_MARK_RECIPE=2: the game data's sections and the player actor raw, for finding their layout
@@ -59,7 +59,7 @@ index c8d8d91..ade7c36 100644
      for (int k = 0; m && k < 40; k++) {
          uint64_t sec = m + (uint64_t)k * 0x60, table = rd_ptr(sec + 0x20), entries = rd_ptr(sec + 0x18);
          uint32_t count = 0, size = 0;
-@@ -1128,6 +1137,45 @@ void dbg_mark_probe(FILE *f) {
+@@ -1167,6 +1176,45 @@ void dbg_mark_probe(FILE *f) {
      }
  }
  
@@ -106,10 +106,10 @@ index c8d8d91..ade7c36 100644
  // <tick>:next <mode> <value>;<tick>:setfirst <value>;<tick>:holdfirst <value>;<tick>:show [<hash hex>];
  // <tick>:warp <area> [<start position>];<tick>:event <name>;<tick>:text <game data text's name>;
 diff --git a/runtime/vk_dump.c b/runtime/vk_dump.c
-index 25b0e1b..09e81a4 100644
+index 6cdb5b6..25f21aa 100644
 --- a/runtime/vk_dump.c
 +++ b/runtime/vk_dump.c
-@@ -36,6 +36,7 @@
+@@ -39,6 +39,7 @@
  #include <string.h>
  
  #include "cfg.h"
@@ -117,7 +117,7 @@ index 25b0e1b..09e81a4 100644
  #include "host.h"
  #include "nvn_api.h"
  #include "vk.h"
-@@ -1573,6 +1574,13 @@ void vk_dump_present(uint64_t frame) {
+@@ -1643,6 +1644,13 @@ void vk_dump_present(uint64_t frame) {
          snprintf(dir, sizeof dir, "%s/f%llu", base_dir, (unsigned long long)dump_frame);
          open_files();
          rt_log("vk_dump: dump.req: frame %llu goes to %s", (unsigned long long)dump_frame, dir);

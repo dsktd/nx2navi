@@ -1,4 +1,4 @@
-From 1ddb64be73bd2e6698589fd56de12e9b3d674612 Mon Sep 17 00:00:00 2001
+From dd39cfcdc154b3e105054ab55fa95e771637460f Mon Sep 17 00:00:00 2001
 From: desocketed <desocketed@users.noreply.github.com>
 Date: Tue, 10 Nov 2026 00:42:31 -0500
 Subject: [PATCH] memory: NX2NAVI_ALIAS_EXTRA_MIB (default 0) lets
@@ -14,21 +14,21 @@ Play sessions hit that limit in bursts (LimitReached), once right before ground 
  1 file changed, 12 insertions(+), 1 deletion(-)
 
 diff --git a/runtime/memory.c b/runtime/memory.c
-index c8160c4..9d2d17a 100644
+index 95774c6..cc855ac 100644
 --- a/runtime/memory.c
 +++ b/runtime/memory.c
-@@ -49,6 +49,7 @@ static RtGuestLayout L;
- static uint64_t mods_lo, mods_hi;   // fixed module window
- static PlatMutex lock = PLAT_MUTEX_INIT;
- static uint64_t heap_size, alias_bytes;
+@@ -53,6 +53,7 @@ static uint64_t heap_size, alias_bytes;
+ static int heap_lazy;               // NX2NAVI_HEAP_LAZY, Windows: the heap is committed page run by page run on first use
+ static uint64_t heap_lazy_faults, heap_lazy_bytes;   // accesses that committed heap pages, and the bytes they committed
+ static uint64_t heap_lazy_ns, heap_lazy_max_ns;      // time in those faults, lock wait included, since the last report
 +static uint64_t alias_extra;        // NX2NAVI_ALIAS_EXTRA_MIB: room for MapPhysicalMemory beyond the pool the game is told about
  static uint64_t alias_logged;       // alias_bytes at the last high-water log line
  static uint64_t refused_n, refused_ms, refused_freed;   // refusals since the last map that got new pages: count, first time, bytes unmapped since
  static uint8_t *alias_pages;        // 1 per mapped 4 KiB page of the alias region
-@@ -246,6 +247,15 @@ void mem_init(void) {
-         .pool = pool ? strtoull(pool, NULL, 0) : DEFAULT_POOL + res_heap_extra_bytes(),   // resolution.c
-     };
-     if (!L.pool) rt_fatal("memory: NX2NAVI_APP_POOL is 0");
+@@ -1247,6 +1248,15 @@ void mem_init(void) {
+         rt_log("mem: the heap is committed on first use (NX2NAVI_HEAP_LAZY)");
+     }
+ #endif
 +    // The game sizes its heap as the pool less its images and its VirtualAddressMemory budget (HeapDef, 2802 MiB), so a
 +    // larger pool only grows the heap. NX2NAVI_ALIAS_EXTRA_MIB=<n> (default 0) instead lets MapPhysicalMemory map n MiB
 +    // more than the pool leaves: the total the game reads (GetInfo 6/21) and its heap stay as they are, and the used
@@ -41,7 +41,7 @@ index c8160c4..9d2d17a 100644
  }
  
  const RtGuestLayout *mem_layout(void) { return &L; }
-@@ -461,7 +471,7 @@ static uint32_t alias_map(int unmap, uint64_t a, uint64_t n) {
+@@ -1501,7 +1511,7 @@ static uint32_t alias_map(int unmap, uint64_t a, uint64_t n) {
      } else {
          uint64_t fresh = 0;
          for (uint64_t i = 0; i < count; i++) fresh += !alias_pages[first + i];
@@ -50,7 +50,7 @@ index c8160c4..9d2d17a 100644
              r = R_LIMIT_REACHED;   // the SDK maps LimitReached to its recoverable out-of-memory result
              if (!refused_n++) refused_ms = plat_now_ms(), refused_freed = 0;
              goto out;
-@@ -653,6 +663,7 @@ int mem_info(uint32_t id, uint64_t *out) {
+@@ -1695,6 +1705,7 @@ int mem_info(uint32_t id, uint64_t *out) {
          plat_mutex_lock_shared(&lock);
          v = image_bytes() + heap_size + alias_bytes;
          plat_mutex_unlock_shared(&lock);

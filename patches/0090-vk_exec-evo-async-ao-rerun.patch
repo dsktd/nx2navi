@@ -1,4 +1,4 @@
-From 7a359856117413fc1e7c3e9946b9df35710431f5 Mon Sep 17 00:00:00 2001
+From 585b3d665b5dfcbf9d5327fe7af19cf8197b9094 Mon Sep 17 00:00:00 2001
 From: desocketed <desocketed@users.noreply.github.com>
 Date: Wed, 11 Nov 2026 22:32:02 -0500
 Subject: [PATCH] vk_exec: NX2NAVI_EVO_ASYNC=1 runs the ambient occlusion again
@@ -17,25 +17,25 @@ translator (59867f7d) is added, which also revives NX2NAVI_AO=0.
  runtime/cfg.c          |  3 +-
  runtime/gfx.h          |  1 +
  runtime/nvn_api_cmd.c  |  9 +++++
- runtime/vk_exec.c      | 82 ++++++++++++++++++++++++++++++++++++++++++
+ runtime/vk_exec.c      | 83 ++++++++++++++++++++++++++++++++++++++++++
  runtime/vk_exec.h      |  1 +
- runtime/vk_exec_draw.c | 12 ++++++-
- 6 files changed, 106 insertions(+), 2 deletions(-)
+ runtime/vk_exec_draw.c | 12 +++++-
+ 6 files changed, 107 insertions(+), 2 deletions(-)
 
 diff --git a/runtime/cfg.c b/runtime/cfg.c
-index 411aedb..b71ad7b 100644
+index 51bb21f..2cc8b8c 100644
 --- a/runtime/cfg.c
 +++ b/runtime/cfg.c
-@@ -70,7 +70,7 @@ static const char *const known[] = {
+@@ -71,7 +71,7 @@ static const char *const known[] = {
      "SVC_SLOW_MS", "STALL_MS",
      "SHOTS_FULL", "SPEED_PROBE", "SPIN", "SPIN_HANDOFF_US", "SPLIT_DRAWS", "SPLIT_IDLE", "SPLIT_IN_PASS", "SPLIT_US", "SPV_MARK_TEST", "SPV_OVERRIDE", "STICK_DEADZONE", "STICK_SENS",
      "SWKBD_ANSWER",
--    "SET_AT", "SWKBD_TEST", "TAA", "DBG_TEST", "DEBUG_MENU", "MENU_TEST_DEBUG", "FSR4", "FSR4_FG", "FG4_VERSION", "FG4_SWAPCHAIN", "TEST_PAD", "TEST_PAD_AT", "TEST_PREPARE_SHADERS", "TEX_ALIAS", "DEPTH_INIT_INLINE", "DEPTH_ALIAS_LOG", "TEX_DISUSE", "TEX_DISUSE_EVICT", "TEX_GEN_UNDO", "TEX_MEMO", "TEX_VRAM_PRESSURE", "TEX_RELEASED_MB", "TEX_REUSE", "TEX_SPLIT_FILL", "TEX_COMMIT_FREE_MB", "TEX_PROC_COMMIT_MB", "TEX_EVICT", "TEX_COMMIT_EVICT", "MIRROR_EVICT", "VRAM_BUDGET_MB", "TIMER_1MS", "TRACE", "TXD_TRANSPOSE", "UBO_SNAPSHOT", "EVO_TRACE", "EVENT_AT_SYNC", "UPSCALER", "VK_DYN_A2C", "VK_DYN_VERTEX", "VK_NAN_PRESERVE", "VK_NOOPT", "VK_NO_FLOAT64",
-+    "SET_AT", "SWKBD_TEST", "TAA", "DBG_TEST", "DEBUG_MENU", "MENU_TEST_DEBUG", "FSR4", "FSR4_FG", "FG4_VERSION", "FG4_SWAPCHAIN", "TEST_PAD", "TEST_PAD_AT", "TEST_PREPARE_SHADERS", "TEX_ALIAS", "DEPTH_INIT_INLINE", "DEPTH_ALIAS_LOG", "TEX_DISUSE", "TEX_DISUSE_EVICT", "TEX_GEN_UNDO", "TEX_MEMO", "TEX_VRAM_PRESSURE", "TEX_RELEASED_MB", "TEX_REUSE", "TEX_SPLIT_FILL", "TEX_COMMIT_FREE_MB", "TEX_PROC_COMMIT_MB", "TEX_EVICT", "TEX_COMMIT_EVICT", "MIRROR_EVICT", "VRAM_BUDGET_MB", "TIMER_1MS", "TRACE", "TXD_TRANSPOSE", "UBO_SNAPSHOT", "EVO_TRACE", "EVO_ASYNC", "EVENT_AT_SYNC", "UPSCALER", "VK_DYN_A2C", "VK_DYN_VERTEX", "VK_NAN_PRESERVE", "VK_NOOPT", "VK_NO_FLOAT64",
-     "VK_PRESENT", "VK_RECONVERGE", "VK_NAN_BITS", "VK_RECORDER", "VK_SSBO_ALIGN", "VK_SUBGROUP", "VK_SUBGROUP_PIN", "VK_VALIDATION", "VOLUME", "VRAM_HEADROOM", "VS_OUTS",
-     "WALK_KEY", "WALK_SCALE", "WB_EXACT", "WB_FENCE_LIMIT", "WB_MERGE", "WB_NO_REUP", "WB_MERGE_MAX", "WB_PROBE", "WB_SPLIT", "WB_LAZY", "WB_LAZY_CHUNK", "WB_LAZY_TOUCH", "WINDOW_SIZE", "XLATE", "XLATE_ID", "XLATE_KEEP", "XLATE_PROCS",
-     "ZSTD_CHECK", "ZSTD_NATIVE",
-@@ -209,6 +209,7 @@ static const CfgMeta metas[] = {
+-    "SET_AT", "SWKBD_TEST", "TAA", "DBG_TEST", "DEBUG_MENU", "MENU_TEST_DEBUG", "FSR4", "FSR4_FG", "FG4_VERSION", "FG4_SWAPCHAIN", "TEST_PAD", "TEST_PAD_AT", "TEST_PREPARE_SHADERS", "TEX_ALIAS", "DEPTH_INIT_INLINE", "DEPTH_ALIAS_LOG", "TEX_DISUSE", "TEX_DISUSE_EVICT", "TEX_GEN_UNDO", "TEX_MEMO", "TEX_VRAM_PRESSURE", "TEX_RELEASED_MB", "TEX_RELEASED_MAX", "TEX_REUSE", "TEX_SPLIT_FILL", "TEX_COMMIT_FREE_MB", "TEX_PROC_COMMIT_MB", "TEX_EVICT", "TEX_COMMIT_EVICT", "MIRROR_EVICT", "VRAM_BUDGET_MB", "TIMER_1MS", "TRACE", "TXD_TRANSPOSE", "UBO_SNAPSHOT", "EVO_TRACE", "EVENT_AT_SYNC", "UPSCALER", "VK_DYN_A2C", "VK_DYN_VERTEX", "VK_NAN_PRESERVE", "VK_NOOPT", "VK_NO_FLOAT64",
++    "SET_AT", "SWKBD_TEST", "TAA", "DBG_TEST", "DEBUG_MENU", "MENU_TEST_DEBUG", "FSR4", "FSR4_FG", "FG4_VERSION", "FG4_SWAPCHAIN", "TEST_PAD", "TEST_PAD_AT", "TEST_PREPARE_SHADERS", "TEX_ALIAS", "DEPTH_INIT_INLINE", "DEPTH_ALIAS_LOG", "TEX_DISUSE", "TEX_DISUSE_EVICT", "TEX_GEN_UNDO", "TEX_MEMO", "TEX_VRAM_PRESSURE", "TEX_RELEASED_MB", "TEX_RELEASED_MAX", "TEX_REUSE", "TEX_SPLIT_FILL", "TEX_COMMIT_FREE_MB", "TEX_PROC_COMMIT_MB", "TEX_EVICT", "TEX_COMMIT_EVICT", "MIRROR_EVICT", "VRAM_BUDGET_MB", "TIMER_1MS", "TRACE", "TXD_TRANSPOSE", "UBO_SNAPSHOT", "EVO_TRACE", "EVO_ASYNC", "EVENT_AT_SYNC", "UPSCALER", "VK_DYN_A2C", "VK_DYN_VERTEX", "VK_NAN_PRESERVE", "VK_NOOPT", "VK_NO_FLOAT64",
+     "VK_PRESENT", "VK_RECONVERGE", "VK_NAN_BITS", "VK_RECORDER", "VK_SSBO_ALIGN", "VK_SUBGROUP", "VK_SUBGROUP_PIN", "VK_VALIDATION", "VOLUME", "VRAM_HEADROOM", "VS_OUTS", "WATER_PROJECTIVE",
+     "WAIT_WATCH_S", "WALK_KEY", "WALK_SCALE", "WB_EXACT", "WB_FENCE_LIMIT", "WB_MERGE", "WB_NO_REUP", "WB_MERGE_MAX", "WB_PROBE", "WB_SPLIT", "WB_LAZY", "WB_LAZY_CHUNK", "WB_LAZY_TOUCH", "WINDOW_SIZE", "XLATE", "XLATE_ID", "XLATE_KEEP", "XLATE_PROCS",
+     "UPLOAD_BATCH_MB", "VRAM_HEAP_LIMIT", "VRAM_RESERVE_MB", "TEX_CLOBBER", "LOW_END_GPU",
+@@ -220,6 +220,7 @@ static const CfgMeta metas[] = {
      {"SHADOW_RES", "game", "game|256|512|768|1024|1536|2048", RESTART},
      {"SHADOW_SCALE", "1", "1..4", RESTART}, {"SHADOW_COMPARE", "1", "0|1", RESTART},   // vk_texture.c
      {"SHADOW_BULK_WRITE", "0", "0|1", RESTART},   // vk_memory.c shadow_write_back
@@ -44,10 +44,10 @@ index 411aedb..b71ad7b 100644
      {"SHADOW_TABLE_STORES", "0", "0|1", RESTART}, {"SHADOW_CHECK", "0", "0|1", RESTART},
      {"SVC_SLOW_MS", "0", "0..60000", RESTART},   // kernel.c kern_svc: log services slower than this
 diff --git a/runtime/gfx.h b/runtime/gfx.h
-index 7ac94cd..7bf1857 100644
+index 46e9af0..d3024b1 100644
 --- a/runtime/gfx.h
 +++ b/runtime/gfx.h
-@@ -24,6 +24,7 @@ uint64_t gfx_vsync_time_ns(uint64_t tick);                 // kern_now_ns() time
+@@ -28,6 +28,7 @@ uint64_t gfx_vsync_time_ns(uint64_t tick);                 // kern_now_ns() time
  double gfx_window_refresh_hz(void);                        // refresh rate of the window's monitor; 0 unknown
  int gfx_window_focused(void);
  int vk_hdr_native(void);   // NX2NAVI_HDR = native: the game's own HDR picture (vk_hdr.c)
@@ -56,10 +56,10 @@ index 7ac94cd..7bf1857 100644
  
  // ---- shader service client (gfx_shader.c)
 diff --git a/runtime/nvn_api_cmd.c b/runtime/nvn_api_cmd.c
-index e3a11d6..de9f684 100644
+index 257f1ff..f57d765 100644
 --- a/runtime/nvn_api_cmd.c
 +++ b/runtime/nvn_api_cmd.c
-@@ -1289,6 +1289,15 @@ void nvn_submit_prepare_async(const uint64_t *handles, uint64_t *out, int n) {
+@@ -1296,6 +1296,15 @@ void nvn_submit_prepare_async(const uint64_t *handles, uint64_t *out, int n) {
              pf->used_at = now;
          }
      }
@@ -76,10 +76,10 @@ index e3a11d6..de9f684 100644
      doom_free(doomed);
      for (int i = 0; i < n; i++) {
 diff --git a/runtime/vk_exec.c b/runtime/vk_exec.c
-index b9b729a..413e1fc 100644
+index 28218a8..60132fa 100644
 --- a/runtime/vk_exec.c
 +++ b/runtime/vk_exec.c
-@@ -1358,6 +1358,86 @@ static void evo_resume(VkExec *ex) {
+@@ -1583,6 +1583,86 @@ static void evo_resume(VkExec *ex) {
      }
  }
  
@@ -166,27 +166,35 @@ index b9b729a..413e1fc 100644
  // ---- looking ahead for pipelines (NX2NAVI_PIPE_AHEAD, default 1; 0 off)
  // A draw whose pipeline is not there yet waits for its fast link or is skipped until a worker has built it, and the
  // next draw with a new pipeline is only found when the replay reaches it: an area's first frame, or a turn that brings
-@@ -1614,6 +1694,7 @@ static const op_hdr *walk(VkExec *ex, const op_hdr *h, int depth) {
-         case OP_SIGNAL_EVENT: case OP_REPORT_COUNTER: case OP_RESET_COUNTER: case OP_RENDER_ENABLE: case OP_RENDER_COND:
-         case OP_CLEAR_BUF:
-             vk_exec_op_xfer(ex, h->op, a);
-+            if (h->op == OP_SIGNAL_EVENT && n_wait_notes && !vk_exec_rerun) signal_seen(ex);
+@@ -2503,6 +2583,7 @@ static const op_hdr *walk(VkExec *ex, const op_hdr *h, int depth) {
+             if (depth >= CALL_DEPTH) rt_fatal("vk: command buffer calls nested deeper than %d", CALL_DEPTH);
+             walk(ex, nvn_op_first(((const p_jump *)a)->target), depth + 1);
              break;
++
          case OP_WAIT_EVENT: {
              int met = vk_exec_wait_event(a);
-@@ -1622,6 +1703,7 @@ static const op_hdr *walk(VkExec *ex, const op_hdr *h, int depth) {
+             vk_exec_evt(met ? 'm' : 'u', (const void *)((const p_wait_event *)a)->val, 0);
+@@ -2510,6 +2591,7 @@ static const op_hdr *walk(VkExec *ex, const op_hdr *h, int depth) {
                  vk_exec_pass_end(ex);
                  return h;
              }
 +            if (!met && depth == 0 && !evo_in && vk_exec_ao_async()) wait_note(ex, h);
              break;
          }
-         default: rt_fatal("vk: op %s has no replay handler", nvn_op_name(h->op));
+         default:
+@@ -2521,6 +2603,7 @@ static const op_hdr *walk(VkExec *ex, const op_hdr *h, int depth) {
+                 if (vk_texture_deferred_take()) op_again(ex, h);
+                 RW.ser_n[k]++, RW.ser_ns[k] += kern_now_ns() - t;
+             } else op_one(ex, h);
++            if (h->op == OP_SIGNAL_EVENT && n_wait_notes && !vk_exec_rerun) signal_seen(ex);
+             break;
+         }
+         if (vk_exec_signalled && depth == 0 && !evo_in) evo_resume(ex);   // their ops go through this walk's checks
 diff --git a/runtime/vk_exec.h b/runtime/vk_exec.h
-index 4023ef2..2f17364 100644
+index b74d044..6a4dffb 100644
 --- a/runtime/vk_exec.h
 +++ b/runtime/vk_exec.h
-@@ -247,6 +247,7 @@ void vk_c0_fill(uint8_t bank[VK_C0_BYTES], int stage, const p_bind_buf ssbo[16],
+@@ -288,6 +288,7 @@ void vk_c0_fill(uint8_t bank[VK_C0_BYTES], int stage, const p_bind_buf ssbo[16],
  // vk_exec_draw.c: OP_DRAW, OP_DRAW_IDX, OP_DISPATCH, OP_BIND_* (program, state, vattr, vstream, vbuf, ubo, ssbo, tex,
  // samp, img), OP_UPDATE_UB, OP_DRAW_IDX_IND, OP_DISPATCH_IND. payload: nvn_op_payload of the record.
  void vk_exec_op_draw(VkExec *ex, uint32_t op, const void *payload);
@@ -195,10 +203,10 @@ index 4023ef2..2f17364 100644
  VkImageAspectFlags vk_exec_view_aspect(const VkTexImage *img, const view_t *v, int hv);
  VkImageView vk_exec_target_view(const VkTexImage *img, VkFormat format, VkImageViewType type, uint32_t aspect,
 diff --git a/runtime/vk_exec_draw.c b/runtime/vk_exec_draw.c
-index 12ec7c5..ce2ae05 100644
+index 3739818..6000c70 100644
 --- a/runtime/vk_exec_draw.c
 +++ b/runtime/vk_exec_draw.c
-@@ -2260,6 +2260,7 @@ static void ao_trace(VkExec *ex, const GfxShader *sh, int draw) {
+@@ -2472,6 +2472,7 @@ static void ao_trace(VkExec *ex, const GfxShader *sh, int draw) {
      static const struct { uint64_t h; const char *name; int8_t tex[3], img; } steps[] = {
          {0x1b66d31cf1ac4053ull, "depth", {-1, -1, -1}, -1},     // fs: full to half resolution depth
          {0x561cf523be84578bull, "occlusion", {0, -1, -1}, 0},   // cs: occlusion from the half resolution depth
@@ -206,8 +214,8 @@ index 12ec7c5..ce2ae05 100644
          {0x8b563e79bcdf41ecull, "blur", {0, -1, -1}, 0},        // cs: vertical blur (the last one writes the result)
          {0xc6f5578c8c701891ull, "mask", {0, -1, -1}, 0},        // cs: full resolution r8 from the depth buffer
          {0xc4fcb154221f0f5aull, "resolve", {5, 6, 1}, -1},      // fs: samples mask (5), occlusion (6), half depth (1)
-@@ -5960,6 +5961,14 @@ static void untranslated_dispatch_fallback(VkExec *ex) {
-     vk_exec_barrier(ex);
+@@ -7183,6 +7184,14 @@ static void untranslated_dispatch_fallback(VkExec *ex) {
+     vk_dlaa_upscaler(ex, di, df, dw, dh);   // the scene upscaler's output: DLSS's or FSR's picture goes there (vk_dlaa.c)
  }
  
 +// The ambient occlusion chain: the occlusion compute (561cf523 before the translator of the 2026-11 rebase, 59867f7d
@@ -219,9 +227,9 @@ index 12ec7c5..ce2ae05 100644
 +}
 +
  static void op_dispatch(VkExec *ex, const p_dispatch *d) {
+     DrawCtx *const cx = ex->dc;
      if (d->x <= 0 || d->y <= 0 || d->z <= 0) return;
-     if (!ex->prog) return warn_once(W_PROGRAM, "a dispatch without a bound program is skipped");
-@@ -5973,6 +5982,7 @@ static void op_dispatch(VkExec *ex, const p_dispatch *d) {
+@@ -7198,6 +7207,7 @@ static void op_dispatch(VkExec *ex, const p_dispatch *d) {
      if (!native_tensor(ex)) { untranslated_dispatch_fallback(ex); return; }
      int present;
      const GfxShader *cs = shader_for(ex, NVN_STAGE_CS, &present, NULL, 0);   // synchronous: a skipped dispatch changes results
@@ -229,7 +237,7 @@ index 12ec7c5..ce2ae05 100644
      if (knob_log_cs_binds()) {   // diagnosis: the compute bindings of the first dispatch of each program
          static uint64_t seen[64]; static int nseen;
          int known = 0;
-@@ -6013,7 +6023,7 @@ static void op_dispatch(VkExec *ex, const p_dispatch *d) {
+@@ -7239,7 +7249,7 @@ static void op_dispatch(VkExec *ex, const p_dispatch *d) {
      if (vk_dump_armed) vk_dump_dispatch(ex, cs, p, info, d);
      if (__atomic_load_n(&vk_pick_armed, __ATOMIC_RELAXED)) vk_pick_pass_end();
      if (ao_trace_on()) ao_trace(ex, cs, 0);

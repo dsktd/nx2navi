@@ -1,4 +1,4 @@
-From 1d5b12fc574f795e826cce0dfb04b51198739784 Mon Sep 17 00:00:00 2001
+From cc8416c1887c896c66241c196d021c150cd3b093 Mon Sep 17 00:00:00 2001
 From: desocketed <desocketed@users.noreply.github.com>
 Date: Wed, 11 Nov 2026 22:43:20 -0500
 Subject: [PATCH] vk_exec_draw: NX2NAVI_POOL_LOAD_STEP=128 (0: old) caps a
@@ -14,20 +14,20 @@ Subject: [PATCH] vk_exec_draw: NX2NAVI_POOL_LOAD_STEP=128 (0: old) caps a
  3 files changed, 32 insertions(+), 7 deletions(-)
 
 diff --git a/runtime/cfg.c b/runtime/cfg.c
-index b71ad7b..448bba6 100644
+index 2cc8b8c..d439a7a 100644
 --- a/runtime/cfg.c
 +++ b/runtime/cfg.c
-@@ -76,7 +76,7 @@ static const char *const known[] = {
+@@ -78,7 +78,7 @@ static const char *const known[] = {
      "ZSTD_CHECK", "ZSTD_NATIVE",
-     "BIND_REUSE", "DYN_DELTA", "STG_ARENA", "SUBMIT_BATCH", "ASTC_GPU_DESWIZZLE", "ASTC_SCRATCH_KEEP", "ASTC_ARENA", "ASTC_BC1",
+     "BIND_REUSE", "DYN_DELTA", "STG_ARENA", "SUBMIT_BATCH", "SUBMIT_THREAD", "ASTC_GPU_DESWIZZLE", "ASTC_SCRATCH_KEEP", "ASTC_ARENA", "ASTC_BC1",
      "TEXUP_LOG_MS", "DYN_RES", "DYN_RES_TARGET", "DYN_RES_STEP", "TEXTURE_DETAIL",
 -    "RECORDER_CORE", "RECORDER_PRIO", "REPLAY_TIME", "LOCK_TIME", "POOL_CREATE_BUDGET", "POOL_CREATE_MS", "POOL_FINI_IDLE", "POOL_LOAD_BACKLOG", "POOL_LOAD_MS",
 +    "RECORDER_CORE", "RECORDER_PRIO", "REPLAY_TIME", "LOCK_TIME", "POOL_CREATE_BUDGET", "POOL_CREATE_MS", "POOL_FINI_IDLE", "POOL_LOAD_BACKLOG", "POOL_LOAD_MS", "POOL_LOAD_STEP",
-     "VMA_BLOCK_MB", "SYNC_WAKE_ALL", "LOG_ASYNC", "DEVICE_LOST_AT",
-     "COOP", "COOP_BETA", "COOP_NAME", "COOP_SERVER", "COOP_PORT", "COOP_ROOM", "COOP_AUTO", "COOP_DROP",   // co-op (coop.c); the last three have no menu row
-     "COOP_PROGRESS", "COOP_ITEMS", "COOP_SONGS", "COOP_QUEST", "COOP_KEYS", "COOP_RUPEES", "COOP_AMMO",   // the room's rules (coop_game.c)
-@@ -139,7 +139,7 @@ static const struct { const char *key, *section; } sections[] = {
-     {"DYN_DELTA", "performance"}, {"STG_ARENA", "performance"}, {"SUBMIT_BATCH", "performance"},
+     "VMA_BLOCK_MB", "SYNC_WAKE_ALL", "LOG_ASYNC", "DEVICE_LOST_AT", "STAGING_FAIL_AT", "VRAM_BALLAST_MB",
+     "COOP_STEAM", "COOP_SHARE", "COOP_NAMES", "COOP_CHAT",   // co-op (coop.c, coop_game.c, ui/coop_page.cpp)
+     // retired: the settings of the co-op of versions up to 0.9.2; read by nothing, listed so that a file which still
+@@ -147,7 +147,7 @@ static const struct { const char *key, *section; } sections[] = {
+     {"DYN_DELTA", "performance"}, {"STG_ARENA", "performance"}, {"SUBMIT_BATCH", "performance"}, {"SUBMIT_THREAD", "performance"},
      {"BUILD_FREE_MB", "performance"}, {"BUILD_RESERVE_MB", "performance"}, {"MEM_NEED_MB", "diagnostics"},
      {"ASTC_GPU_DESWIZZLE", "performance"}, {"ASTC_SCRATCH_KEEP", "performance"}, {"ASTC_ARENA", "performance"}, {"ASTC_BC1", "performance"}, {"POOL_CREATE_BUDGET", "performance"},
 -    {"POOL_CREATE_MS", "performance"}, {"POOL_FINI_IDLE", "performance"}, {"FREEZE_BUDGET_US", "performance"}, {"POOL_LOAD_BACKLOG", "performance"}, {"POOL_LOAD_MS", "performance"},
@@ -35,17 +35,17 @@ index b71ad7b..448bba6 100644
      {"TIMER_1MS", "performance"}, {"PIPE_WAIT", "performance"}, {"PIPE_SKIP", "performance"}, {"ONESHOT_BUDGET", "performance"},
      {"PIPE_FRAME_WAIT_MS", "performance"}, {"PIPE_SKIP_STEADY", "performance"},
      {"CACHE_DIE", "performance"}, {"ONE_PER_CORE", "performance"},
-@@ -266,7 +266,7 @@ static const CfgMeta metas[] = {
+@@ -273,7 +273,7 @@ static const CfgMeta metas[] = {
      {"DYN_RES", "0", "0|1", LIVE}, {"DYN_RES_TARGET", "16.7", "1..100", LIVE}, {"DYN_RES_STEP", "45", "8..600", LIVE},
      // the recording thread: a core of its own (auto: with 12 or more logical processors) and the highest priority
      // (vk_exec.c rec_claim)
--    {"RECORDER_CORE", "auto", "auto|0|1", RESTART}, {"RECORDER_PRIO", "1", "0|1", RESTART}, {"REPLAY_TIME", "0", "0|1", RESTART}, {"LOCK_TIME", "0", "0|1", RESTART}, {"POOL_CREATE_BUDGET", "16", "1..4096", RESTART}, {"POOL_CREATE_MS", "6", "0..100", RESTART}, {"POOL_FINI_IDLE", "0", "0|1", RESTART}, {"FREEZE_BUDGET_US", "1000", "0..100000", RESTART}, {"POOL_LOAD_BACKLOG", "512", "0..65536", RESTART}, {"POOL_LOAD_MS", "50", "1..1000", RESTART},
-+    {"RECORDER_CORE", "auto", "auto|0|1", RESTART}, {"RECORDER_PRIO", "1", "0|1", RESTART}, {"REPLAY_TIME", "0", "0|1", RESTART}, {"LOCK_TIME", "0", "0|1", RESTART}, {"POOL_CREATE_BUDGET", "16", "1..4096", RESTART}, {"POOL_CREATE_MS", "6", "0..100", RESTART}, {"POOL_FINI_IDLE", "0", "0|1", RESTART}, {"FREEZE_BUDGET_US", "1000", "0..100000", RESTART}, {"POOL_LOAD_BACKLOG", "512", "0..65536", RESTART}, {"POOL_LOAD_MS", "50", "1..1000", RESTART}, {"POOL_LOAD_STEP", "128", "0..65536", RESTART},
+-    {"RECORDER_CORE", "0", "auto|0|1", RESTART}, {"RECORDER_PRIO", "1", "0|1", RESTART}, {"REPLAY_TIME", "0", "0|1", RESTART}, {"LOCK_TIME", "0", "0|1", RESTART}, {"POOL_CREATE_BUDGET", "16", "1..4096", RESTART}, {"POOL_CREATE_MS", "6", "0..100", RESTART}, {"POOL_FINI_IDLE", "0", "0|1", RESTART}, {"FREEZE_BUDGET_US", "1000", "0..100000", RESTART}, {"POOL_LOAD_BACKLOG", "512", "0..65536", RESTART}, {"POOL_LOAD_MS", "50", "1..1000", RESTART},
++    {"RECORDER_CORE", "0", "auto|0|1", RESTART}, {"RECORDER_PRIO", "1", "0|1", RESTART}, {"REPLAY_TIME", "0", "0|1", RESTART}, {"LOCK_TIME", "0", "0|1", RESTART}, {"POOL_CREATE_BUDGET", "16", "1..4096", RESTART}, {"POOL_CREATE_MS", "6", "0..100", RESTART}, {"POOL_FINI_IDLE", "0", "0|1", RESTART}, {"FREEZE_BUDGET_US", "1000", "0..100000", RESTART}, {"POOL_LOAD_BACKLOG", "512", "0..65536", RESTART}, {"POOL_LOAD_MS", "50", "1..1000", RESTART}, {"POOL_LOAD_STEP", "128", "0..65536", RESTART},
      // held submissions handed to the queue together (vk_sync.c, submit batching)
      {"SUBMIT_BATCH", "4", "1..16", RESTART},
-     {"CACHE_DIE", "1", "0|1|ab", RESTART}, {"ONE_PER_CORE", "0", "0|1|ab", RESTART},   // perf.c cpu_placement
+ #ifdef _WIN32
 diff --git a/runtime/kernel.c b/runtime/kernel.c
-index f5c25b1..5e424af 100644
+index 524c3b6..aa85d6d 100644
 --- a/runtime/kernel.c
 +++ b/runtime/kernel.c
 @@ -87,6 +87,8 @@ struct RtThread {
@@ -57,7 +57,7 @@ index f5c25b1..5e424af 100644
      uint64_t wobj;             // what the current wait is on: owner handle, key, address or first handle
      const uint32_t *whs;       // a WaitSynchronization that blocks: its handles, in the waiter's own memory (holding G)
      int wn;
-@@ -176,6 +178,8 @@ static void acct(RtThread *t, int st) {
+@@ -178,6 +180,8 @@ static void acct(RtThread *t, int st) {
      uint64_t now = kern_now_ns();
      if (t->st_since) {
          t->st_ns[t->st] += now - t->st_since;
@@ -66,7 +66,7 @@ index f5c25b1..5e424af 100644
          if (t->st >= S_HOST && (t == g_render || t->is_main)) {
              uint32_t waker = t->st == S_HOST || t->st == S_SLEEP ? 0 : t->waker;
              wait_add(t == g_render ? g_rw : g_mw, t->st, t->wobj, waker, now - t->st_since);
-@@ -954,8 +958,9 @@ int kern_core_away(void) {
+@@ -1008,8 +1012,9 @@ int kern_core_away(void) {
      lock();
      core_put(t);
      acct(t, S_HOST);
@@ -77,7 +77,7 @@ index f5c25b1..5e424af 100644
      unlock();
      return 1;
  }
-@@ -1315,7 +1320,11 @@ void kern_stall_frame(uint64_t frame, uint64_t interval_ns) {
+@@ -1369,7 +1374,11 @@ void kern_stall_frame(uint64_t frame, uint64_t interval_ns) {
      }
      if (!g_stall_on) return;
      enum { ROWS = 6, TH = 128 };
@@ -90,7 +90,7 @@ index f5c25b1..5e424af 100644
      static struct { uint32_t tid; uint64_t run, rq, flt, maj; } base[TH];   // the host's sums at the previous present
      static Row th[TH];
      Row r[ROWS];
-@@ -1328,6 +1337,8 @@ void kern_stall_frame(uint64_t frame, uint64_t interval_ns) {
+@@ -1382,6 +1391,8 @@ void kern_stall_frame(uint64_t frame, uint64_t interval_ns) {
          x->h = t->handle, x->tid = t->tid, x->prio = t->prio, x->main = t->is_main, x->render = t == g_render;
          for (int k = 0; k < S_N; k++) x->st[k] = t->st_ns[k] - t->sl_st[k];
          memcpy(t->sl_st, t->st_ns, sizeof t->sl_st);
@@ -99,7 +99,7 @@ index f5c25b1..5e424af 100644
      }
      unlock();
      for (int i = 0; i < nt; i++) {
-@@ -1360,6 +1371,13 @@ void kern_stall_frame(uint64_t frame, uint64_t interval_ns) {
+@@ -1414,6 +1425,13 @@ void kern_stall_frame(uint64_t frame, uint64_t interval_ns) {
          rt_log("stall:   thread %#x p%d tid %u%s%s:%s ms; host CPU %.1f ms, run queue %.1f ms, faults %llu (major %llu)",
                 r[i].h, r[i].prio, r[i].tid, r[i].main ? " main" : "", r[i].render ? " render" : "", o ? s : " idle",
                 r[i].run / 1e6, r[i].rq / 1e6, (unsigned long long)r[i].flt, (unsigned long long)r[i].maj);
@@ -114,10 +114,10 @@ index f5c25b1..5e424af 100644
  }
  
 diff --git a/runtime/vk_exec_draw.c b/runtime/vk_exec_draw.c
-index ce2ae05..d8bbfa6 100644
+index 6000c70..c29dc91 100644
 --- a/runtime/vk_exec_draw.c
 +++ b/runtime/vk_exec_draw.c
-@@ -2034,13 +2034,20 @@ static int pool_load_backlog(void) {
+@@ -2223,13 +2223,20 @@ static int pool_load_backlog(void) {
      return n;
  }
  

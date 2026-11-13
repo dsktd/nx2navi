@@ -1,4 +1,4 @@
-From 2265bbe83bba42763daeba67e94422b1d2c69f97 Mon Sep 17 00:00:00 2001
+From 74851f1fc5de35c4d216dadaa8e99be9e06a92a2 Mon Sep 17 00:00:00 2001
 From: desocketed <desocketed@users.noreply.github.com>
 Date: Thu, 12 Nov 2026 08:51:10 -0500
 Subject: [PATCH] build_xlate: expect 41 patches, upstream's 0041 CAS limit

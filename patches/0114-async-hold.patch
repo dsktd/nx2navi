@@ -1,4 +1,4 @@
-From 44398f8f43e0aad6f141f24cde7839ba37cfd72b Mon Sep 17 00:00:00 2001
+From c2d5f23298b6e838d2c812f194ad25acceac3d4c Mon Sep 17 00:00:00 2001
 From: desocketed <desocketed@users.noreply.github.com>
 Date: Thu, 12 Nov 2026 21:16:04 -0500
 Subject: [PATCH] NX2NAVI_ASYNC_HOLD: CPU writes to listed ranges reach the
@@ -17,7 +17,7 @@ ranges out. Default empty: off.
  3 files changed, 163 insertions(+), 4 deletions(-)
 
 diff --git a/runtime/vk.h b/runtime/vk.h
-index 727d3bb..6fd3aaa 100644
+index bf1e991..4df4ed4 100644
 --- a/runtime/vk.h
 +++ b/runtime/vk.h
 @@ -345,6 +345,13 @@ void vk_usnap_begin(const uint64_t *handles, int n, uint64_t fence);
@@ -35,7 +35,7 @@ index 727d3bb..6fd3aaa 100644
  int vk_usnap_find(uint64_t addr, uint64_t n, uint64_t align, VkDescriptorBufferInfo *out);
  const uint8_t *vk_usnap_map(void);   // a host copy of the current arena, at the offsets vk_usnap_find gives
 diff --git a/runtime/vk_memory.c b/runtime/vk_memory.c
-index 8421b42..da81cb7 100644
+index 73c1d2e..9557e92 100644
 --- a/runtime/vk_memory.c
 +++ b/runtime/vk_memory.c
 @@ -2886,6 +2886,145 @@ static void range_add(MRange **a, int *n, int *cap, PoolRec *r, uint64_t off, ui
@@ -202,7 +202,7 @@ index 8421b42..da81cb7 100644
              mrep.flush_n++, mrep.flush_bytes += b - a, r->st_flush += b - a;
              if ((rt_trace & RT_TRACE_PERF) && b - a >= 16u << 20)
                  rt_log("mem: mirror frame %llu: flush range %.1f MiB at +%.1f MiB of a %.1f MiB pool (%d ranges from %llu "
-@@ -4393,7 +4532,7 @@ void vk_mem_mirror_begin(void) {
+@@ -4397,7 +4536,7 @@ void vk_mem_mirror_begin(void) {
      slow_mem_call("mirror begin (its queries and freezes)", 0, ww_bytes - b0, q, qpc() - t0);
  }
  
@@ -211,7 +211,7 @@ index 8421b42..da81cb7 100644
  
  // NX2NAVI_MIRROR_CAPTURE_KB: the pages the CPU wrote since a VRAM mirror's last sync are copied out of guest memory by
  // the CPU when the part that needs them is handed to the queue, up to this many KiB a part, into a host buffer the
-@@ -4517,12 +4656,20 @@ static void mirror_capture(VkCommandBuffer cb) {
+@@ -4524,12 +4663,20 @@ static void mirror_capture(VkCommandBuffer cb) {
  }
  
  void vk_mem_mirror_prologue(VkCommandBuffer cb) {

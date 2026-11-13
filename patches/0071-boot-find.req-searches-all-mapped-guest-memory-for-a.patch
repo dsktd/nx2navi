@@ -1,4 +1,4 @@
-From 7826868f694a84a3514b4ed536d9a7bb52c9dffe Mon Sep 17 00:00:00 2001
+From 235522a53ac05aa772a9765667acbb41bb8d3f65 Mon Sep 17 00:00:00 2001
 From: desocketed <desocketed@users.noreply.github.com>
 Date: Tue, 10 Nov 2026 22:58:25 -0500
 Subject: [PATCH] boot: find.req searches all mapped guest memory for a string
@@ -12,18 +12,18 @@ Subject: [PATCH] boot: find.req searches all mapped guest memory for a string
  1 file changed, 243 insertions(+), 2 deletions(-)
 
 diff --git a/runtime/boot.c b/runtime/boot.c
-index bda6271..ed52d08 100644
+index 6f52d2f..1976163 100644
 --- a/runtime/boot.c
 +++ b/runtime/boot.c
-@@ -9,6 +9,7 @@
- //   nvnBootstrapLoader     main+0xebcdec (1.2.1: +0xe7eb2c, 1.4.3: +0xbe0360) in the graphics bring-up; logs the
- //                          run statistics, exits 0
+@@ -10,6 +10,7 @@
+ //   nvnBootstrapLoader     main+0x346bf8c (+0xebcdec, +0xe7eb2c, +0xbe0360) in the graphics bring-up; logs the run
+ //                          statistics, exits 0
  // With --seconds S the run continues past that call; rt_frame_presented ends it once the world clock passed S.
 +#include <ctype.h>
  #include <stdio.h>
  #include <stdlib.h>
  #include <string.h>
-@@ -430,24 +431,264 @@ static void peek_log(uint64_t n) {
+@@ -437,24 +438,264 @@ static void peek_log(uint64_t n) {
      }
  }
  

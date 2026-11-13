@@ -1,4 +1,4 @@
-From 6a754f93ebd3ff52b72637b994318c7c2a0c0f44 Mon Sep 17 00:00:00 2001
+From b81bc9c1449e8978be19ed648493a0facdad19b0 Mon Sep 17 00:00:00 2001
 From: desocketed <desocketed@users.noreply.github.com>
 Date: Wed, 11 Nov 2026 19:09:23 -0500
 Subject: [PATCH] provenance: the first log line names the build (entry, exe,
@@ -20,7 +20,7 @@ Subject: [PATCH] provenance: the first log line names the build (entry, exe,
  create mode 100644 runtime/provenance.c
 
 diff --git a/runtime/boot.c b/runtime/boot.c
-index 0ea24f6..c4f9277 100644
+index 1976163..2b00a3d 100644
 --- a/runtime/boot.c
 +++ b/runtime/boot.c
 @@ -272,7 +272,7 @@ static void series_shot(const tex_t *t, const int crop[4], uint64_t n) {
@@ -53,19 +53,19 @@ index 0ea24f6..c4f9277 100644
          uint8_t *px = all + one * (size_t)(g - m->first);
          if (!px[3]) continue;
 diff --git a/runtime/flight.c b/runtime/flight.c
-index 85f3320..247c5d5 100644
+index aaaffb7..6980954 100644
 --- a/runtime/flight.c
 +++ b/runtime/flight.c
-@@ -238,6 +238,7 @@ static void dump_main(void *arg) {
-         free(j);
+@@ -350,6 +350,7 @@ static void dump_main(void *arg) {
+         free(j->ev), free(j);
          return;
      }
 +    rt_build_note(j->dir);
+     write_events(j);   // first: it takes a moment, the thumbnails seconds, and a game closed meanwhile keeps it
      uint8_t *have = calloc((size_t)j->n, 1);
      int n_thumbs = 0;
-     if (thumbs_on && have) {
 diff --git a/runtime/host.h b/runtime/host.h
-index 65b453d..8511202 100644
+index 50d193a..8a2df2e 100644
 --- a/runtime/host.h
 +++ b/runtime/host.h
 @@ -22,6 +22,11 @@ void rt_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));   // "[
@@ -81,7 +81,7 @@ index 65b453d..8511202 100644
  void rt_log_sync(void);                         // writes the queued log lines now; later lines are written as they are made
  enum { RT_TRACE_SVC = 1, RT_TRACE_HOSTCALL = 2, RT_TRACE_IPC = 4, RT_TRACE_FS = 8, RT_TRACE_GFX = 16, RT_TRACE_PERF = 32,
 diff --git a/runtime/input.c b/runtime/input.c
-index e2a47a6..7f6f3eb 100644
+index c2d697e..4445d8c 100644
 --- a/runtime/input.c
 +++ b/runtime/input.c
 @@ -210,7 +210,7 @@ static void rec_apply(uint64_t b, const int32_t sl[2], const int32_t sr[2]) {
@@ -94,10 +94,10 @@ index e2a47a6..7f6f3eb 100644
      }
      if (rec_state != 1) return;
 diff --git a/runtime/main.c b/runtime/main.c
-index 82808af..ab02fd7 100644
+index 9710e17..e4b9785 100644
 --- a/runtime/main.c
 +++ b/runtime/main.c
-@@ -577,6 +577,7 @@ static void portable_paths(RtConfig *c) {
+@@ -579,6 +579,7 @@ static void portable_paths(RtConfig *c) {
  
  int main(int argc, char **argv) {
      mem_init();   // first: claim the guest address space before anything else can land there; reads nx2navi.ini
@@ -240,10 +240,10 @@ index ea5a2d1..7533656 100644
      api->SetCaptureFilePathTemplate(tmpl);
      rt_log("rdoc: ready, %d frame(s), captures %s", n_targets, full);
 diff --git a/runtime/vk_dump.c b/runtime/vk_dump.c
-index eb3a769..25b0e1b 100644
+index 092f8d6..6cdb5b6 100644
 --- a/runtime/vk_dump.c
 +++ b/runtime/vk_dump.c
-@@ -1408,6 +1408,7 @@ static void req_options(char *t) {
+@@ -1442,6 +1442,7 @@ static void req_options(char *t) {
  // passes.txt and images.txt in dir (a new folder per NX2NAVI_DUMP_WHITE attempt), bufs.txt with NX2NAVI_DUMP_BUF
  static void open_files(void) {
      make_dirs(dir);

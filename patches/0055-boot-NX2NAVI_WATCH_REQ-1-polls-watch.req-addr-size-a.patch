@@ -1,4 +1,4 @@
-From e13910b0f4982ded1d3e7a06ae1190e87882d900 Mon Sep 17 00:00:00 2001
+From efb92ee6382bf9840898ccdb0b5c1e2bf21aa506 Mon Sep 17 00:00:00 2001
 From: desocketed <desocketed@users.noreply.github.com>
 Date: Tue, 10 Nov 2026 17:36:55 -0500
 Subject: [PATCH] boot: NX2NAVI_WATCH_REQ=1 polls watch.req (<addr>:<size>,
@@ -11,10 +11,10 @@ Subject: [PATCH] boot: NX2NAVI_WATCH_REQ=1 polls watch.req (<addr>:<size>,
  1 file changed, 86 insertions(+)
 
 diff --git a/runtime/boot.c b/runtime/boot.c
-index ba957e9..a8ce86d 100644
+index e693a6c..f11fc36 100644
 --- a/runtime/boot.c
 +++ b/runtime/boot.c
-@@ -397,6 +397,91 @@ static int mark_knob(const char *name) {
+@@ -404,6 +404,91 @@ static int mark_knob(const char *name) {
      return n < 0 ? 0 : n > 1000 ? 1000 : n;
  }
  
@@ -106,7 +106,7 @@ index ba957e9..a8ce86d 100644
  static void mark_poll(uint64_t n) {
      static int init, dump_req, marks;
      static char mark_req[PLAT_PATH_MAX], dump_path[PLAT_PATH_MAX];
-@@ -425,6 +510,7 @@ static void mark_poll(uint64_t n) {
+@@ -432,6 +517,7 @@ static void mark_poll(uint64_t n) {
              mark_ring_on = 1;
          }
      }

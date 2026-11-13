@@ -1,4 +1,4 @@
-From d9c9e0a5c4c50d96087d07ec19f57f462a96d310 Mon Sep 17 00:00:00 2001
+From 5c5009bfc13ad8e4ffe71dbd242c716c2b82bdaa Mon Sep 17 00:00:00 2001
 From: desocketed <desocketed@users.noreply.github.com>
 Date: Thu, 12 Nov 2026 00:32:23 -0500
 Subject: [PATCH] vk_memory: NX2NAVI_SHADOW_TAB_RUNS=1 (0: one query per
@@ -10,10 +10,10 @@ Subject: [PATCH] vk_memory: NX2NAVI_SHADOW_TAB_RUNS=1 (0: one query per
  1 file changed, 41 insertions(+), 2 deletions(-)
 
 diff --git a/runtime/vk_memory.c b/runtime/vk_memory.c
-index 8db0169..da5c842 100644
+index 11f1d5d..a5f41b5 100644
 --- a/runtime/vk_memory.c
 +++ b/runtime/vk_memory.c
-@@ -1275,6 +1275,10 @@ static int ntregs, ctregs;
+@@ -1415,6 +1415,10 @@ static int ntregs, ctregs;
  static PoolRec **sfar;                            // shadow_lock: table shadows past the snapshot regions, always visited
  static int nsfar, csfar;
  static uint32_t stab_visit;                       // shadow_lock: table syncs so far
@@ -24,7 +24,7 @@ index 8db0169..da5c842 100644
  static uint64_t s_tab_regs, s_tab_dregs, s_tab_vis;   // shadow_lock, since the last log: regions snapped, dirty, shadows visited
  static uint32_t stab_want;                        // the last guest submission whose record bound the table
  static uint64_t s_t_over_all;                     // shadow_lock: s_tab_over since the start
-@@ -1536,6 +1540,7 @@ static void tab_index(PoolRec *r, int add) {
+@@ -1676,6 +1680,7 @@ static void tab_index(PoolRec *r, int add) {
                  if (ntregs == ctregs) grow((void **)&tregs, &ctregs, sizeof *tregs);
                  tregs[ntregs++] = (uint32_t)k;
                  treg_i[k] = (uint32_t)ntregs;
@@ -32,7 +32,7 @@ index 8db0169..da5c842 100644
              }
              continue;
          }
-@@ -1545,10 +1550,39 @@ static void tab_index(PoolRec *r, int add) {
+@@ -1685,10 +1690,39 @@ static void tab_index(PoolRec *r, int add) {
              uint32_t last = tregs[--ntregs];
              tregs[treg_i[k] - 1] = last, treg_i[last] = treg_i[k];
              treg_i[k] = 0;
@@ -72,7 +72,7 @@ index 8db0169..da5c842 100644
  static void shadow_forget(PoolRec *r) {
      plat_mutex_lock(&shadow_lock);
      for (int i = 0; i < nstouch; i++)
-@@ -2768,8 +2802,11 @@ static int shadow_pool_pages_clean(const PoolRec *r, uint32_t epoch, int cpu) {
+@@ -2929,8 +2963,11 @@ static int shadow_pool_pages_clean(const PoolRec *r, uint32_t epoch, int cpu) {
  
  void vk_mem_shadow_sync(uint64_t fence) {
      if (!shadow_on) return;
@@ -85,7 +85,7 @@ index 8db0169..da5c842 100644
          tab_dirty = rt_knob("SHADOW_TAB_DIRTY", "1") == 1;
          rt_log("mem: the table's sync visits %s (NX2NAVI_SHADOW_TAB_DIRTY)",
                 tab_dirty ? "the shadows of regions stamped since the last one" : "every shadow");
-@@ -2805,7 +2842,9 @@ void vk_mem_shadow_sync(uint64_t fence) {
+@@ -2966,7 +3003,9 @@ void vk_mem_shadow_sync(uint64_t fence) {
          if (table && tab_dirty) {   // the regions stamped since the last table sync, and their shadows
              uint32_t vis = ++stab_visit;
              const uint32_t *mx = cpu ? creg_max : reg_max;

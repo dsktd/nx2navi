@@ -1,61 +1,60 @@
-From cc41d39110dc53a9db3cf190a6a9ed482c03c604 Mon Sep 17 00:00:00 2001
+From 9d6b53dce2e19db2d84afc6b3692ccab52aa0878 Mon Sep 17 00:00:00 2001
 From: desocketed <desocketed@users.noreply.github.com>
 Date: Sun, 8 Nov 2026 15:06:03 -0500
-Subject: [PATCH 2/2] NX2NAVI_WATCH=<addr>:<size>: log what touches a guest
- range (debug)
+Subject: [PATCH] NX2NAVI_WATCH=<addr>:<size>: log what touches a guest range
+ (debug)
 
 ---
  runtime/vk.h           |  1 +
  runtime/vk_exec_draw.c |  1 +
  runtime/vk_exec_xfer.c |  1 +
- runtime/vk_memory.c    | 32 ++++++++++++++++++++++++++++++++
- 4 files changed, 35 insertions(+)
+ runtime/vk_memory.c    | 29 +++++++++++++++++++++++++++++
+ 4 files changed, 32 insertions(+)
 
 diff --git a/runtime/vk.h b/runtime/vk.h
-index fe626e5..33743bc 100644
+index 2c6c1af..8eb894d 100644
 --- a/runtime/vk.h
 +++ b/runtime/vk.h
-@@ -288,6 +288,7 @@ void vk_mem_mirror_prologue(VkCommandBuffer cb);
- void vk_mem_shadow_sync(void);
- void vk_mem_gpu_pending(uint64_t addr, uint64_t size);
- void vk_gpu_written(uint64_t addr, uint64_t size);
+@@ -420,6 +420,7 @@ void vk_gpu_written(uint64_t addr, uint64_t size);
+ // buffer was picked (VK_MEM_USE / VK_MEM_PICK): 1 when [addr, addr+size) lies in one pool whose mirror is on.
+ void vk_gpu_written_back(uint64_t addr, uint64_t size);
+ int vk_mem_mirrored(uint64_t addr, uint64_t size);
 +void vk_watch(const char *what, uint64_t a, uint64_t n, uint64_t v, const uint8_t *shadow);
  int vk_mem_flush_add_probe(void);        // --probe-vkexec: the flush range list; 0 or the number of the failed check
  uint64_t vk_mem_mirror_uploaded(void);   // --probe-vkexec: bytes copied into mirrors since the last summary line
  int vk_mem_mirror_probe(uint64_t addr);   // --probe-vkexec: the pool at addr gets its mirror as on a first buffer use;
 diff --git a/runtime/vk_exec_draw.c b/runtime/vk_exec_draw.c
-index 4618e6c..b30882d 100644
+index 7a8ae07..d447cad 100644
 --- a/runtime/vk_exec_draw.c
 +++ b/runtime/vk_exec_draw.c
-@@ -4328,6 +4328,7 @@ static void op_update_ub(VkExec *ex, const p_update_ub *u) {
+@@ -7203,6 +7203,7 @@ static void op_update_ub(VkExec *ex, const p_update_ub *u) {
      VK_MEM_PICK(sp);
      VkBufferCopy cp = {o, sp.offset, u->size};
      vkCmdCopyBuffer(ex->cb, b, sp.buffer, 1, &cp);
 +    vk_watch("ubupd", u->dst, u->size, u->size >= 4 ? *(const uint32_t *)u->data : 0, NULL);
-     vk_mem_gpu_wrote(&sp, u->size);
-     vk_usnap_drop(u->dst, u->size);
-     ex->recorded++;
+     // In a submission's tail (vk_exec.c "the early tail") an update of a mirrored block reaches guest memory with the
+     // results the game reads, from the bytes here, and takes no write-back: one after the tail would land when the
+     // game is already writing the next frame's data. Not with the lazy write-back, where the block's pages may be
 diff --git a/runtime/vk_exec_xfer.c b/runtime/vk_exec_xfer.c
-index 644c17b..cd4f00f 100644
+index 4b6695c..4317723 100644
 --- a/runtime/vk_exec_xfer.c
 +++ b/runtime/vk_exec_xfer.c
-@@ -642,6 +642,7 @@ static void clear_buf(VkExec *ex, const p_clear_buf *p) {
-         if (!started) vk_exec_pass_end(ex), vk_exec_barrier(ex), started = 1;
-         VK_MEM_PICK(d);
-         vkCmdFillBuffer(ex->cb, d.buffer, d.offset, n, p->value);
+@@ -1088,6 +1088,7 @@ static void clear_buf(VkExec *ex, const p_clear_buf *p) {
+         // copies (translator patch 0036), and a counter reset here must start from the same value in both.
+         VkBuffer twin = vk_mem_guest_twin(&d);
+         if (twin) vkCmdFillBuffer(ex->cb, twin, d.offset, n, p->value), ex->recorded++;
 +        vk_watch("fill", dst, n, p->value, NULL);
          vk_mem_gpu_wrote(&d, n);
          ex->recorded++;
          vk_mem_count(d.cls, VK_MUSE_GPU_WRITE, n);
 diff --git a/runtime/vk_memory.c b/runtime/vk_memory.c
-index 55dd44d..847cdfc 100644
+index b340281..1d23714 100644
 --- a/runtime/vk_memory.c
 +++ b/runtime/vk_memory.c
-@@ -890,6 +890,33 @@ static int query_stamp(uint64_t lo, uint64_t hi, uint32_t g) {
+@@ -1223,6 +1223,32 @@ static int query_stamp(uint64_t lo, uint64_t hi, uint32_t g) {
      }
  }
  
-+
 +// ---- NX2NAVI_WATCH=<addr>:<size> (debug): log what touches that range, with its guest (and shadow) words.
 +static uint64_t w_lo, w_hi;
 +static int w_init;
@@ -85,46 +84,30 @@ index 55dd44d..847cdfc 100644
  // ---------------------------------------------------------------- shadow storage
  // Where importing guest memory costs too much (Linux: re-protecting pages that amdgpu imported as a userptr
  // invalidates the buffer, about 1.3 ms per 16 MiB at the next submit, and the import's write pinning clears the
-@@ -972,6 +999,7 @@ static int spend_again(uint64_t lo, uint64_t hi) {
- // (spend from index i on): submitted ones whose range the next part does not write again. When it does, the GPU
- // starts from what the CPU left there, as on hardware, where the earlier write landed long before.
- static void shadow_copy(PoolRec *r, uint64_t a, uint64_t b, int i) {
-+    if (!i && w_hi && a < w_hi && b > w_lo) vk_watch("cpu-dirty", a, b - a, nspend, r->smap + (w_lo - r->import_lo));
-     for (; i < nspend; i++)
-         if (spend[i].sub && spend[i].lo < b && spend[i].hi > a && !spend_again(spend[i].lo, spend[i].hi)) {
-             if (spend[i].lo > a) shadow_copy(r, a, spend[i].lo, i + 1);
-@@ -979,6 +1007,7 @@ static void shadow_copy(PoolRec *r, uint64_t a, uint64_t b, int i) {
-             return;
-         }
-     memcpy(r->smap + (a - r->import_lo), (const void *)(uintptr_t)a, b - a);
-+    if (w_hi && a < w_hi && b > w_lo) vk_watch("cpu->shadow", a, b - a, nspend, r->smap + (w_lo - r->import_lo));
-     s_copied += b - a;
- }
+@@ -1564,6 +1590,7 @@ static void shadow_forget(PoolRec *r) {
  
-@@ -1039,6 +1068,7 @@ void vk_mem_shadow_sync(void) {
- }
- 
+ // shadow_lock held: copies guest [a, b) into the shadow; of a page with a base copy only the CPU's bytes (merge_page).
+ static void shadow_copy(PoolRec *r, uint64_t a, uint64_t b) {
++    if (w_hi && a < w_hi && b > w_lo) vk_watch("cpu->shadow", a, b - a, 0, r->smap + (w_lo - r->import_lo));
+     while (a < b) {
+         uint64_t e = b;
+         uint8_t *base = NULL;
+@@ -1656,6 +1683,7 @@ static void shadow_sync_pool(PoolRec *r, uint32_t epoch, int cpu) {
+ // Record time: the GPU may write [addr, addr+size) of CPU-visible memory. With shadow storage the pages it covers get
+ // their base copies before the submission's copy-in (vk_mem_shadow_sync) can reach them.
  void vk_mem_gpu_pending(uint64_t addr, uint64_t size) {
 +    vk_watch("gpu-pending", addr, size, 0, NULL);
      if (!shadow_on || !size) return;
+     plat_mutex_lock_shared(&pool_lock);
+     const pidx_ent *e = pidx_find(&pool_index, addr, size);
+@@ -1730,6 +1758,7 @@ static uint64_t shadow_write_back(uint64_t addr, uint64_t size) {
+     PoolRec *r = e ? e->buf : NULL;
      plat_mutex_lock(&shadow_lock);
-     if (nspend == cspend) grow((void **)&spend, &cspend, sizeof *spend);
-@@ -1048,6 +1078,7 @@ void vk_mem_gpu_pending(uint64_t addr, uint64_t size) {
- 
- // shadow_lock held: one changed run of shadow_write_back.
- static void shadow_put(PoolRec *r, uint64_t a, uint64_t b) {
-+    if (w_hi && a < w_hi && b > w_lo) vk_watch("wb-put", a, b - a, 0, r->smap + (w_lo - r->import_lo));
-     mem_thaw(a, b - a);
-     memcpy((void *)(uintptr_t)a, r->smap + (a - r->import_lo), b - a);
-     vk_guest_written(a, b - a);
-@@ -1065,6 +1096,7 @@ static void shadow_put(PoolRec *r, uint64_t a, uint64_t b) {
- // of the copy-back stay as they were, including a page the CPU and the GPU both wrote keeping the GPU's bytes; only
- // the page is not reported written, and no consumer of the stamps needs to see bytes that did not change.
- static void shadow_write_back(PoolRec *r, uint64_t a, uint64_t b) {
-+    if (w_hi && a < w_hi && b > w_lo) vk_watch("wb-fence", a, b - a, 0, r->smap + (w_lo - r->import_lo));
-     uint64_t run = 0;
-     for (uint64_t x = a; x < b;) {
-         uint64_t y = (x | 0xfffull) + 1;
+     if (r && r->smap && addr >= r->import_lo && addr + size <= r->import_hi) {
++        if (w_hi && addr < w_hi && addr + size > w_lo) vk_watch("wb-fence", addr, size, 0, r->smap + (w_lo - r->import_lo));
+         uint64_t t0 = qpc();
+         mem_thaw(addr, size);
+         if (bulk) plat_mem_prepare_write(addr, size);
 -- 
 2.56.0
 

@@ -1,4 +1,4 @@
-From 4295ae5de58e45fac436d92f2bf198a2be7e958c Mon Sep 17 00:00:00 2001
+From 2ed96f2fd0b6de0397f80a0c0707f806e3268c84 Mon Sep 17 00:00:00 2001
 From: desocketed <desocketed@users.noreply.github.com>
 Date: Mon, 9 Nov 2026 08:40:23 -0500
 Subject: [PATCH] NX2NAVI_TRACE=counters: a present/clock line per 60 presents
@@ -6,13 +6,13 @@ Subject: [PATCH] NX2NAVI_TRACE=counters: a present/clock line per 60 presents
 
 ---
  runtime/audio_mixer.c | 17 +++++++++++++++++
- runtime/host.h        |  3 ++-
+ runtime/host.h        |  5 +++--
  runtime/main.c        |  4 ++--
  runtime/perf.c        |  1 +
- 4 files changed, 22 insertions(+), 3 deletions(-)
+ 4 files changed, 23 insertions(+), 4 deletions(-)
 
 diff --git a/runtime/audio_mixer.c b/runtime/audio_mixer.c
-index 91822ad..9397e09 100644
+index 0708e01..bb0c266 100644
 --- a/runtime/audio_mixer.c
 +++ b/runtime/audio_mixer.c
 @@ -31,6 +31,7 @@
@@ -23,7 +23,7 @@ index 91822ad..9397e09 100644
  #include "ipc.h"
  
  #define MAX_FRAME 1024
-@@ -804,6 +805,21 @@ static void mix_circular_sink(AudioRenderer *r,int id) {
+@@ -1035,6 +1036,21 @@ static void mix_circular_sink(AudioRenderer *r,int id) {
  }
  uint32_t audio_mixer_sink_written(AudioRenderer *r,int id) {Mixer *m=r->mixer;return m?m->sink_written[id]:0;}
  
@@ -45,33 +45,35 @@ index 91822ad..9397e09 100644
  void audio_mixer_render(AudioRenderer *r, double seconds) {
      (void)seconds;
      Mixer *m = r->mixer; if (!m) return;
-@@ -826,6 +842,7 @@ void audio_mixer_render(AudioRenderer *r, double seconds) {
-                        v->in.sample_format == FMT_ADPCM || fmt_bytes(v->in.sample_format) ? "decoded" : "NOT decoded: silent",
-                        cc, (unsigned)v->in.sample_rate);
+@@ -1070,6 +1086,7 @@ void audio_mixer_render(AudioRenderer *r, double seconds) {
+             m->trace_seen[i] = m->trace_pass;
+             m->trace_buf[i] = wb->address;
          }
 +        if (rt_trace & RT_TRACE_COUNTERS) voice_start_note(r, i, v);
          voice_render(r, v, vs, frames);
          for (int f = 0; f < 2; f++) if (v->in.biquads[f].enable) {
              const AudrenBiquad *b = &v->in.biquads[f];
 diff --git a/runtime/host.h b/runtime/host.h
-index 869a93c..016db84 100644
+index 4d41336..2fec4d5 100644
 --- a/runtime/host.h
 +++ b/runtime/host.h
-@@ -24,7 +24,8 @@ void rt_vlogf(const char *fmt, va_list ap);
- void rt_log_raw(const char *p, size_t n);
+@@ -25,8 +25,9 @@ void rt_log_raw(const char *p, size_t n);
  const char *rt_log_path(void);                  // the log file, NULL when this run writes none
+ void rt_log_sync(void);                         // writes the queued log lines now; later lines are written as they are made
  enum { RT_TRACE_SVC = 1, RT_TRACE_HOSTCALL = 2, RT_TRACE_IPC = 4, RT_TRACE_FS = 8, RT_TRACE_GFX = 16, RT_TRACE_PERF = 32,
 -       RT_TRACE_SCHED = 64, RT_TRACE_AUDIO = 128, RT_TRACE_PRESENT = 256 };
+-extern unsigned rt_trace;                       // from NX2NAVI_TRACE=svc,host,ipc,fs,gfx,perf,sched,audio,present (or all)
 +       RT_TRACE_SCHED = 64, RT_TRACE_AUDIO = 128, RT_TRACE_PRESENT = 256,
-+       RT_TRACE_COUNTERS = 512 };   // counters: a present/clock line per 60 presents and every voice start (#128 lab)
- extern unsigned rt_trace;                       // from NX2NAVI_TRACE=svc,host,ipc,fs,gfx,perf,sched,audio,present (or all)
++       RT_TRACE_COUNTERS = 1024 };   // counters: a present/clock line per 60 presents and every voice start (#128 lab)
++extern unsigned rt_trace;                       // from NX2NAVI_TRACE=svc,host,ipc,fs,gfx,perf,sched,audio,present,counters (or all)
  // prof_win.c: NX2NAVI_PROFILE=<path> sampling profiler; NX2NAVI_TRACE=perf frame timing (waits of the render thread)
  // PERF_TEX: texture uploads on the render thread (deswizzle, decode, staging), PERF_ASTC included
+ enum { PERF_PACE, PERF_FENCE, PERF_DRAIN, PERF_PIPE, PERF_XLATE, PERF_TEX, PERF_ASTC, PERF_N };
 diff --git a/runtime/main.c b/runtime/main.c
-index eb342c1..2e624a8 100644
+index eb61126..4d18970 100644
 --- a/runtime/main.c
 +++ b/runtime/main.c
-@@ -136,13 +136,13 @@ static void parse_trace(void) {
+@@ -175,13 +175,13 @@ static void parse_trace(void) {
      static const struct { const char *name; unsigned bit; } names[] = {
          {"svc", RT_TRACE_SVC}, {"host", RT_TRACE_HOSTCALL}, {"ipc", RT_TRACE_IPC}, {"fs", RT_TRACE_FS},
          {"gfx", RT_TRACE_GFX}, {"perf", RT_TRACE_PERF}, {"sched", RT_TRACE_SCHED}, {"audio", RT_TRACE_AUDIO},
@@ -88,10 +90,10 @@ index eb342c1..2e624a8 100644
      }
  }
 diff --git a/runtime/perf.c b/runtime/perf.c
-index fe1ebf3..9f89be7 100644
+index 13951ec..459e29c 100644
 --- a/runtime/perf.c
 +++ b/runtime/perf.c
-@@ -264,6 +264,7 @@ void perf_present(uint64_t frame) {
+@@ -813,6 +813,7 @@ void perf_present(uint64_t frame) {
      if (rt_trace & RT_TRACE_SCHED) kern_sched_report(frame);
      uint64_t now = kern_now_ns(), d = last ? now - last : 0;
      prof_sampler_frame(frame, now, last ? d : 0);

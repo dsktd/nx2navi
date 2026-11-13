@@ -1,4 +1,4 @@
-From 0bd2bc91ff9cb85ba4e43144a84dfe68c102c5e8 Mon Sep 17 00:00:00 2001
+From 9618072360cb3706bc79435317fef551ce9d18b4 Mon Sep 17 00:00:00 2001
 From: desocketed <desocketed@users.noreply.github.com>
 Date: Tue, 10 Nov 2026 17:19:01 -0500
 Subject: [PATCH] platform: NX2NAVI_WATCH_PC=<addr>:<size> logs each distinct
@@ -13,10 +13,10 @@ Subject: [PATCH] platform: NX2NAVI_WATCH_PC=<addr>:<size> logs each distinct
  4 files changed, 66 insertions(+)
 
 diff --git a/runtime/boot.c b/runtime/boot.c
-index 0ed026b..ba957e9 100644
+index 451c77e..e693a6c 100644
 --- a/runtime/boot.c
 +++ b/runtime/boot.c
-@@ -405,6 +405,16 @@ static void mark_poll(uint64_t n) {
+@@ -412,6 +412,16 @@ static void mark_poll(uint64_t n) {
          if (!gfx_shader_beside_cache("mark.req", mark_req, sizeof mark_req)) mark_req[0] = 0;
          dump_req = cfg_get("NX2NAVI_DUMP_REQ") && atoi(cfg_get("NX2NAVI_DUMP_REQ")) == 1 &&
                     gfx_shader_beside_cache("dump.req", dump_path, sizeof dump_path);
@@ -33,7 +33,7 @@ index 0ed026b..ba957e9 100644
          mark_before = mark_knob("NX2NAVI_MARK_RING");
          mark_after = mark_knob("NX2NAVI_MARK_BURST");
          mark_legacy = mark_before == 1 && !mark_after;
-@@ -415,6 +425,7 @@ static void mark_poll(uint64_t n) {
+@@ -422,6 +432,7 @@ static void mark_poll(uint64_t n) {
              mark_ring_on = 1;
          }
      }
@@ -42,10 +42,10 @@ index 0ed026b..ba957e9 100644
      if (!why && mark_req[0] && n % 4 == 0 && plat_file_exists(mark_req)) why = "mark.req", plat_file_delete(mark_req);
      if (!why) return;
 diff --git a/runtime/platform/linux.c b/runtime/platform/linux.c
-index 84aeb78..e73b613 100644
+index 3c387f1..fbe7fc3 100644
 --- a/runtime/platform/linux.c
 +++ b/runtime/platform/linux.c
-@@ -927,9 +927,40 @@ static __thread const char *crash_ctx;   // plat_crash_context: what this thread
+@@ -1245,9 +1245,40 @@ static __thread const char *crash_ctx;   // plat_crash_context: what this thread
  static __thread PlatFaultJmp *fault_guard;   // plat_fault_guard: where a fault in another module jumps back to
  void plat_fault_guard_set(PlatFaultJmp *j) { fault_guard = j; }
  
@@ -83,12 +83,12 @@ index 84aeb78..e73b613 100644
 +    if (sig == SIGSEGV && (err & 2) &&
 +        write_trace_fault((uintptr_t)si->si_addr, (uintptr_t)u->uc_mcontext.gregs[REG_RIP]))
 +        return;
-     if (sig == SIGSEGV && fault_hook && (err & 2) && fault_hook((uint64_t)(uintptr_t)si->si_addr)) return;
-     uintptr_t rip = (uintptr_t)u->uc_mcontext.gregs[REG_RIP];
-     Dl_info at, self;
-@@ -998,6 +1029,22 @@ void plat_mem_fault_hook(int (*fn)(uint64_t addr)) {
- 
- void plat_crash_context(const char *s) { crash_ctx = s; }
+     if (sig == SIGSEGV && access_hook && !(err & 16) &&
+         access_hook((uint64_t)(uintptr_t)si->si_addr, (err & 2) != 0, (uint64_t)u->uc_mcontext.gregs[REG_RIP]))
+         return;
+@@ -1396,6 +1427,22 @@ __attribute__((noinline)) int plat_frame_capture(PlatJmp *out, int (*want)(uintp
+     return w.found;
+ }
  
 +void plat_write_trace(uint64_t addr, uint64_t n) {
 +    wt_lo = addr & ~(PG - 1), wt_hi = (addr + n + PG - 1) & ~(PG - 1);
@@ -106,17 +106,17 @@ index 84aeb78..e73b613 100644
 +    }
 +}
 +
- int plat_frame_capture(PlatJmp *out, int (*want)(uintptr_t rip, void *arg), void *arg) {   // not on Linux yet
-     (void)out, (void)want, (void)arg;
-     return 0;
+ void plat_crash_hook(void (*fn)(const PlatCrash *c)) {
+     crash_fn = fn;
+     fault_install();
 diff --git a/runtime/platform/platform.h b/runtime/platform/platform.h
-index a50a807..f053e8c 100644
+index 298dde6..8807d30 100644
 --- a/runtime/platform/platform.h
 +++ b/runtime/platform/platform.h
-@@ -219,6 +219,11 @@ uint64_t plat_mem_written(uint64_t addr, uint64_t n, uint64_t *pages, uint64_t m
- // A write that faulted on a read-only page at addr goes to fn first; fn returns 1 when it made the page writable and
- // the write should run again, 0 to let the fault go on (to the crash handler). One hook per process.
- void plat_mem_fault_hook(int (*fn)(uint64_t addr));
+@@ -265,6 +265,11 @@ void plat_mem_fault_hook(int (*fn)(uint64_t addr));
+ // write-fault hook; fn returns 1 when it made the page accessible and the access should run again, 0 to let the fault
+ // go on. fn sees every access violation of the process and tells its own pages apart. One hook per process.
+ void plat_mem_access_hook(int (*fn)(uint64_t addr, int write, uint64_t ip));
 +// Debug (NX2NAVI_WATCH_PC): makes the committed pages of addr+n read-only; the first write to each page faults, logs
 +// the writing instruction once per distinct one (module + offset, to resolve with nm) and makes that page writable
 +// again. plat_write_trace_rearm protects the range again (once per present). A no-op where unsupported.
@@ -126,10 +126,10 @@ index a50a807..f053e8c 100644
  // replaces this process with it (Linux). Environment changes made before the call are passed on.
  _Noreturn void plat_reexec(void);
 diff --git a/runtime/platform/win32.c b/runtime/platform/win32.c
-index 4e768c6..c498fa8 100644
+index 4bf24ff..9eadddc 100644
 --- a/runtime/platform/win32.c
 +++ b/runtime/platform/win32.c
-@@ -652,6 +652,9 @@ void plat_mem_fault_hook(int (*fn)(uint64_t addr)) {
+@@ -902,6 +902,9 @@ void plat_mem_fault_hook(int (*fn)(uint64_t addr)) {
      AddVectoredExceptionHandler(1, fault_veh);
  }
  

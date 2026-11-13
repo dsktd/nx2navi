@@ -1,4 +1,4 @@
-From 74266d8ebb8daf185b0cc3580dc730dd5fb77776 Mon Sep 17 00:00:00 2001
+From ead5345a19a1560b90fff0c17ee708a61723af0c Mon Sep 17 00:00:00 2001
 From: desocketed <desocketed@users.noreply.github.com>
 Date: Thu, 12 Nov 2026 08:24:14 -0500
 Subject: [PATCH] vk_memory: NX2NAVI_SHADOW_TOUCH_LOCK=1 (0: old; ab) puts the
@@ -11,23 +11,23 @@ Subject: [PATCH] vk_memory: NX2NAVI_SHADOW_TOUCH_LOCK=1 (0: old; ab) puts the
  2 files changed, 27 insertions(+), 4 deletions(-)
 
 diff --git a/runtime/cfg.c b/runtime/cfg.c
-index 97cfdb1..6988167 100644
+index f903bcf..baa83fb 100644
 --- a/runtime/cfg.c
 +++ b/runtime/cfg.c
-@@ -76,7 +76,7 @@ static const char *const known[] = {
+@@ -78,7 +78,7 @@ static const char *const known[] = {
      "ZSTD_CHECK", "ZSTD_NATIVE",
-     "BIND_REUSE", "DYN_DELTA", "STG_ARENA", "SUBMIT_BATCH", "ASTC_GPU_DESWIZZLE", "ASTC_SCRATCH_KEEP", "ASTC_ARENA", "ASTC_BC1",
+     "BIND_REUSE", "DYN_DELTA", "STG_ARENA", "SUBMIT_BATCH", "SUBMIT_THREAD", "ASTC_GPU_DESWIZZLE", "ASTC_SCRATCH_KEEP", "ASTC_ARENA", "ASTC_BC1",
      "TEXUP_LOG_MS", "DYN_RES", "DYN_RES_TARGET", "DYN_RES_STEP", "TEXTURE_DETAIL",
 -    "RECORDER_CORE", "RECORDER_PRIO", "REPLAY_TIME", "LOCK_TIME", "POOL_CREATE_BUDGET", "POOL_CREATE_MS", "POOL_FINI_IDLE", "POOL_LOAD_BACKLOG", "POOL_LOAD_MS", "POOL_LOAD_STEP", "POOL_LOAD_FIT", "POOL_IDLE_MS", "SHADOW_RECYCLE_MB",
 +    "RECORDER_CORE", "RECORDER_PRIO", "REPLAY_TIME", "LOCK_TIME", "POOL_CREATE_BUDGET", "POOL_CREATE_MS", "POOL_FINI_IDLE", "POOL_LOAD_BACKLOG", "POOL_LOAD_MS", "POOL_LOAD_STEP", "POOL_LOAD_FIT", "POOL_IDLE_MS", "SHADOW_RECYCLE_MB", "SHADOW_TOUCH_LOCK",
-     "VMA_BLOCK_MB", "SYNC_WAKE_ALL", "LOG_ASYNC", "DEVICE_LOST_AT",
-     "COOP", "COOP_BETA", "COOP_NAME", "COOP_SERVER", "COOP_PORT", "COOP_ROOM", "COOP_AUTO", "COOP_DROP",   // co-op (coop.c); the last three have no menu row
-     "COOP_PROGRESS", "COOP_ITEMS", "COOP_SONGS", "COOP_QUEST", "COOP_KEYS", "COOP_RUPEES", "COOP_AMMO",   // the room's rules (coop_game.c)
+     "VMA_BLOCK_MB", "SYNC_WAKE_ALL", "LOG_ASYNC", "DEVICE_LOST_AT", "STAGING_FAIL_AT", "VRAM_BALLAST_MB",
+     "COOP_STEAM", "COOP_SHARE", "COOP_NAMES", "COOP_CHAT",   // co-op (coop.c, coop_game.c, ui/coop_page.cpp)
+     // retired: the settings of the co-op of versions up to 0.9.2; read by nothing, listed so that a file which still
 diff --git a/runtime/vk_memory.c b/runtime/vk_memory.c
-index 1b65520..be516ac 100644
+index 3624604..0dbcde5 100644
 --- a/runtime/vk_memory.c
 +++ b/runtime/vk_memory.c
-@@ -1335,14 +1335,30 @@ static int shadow_pool(VkCtx *c, PoolRec *r, uint64_t addr, uint64_t size) {
+@@ -1475,14 +1475,30 @@ static int shadow_pool(VkCtx *c, PoolRec *r, uint64_t addr, uint64_t size) {
      return 1;
  }
  
@@ -60,7 +60,7 @@ index 1b65520..be516ac 100644
  }
  
  // ---- base copies of the pages both write ("Pages both write" above). shadow_lock held throughout.
-@@ -1597,8 +1613,10 @@ static uint64_t snap_tregs_runs(uint32_t epoch) {
+@@ -1737,8 +1753,10 @@ static uint64_t snap_tregs_runs(uint32_t epoch) {
  
  static void shadow_forget(PoolRec *r) {
      plat_mutex_lock(&shadow_lock);
@@ -71,7 +71,7 @@ index 1b65520..be516ac 100644
      for (int i = 0; r->tlisted && i < ntpools; i++)
          if (tpools[i] == r) { tpools[i] = tpools[--ntpools]; break; }
      if (r->stab_i) {   // the last one takes its place
-@@ -2878,6 +2896,7 @@ void vk_mem_shadow_sync(uint64_t fence) {
+@@ -3039,6 +3057,7 @@ void vk_mem_shadow_sync(uint64_t fence) {
          }
      }
      plat_mutex_lock(&shadow_lock);
@@ -79,7 +79,7 @@ index 1b65520..be516ac 100644
      if (nstouch || (table && nstab)) {
          plat_mutex_lock(&gen_lock);
          for (int i = 0; i < nstouch; i++) shadow_sync_pool(stouch[i], epoch, cpu);
-@@ -2932,6 +2951,7 @@ void vk_mem_shadow_sync(uint64_t fence) {
+@@ -3093,6 +3112,7 @@ void vk_mem_shadow_sync(uint64_t fence) {
          if (ahead) s_pre_ticks += qpc() - t1, s_pre_syncs++, s_pre_bytes += s_copied - copied0;
      }
      s_ticks += qpc() - t0;
@@ -87,7 +87,7 @@ index 1b65520..be516ac 100644
      plat_mutex_unlock(&shadow_lock);
      RT_ZONE_END(zs);
  }
-@@ -4872,7 +4892,10 @@ void vk_mem_shutdown(void) {
+@@ -5501,7 +5521,10 @@ void vk_mem_shutdown(void) {
      nsnap_pool = 0, snap_pool_bytes = 0;
      plat_mutex_unlock(&snap_pool_lock);
      plat_mutex_lock(&shadow_lock);

@@ -1,4 +1,4 @@
-From 131d0f0debdee3ff5a52454b4619752777670906 Mon Sep 17 00:00:00 2001
+From 24dcf9515ac83a69ff6fa9efb5705d5bac8a1f9a Mon Sep 17 00:00:00 2001
 From: desocketed <desocketed@users.noreply.github.com>
 Date: Wed, 11 Nov 2026 23:16:58 -0500
 Subject: [PATCH] vk_memory: NX2NAVI_SHADOW_TAB_DIRTY=1 (0: walk all) indexes
@@ -11,10 +11,10 @@ Subject: [PATCH] vk_memory: NX2NAVI_SHADOW_TAB_DIRTY=1 (0: walk all) indexes
  1 file changed, 93 insertions(+), 5 deletions(-)
 
 diff --git a/runtime/vk_memory.c b/runtime/vk_memory.c
-index 5a1335d..8db0169 100644
+index 99b494c..11f1d5d 100644
 --- a/runtime/vk_memory.c
 +++ b/runtime/vk_memory.c
-@@ -91,6 +91,7 @@ typedef struct PoolRec {
+@@ -95,6 +95,7 @@ typedef struct PoolRec {
      uint64_t sborn;                    // the value of the first submission that can have used the shadow (shadow_pool)
      volatile uint8_t stouched;         // on the touched list: the GPU may use it in the submission being recorded
      uint32_t stab_i;                   // shadow_lock: 1 + its index in stab (the table's shadows), 0 when not there
@@ -22,7 +22,7 @@ index 5a1335d..8db0169 100644
      // shadow_lock: base copies of the pages a noted GPU write covers (merge_page), open addressing by page address;
      // csb a power of two, page 0 an empty slot
      struct SBase { uint64_t page; uint8_t *base; } *sb;
-@@ -1262,6 +1263,19 @@ static uint64_t s_tab_fast, s_tab_slow, s_tab_all_ticks, s_tab_all_syncs;   // s
+@@ -1402,6 +1403,19 @@ static uint64_t s_tab_fast, s_tab_slow, s_tab_all_ticks, s_tab_all_syncs;   // s
  static uint64_t s_tab_ticks, s_tab_syncs;         // the sync for the table's readers: its time (part of s_ticks), its runs
  static PoolRec **stab;                            // shadow_lock: the shadows in the device address table (PoolRec.stab_i)
  static int nstab, cstab;
@@ -42,7 +42,7 @@ index 5a1335d..8db0169 100644
  static uint32_t stab_want;                        // the last guest submission whose record bound the table
  static uint64_t s_t_over_all;                     // shadow_lock: s_tab_over since the start
  static uint64_t s_late_pages, s_late_bytes;       // shadow_lock, check: write-backs into pages the CPU wrote since their copy-in
-@@ -1492,6 +1506,49 @@ static void copy_marked(PoolRec *r, uint64_t a, uint64_t e) {
+@@ -1632,6 +1646,49 @@ static void copy_marked(PoolRec *r, uint64_t a, uint64_t e) {
  }
  
  // vk_pool_fini, after the pool left the index: off the touched list before its record goes.
@@ -92,7 +92,7 @@ index 5a1335d..8db0169 100644
  static void shadow_forget(PoolRec *r) {
      plat_mutex_lock(&shadow_lock);
      for (int i = 0; i < nstouch; i++)
-@@ -1499,6 +1556,7 @@ static void shadow_forget(PoolRec *r) {
+@@ -1639,6 +1696,7 @@ static void shadow_forget(PoolRec *r) {
      for (int i = 0; r->tlisted && i < ntpools; i++)
          if (tpools[i] == r) { tpools[i] = tpools[--ntpools]; break; }
      if (r->stab_i) {   // the last one takes its place
@@ -100,7 +100,7 @@ index 5a1335d..8db0169 100644
          PoolRec *last = stab[--nstab];
          stab[r->stab_i - 1] = last, last->stab_i = r->stab_i;
          r->stab_i = 0;
-@@ -1969,13 +2027,14 @@ static void shadow_log(uint64_t frame) {
+@@ -2116,13 +2174,14 @@ static void shadow_log(uint64_t frame) {
             "copied in (%llu untracked), %.2f ms (queries %.2f); %.1f MiB written back of %.1f MiB the GPU may have written, %.2f ms; %llu "
             "pages the GPU writes keep a base copy; %llu pages not written back, their pool was made again or the CPU "
             "wrote them since; %llu written-back pages' watch bits taken, %llu of them stamped as the CPU's; table: %llu syncs "
@@ -118,7 +118,7 @@ index 5a1335d..8db0169 100644
      s_syncs = s_queries = s_copied = s_untracked = s_wb_bytes = s_ticks = s_wb_seen = s_wb_ticks = s_q_ticks = 0;
      s_stale_pages = s_rearm_pages = s_rearm_kept = 0;
      if (s_learn || s_check) shadow_table_log(frame);
-@@ -2662,6 +2721,7 @@ static void shadow_table_add(PoolRec *r) {
+@@ -2823,6 +2882,7 @@ static void shadow_table_add(PoolRec *r) {
          if (nstab == cstab) grow((void **)&stab, &cstab, sizeof *stab);
          stab[nstab++] = r;
          r->stab_i = (uint32_t)nstab;
@@ -126,7 +126,7 @@ index 5a1335d..8db0169 100644
      }
      plat_mutex_unlock(&shadow_lock);
  }
-@@ -2708,8 +2768,11 @@ static int shadow_pool_pages_clean(const PoolRec *r, uint32_t epoch, int cpu) {
+@@ -2869,8 +2929,11 @@ static int shadow_pool_pages_clean(const PoolRec *r, uint32_t epoch, int cpu) {
  
  void vk_mem_shadow_sync(uint64_t fence) {
      if (!shadow_on) return;
@@ -139,7 +139,7 @@ index 5a1335d..8db0169 100644
          tab_fast = rt_knob("SHADOW_TAB_FAST", "1") == 1;
          rt_log("mem: table shadows failing the region test %s (NX2NAVI_SHADOW_TAB_FAST)",
                 tab_fast ? "check their pages before a sync" : "sync");
-@@ -2739,7 +2802,32 @@ void vk_mem_shadow_sync(uint64_t fence) {
+@@ -2900,7 +2963,32 @@ void vk_mem_shadow_sync(uint64_t fence) {
          plat_mutex_lock(&gen_lock);
          for (int i = 0; i < nstouch; i++) shadow_sync_pool(stouch[i], epoch, cpu);
          uint64_t t1 = qpc();

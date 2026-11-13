@@ -1,42 +1,33 @@
-From 796fa632a9001b9340453b1d1be409624d588007 Mon Sep 17 00:00:00 2001
+From 7bb4d093f51954ea956115419d3cfb4fd02deb4c Mon Sep 17 00:00:00 2001
 From: desocketed <desocketed@users.noreply.github.com>
 Date: Mon, 9 Nov 2026 07:42:42 -0500
 Subject: [PATCH] vk_exec_xfer: NX2NAVI_OQ_FORCE forces every samples-passed
  report, NX2NAVI_LOG_OQ logs them
 
 ---
- runtime/cfg.c          |  2 +-
- runtime/vk_exec_xfer.c | 10 +++++++++-
- 2 files changed, 10 insertions(+), 2 deletions(-)
+ runtime/cfg.c          | 1 +
+ runtime/vk_exec_xfer.c | 9 ++++++++-
+ 2 files changed, 9 insertions(+), 1 deletion(-)
 
 diff --git a/runtime/cfg.c b/runtime/cfg.c
-index 17136ae..7b25cad 100644
+index a075164..4c13b41 100644
 --- a/runtime/cfg.c
 +++ b/runtime/cfg.c
-@@ -41,7 +41,7 @@ static const char *const known[] = {
-     "BIND_ZL", "BIND_ZR", "BLOCK_VIEWS_3D", "CLOTH_REALTIME", "COLOR_BRIGHTNESS", "COLOR_CONTRAST", "COLOR_GAMMA",
-     "COLOR_PRESET", "COLOR_SATURATION", "CONTACT_DEBUG", "CONTACT_SHADOWS", "CORE_DIAG", "CRIT", "CRIT_OUT",
-     "DESC_TEMPLATE", "DEVICE_PROFILE", "DISCORD_APP_ID", "DISCORD_IMAGE", "DISCORD_RPC", "DLAA", "DLAA_JITTER", "DLAA_MV", "DLAA_MASKDEBUG", "DLAA_MVDEBUG", "DLAA_OBJMV", "DLAA_SURVEY", "DLAA_TIMES", "DLSS", "DLSS_CHAR_MASK", "DLSS_PRESET", "DLSS_REACTIVE", "DUMP", "DUMP_BUF", "DUMP_DIR", "DUMP_REQ",
--    "DUMP_LOG", "LOG_CS_BINDS", "LOG_TEX_FLAGS", "LOG_MESH", "MESH", "POOL", "NATIVE_TENSOR", "LOG_RCOND", "LOG_RT_SIZES", "DUMP_WHITE", "DUMP_AFTER", "SUBMIT_FINISH", "ACQUIRE_WAIT", "CS_FALLBACK", "EXEFS", "FEEDBACK", "FIX_C0", "FIX_ZERO", "FLIGHT", "FLIGHT_AT", "FLIGHT_DIR", "FLIGHT_FRAMES",
-+    "DUMP_LOG", "LOG_CS_BINDS", "LOG_TEX_FLAGS", "LOG_MESH", "MESH", "POOL", "NATIVE_TENSOR", "LOG_RCOND", "LOG_OQ", "OQ_FORCE", "LOG_RT_SIZES", "DUMP_WHITE", "DUMP_AFTER", "SUBMIT_FINISH", "ACQUIRE_WAIT", "CS_FALLBACK", "EXEFS", "FEEDBACK", "FIX_C0", "FIX_ZERO", "FLIGHT", "FLIGHT_AT", "FLIGHT_DIR", "FLIGHT_FRAMES",
-     "FLIGHT_SPIKE_MS", "FLIGHT_THUMBS", "FLUSH_SPAN", "FOV", "FOV_PATCH", "FG_HUDLESS_SHOW", "FPS60", "FPS_LIMIT", "FRAMEGEN", "FREEZE_IDLE", "FREE_CORES",
-     "FULLSCREEN", "FXAA", "GAME_ASPECT", "GAME_RES", "GPA", "GPA_EMPTY", "GPA_TWIN", "GPL", "GPL_DRAW_BUILD", "GPU", "GPU_INDEX", "GPU_NAME", "HDR", "HDR_GAME_NITS", "HDR_HUE",
-     "HDR_PEAK_NITS", "HDR_UI_NITS", "HIGHFPS_FIX", "INPUT", "INPUT_RECORD", "INPUT_SCRIPT", "LANG", "LIB_PREBUILD",
+@@ -90,6 +90,7 @@ static const char *const known[] = {
+     "DUMP_REQ",
+     "UNJITTER",
+     "MARK_CHORD", "MARK_HOLD_MS", "MARK_RING",
++    "LOG_OQ", "OQ_FORCE",
+ };
+ 
+ // The nx2navi.ini section a key cfg_set may write goes to when the file lacks it (nx2navi.ini.example's sections).
 diff --git a/runtime/vk_exec_xfer.c b/runtime/vk_exec_xfer.c
-index cd4f00f..7199537 100644
+index 4317723..ce2e7ff 100644
 --- a/runtime/vk_exec_xfer.c
 +++ b/runtime/vk_exec_xfer.c
-@@ -34,6 +34,7 @@
- #include <stdlib.h>
- #include <string.h>
- 
-+#include "cfg.h"
- #include "host.h"
- #include "nvn_api.h"
- #include "nvn_tex.h"
-@@ -295,11 +296,18 @@ static void oq_cb(void *arg) {
-         }
-         i = j;
+@@ -533,13 +533,20 @@ static void oq_cb(void *arg) {
+                    OQB.calls ? (double)OQB.slots / (double)OQB.calls : 0.0);
+         OQB.calls = OQB.slots = OQB.segs = 0;
      }
 +    // Debugging the CPU-side culls (#138): NX2NAVI_OQ_FORCE=<n> makes every samples-passed report write n instead of the
 +    // count (0 keeps the count); NX2NAVI_LOG_OQ=1 logs each report (address, queries, sum, running count).
@@ -46,14 +37,16 @@ index cd4f00f..7199537 100644
      else {
          oq_count += sum;
          if (s->lost && !oq_count) oq_count = 1;
--        if (s->addr) write_counter(s->addr, oq_count), pending_written(s->addr, s->seq);
 +        uint64_t out = force ? (uint64_t)force : oq_count;
 +        if (logit) rt_log("vk: oq report %#llx: %u queries, sum %llu, count %llu%s%s", (unsigned long long)s->addr, s->n,
 +                          (unsigned long long)sum, (unsigned long long)oq_count, s->lost ? ", lost" : "", force ? ", forced" : "");
-+        if (s->addr) write_counter(s->addr, out), pending_written(s->addr, s->seq);
+         if (s->addr) {
+             if (vk_sync_effect_late()) __atomic_fetch_add(&late_counts, 1, __ATOMIC_RELAXED);
+-            write_counter(s->addr, oq_count), pending_written(s->addr, s->seq);
++            write_counter(s->addr, out), pending_written(s->addr, s->seq);
+         }
      }
-     free(s);
- }
+     free(s->q), free(s);
 -- 
 2.56.0
 

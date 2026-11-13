@@ -1,4 +1,4 @@
-From 3e5ce246d516796faaa2d012df60aa70479311ed Mon Sep 17 00:00:00 2001
+From 60a20bb75f538fca6730cae9452bcf8f38bb9e32 Mon Sep 17 00:00:00 2001
 From: desocketed <desocketed@users.noreply.github.com>
 Date: Wed, 11 Nov 2026 17:25:36 -0500
 Subject: [PATCH] xlate: NX2NAVI_TLD_CLAMP=1 (default 0) clamps every texel
@@ -7,78 +7,88 @@ Subject: [PATCH] xlate: NX2NAVI_TLD_CLAMP=1 (default 0) clamps every texel
  the screen edges, #174); its own cache keys; tests/tld_clamp_check.py
 
 ---
- runtime/cfg.c                                 |  4 +-
- runtime/gfx_shader.c                          | 12 ++-
+ runtime/cfg.c                                 |  5 +-
+ runtime/gfx_shader.c                          |  9 +-
  tests/tld_clamp_check.py                      | 82 +++++++++++++++++++
  tools/xlate/Program.cs                        |  4 +-
- .../patches/0036-texel-fetch-clamp.patch      | 58 +++++++++++++
- 5 files changed, 154 insertions(+), 6 deletions(-)
+ .../patches/0041-texel-fetch-clamp.patch      | 58 +++++++++++++
+ 5 files changed, 153 insertions(+), 5 deletions(-)
  create mode 100644 tests/tld_clamp_check.py
- create mode 100644 tools/xlate/patches/0036-texel-fetch-clamp.patch
+ create mode 100644 tools/xlate/patches/0041-texel-fetch-clamp.patch
 
 diff --git a/runtime/cfg.c b/runtime/cfg.c
-index 5f1b835..265573e 100644
+index 9953e39..07226ca 100644
 --- a/runtime/cfg.c
 +++ b/runtime/cfg.c
-@@ -97,7 +97,7 @@ static const struct { const char *key, *section; } sections[] = {
-     {"TIMER_1MS", "performance"}, {"PIPE_WAIT", "performance"}, {"PIPE_SKIP", "performance"},
-     {"LIB_PREBUILD", "performance"}, {"LIB_PREBUILD_THREADS", "performance"}, {"PIPE_PREBUILD", "performance"},
+@@ -98,6 +98,7 @@ static const char *const known[] = {
+     "MOTION_SOCK",
+     "TEX_DESC_STRICT",
+     "MENU_LIVE",
++    "TLD_CLAMP",
+ };
+ 
+ // The nx2navi.ini section a key cfg_set may write goes to when the file lacks it (nx2navi.ini.example's sections).
+@@ -153,7 +154,7 @@ static const struct { const char *key, *section; } sections[] = {
+     {"LIB_PREBUILD", "performance"}, {"LIB_PREBUILD_THREADS", "performance"}, {"LIB_WARM", "performance"}, {"PIPE_LINK_MS", "performance"}, {"PIPE_LINK_DRAW_MS", "performance"}, {"PIPE_AHEAD", "performance"}, {"LINE_WIDTH", "performance"}, {"POOL_SHOWN_FIRST", "performance"}, {"TEX_REUSE_NAMED", "performance"}, {"TEX_OVERWRITTEN_USED", "performance"}, {"PIPE_FAST_WORKERS", "performance"}, {"GPL_FEEDBACK", "performance"}, {"FRAME_HOLD_MS", "performance"}, {"PACE_SMOOTH", "performance"}, {"OQ_BATCH", "performance"}, {"GATE_WAIT_MS", "performance"}, {"PIPE_PREBUILD", "performance"}, {"PIPE_SEED", "performance"},
+     {"COMPUTE_KEEP", "performance"},
      {"PREWARM_XLATE", "performance"}, {"GPL", "performance"}, {"ASTC", "performance"}, {"MEMORY", "performance"},
--    {"TEX_ALIAS", "performance"}, {"TEX_VRAM_PRESSURE", "performance"}, {"TEX_STALE_GONE", "performance"}, {"TEX_STALE_LIVE", "performance"}, {"TEX_DESC_STRICT", "performance"}, {"TEX_LIVE_EVICT", "performance"}, {"TEX_LIVE_RT_IDLE", "performance"}, {"VMA_BLOCK_MIB", "performance"}, {"TEX_RT_RECYCLE", "performance"}, {"TEX_LIVE_IDLE", "performance"}, {"TEX_LIVE_GUARD", "performance"}, {"ASTC_BC", "performance"}, {"LOD_GUARD", "performance"}, {"FIX_C0", "performance"}, {"FIX_ZERO", "performance"},
-+    {"TEX_ALIAS", "performance"}, {"TEX_VRAM_PRESSURE", "performance"}, {"TEX_STALE_GONE", "performance"}, {"TEX_STALE_LIVE", "performance"}, {"TEX_DESC_STRICT", "performance"}, {"TLD_CLAMP", "performance"}, {"TEX_LIVE_EVICT", "performance"}, {"TEX_LIVE_RT_IDLE", "performance"}, {"VMA_BLOCK_MIB", "performance"}, {"TEX_RT_RECYCLE", "performance"}, {"TEX_LIVE_IDLE", "performance"}, {"TEX_LIVE_GUARD", "performance"}, {"ASTC_BC", "performance"}, {"LOD_GUARD", "performance"}, {"FIX_C0", "performance"}, {"FIX_ZERO", "performance"},
-     {"BIND_SKIP", "performance"}, {"SHADER_MEMO", "performance"}, {"PIPE_MEMO", "performance"}, {"TEX_MEMO", "performance"}, {"TEX_SAME", "performance"}, {"DESC_TEMPLATE", "performance"},
-     {"PUSH_SKIP", "performance"}, {"SPLIT_DRAWS", "performance"}, {"SPLIT_US", "performance"}, {"VK_VALIDATION", "performance"},
-     {"VK_DYN_VERTEX", "performance"}, {"VK_DYN_A2C", "performance"}, {"VK_SUBGROUP_PIN", "performance"},
-@@ -174,7 +174,7 @@ static const CfgMeta metas[] = {
-     {"PIPE_PREBUILD", "1", "0|1", RESTART}, {"PREWARM_XLATE", "", "1..64", RESTART}, {"GPL", "1", "0|1", RESTART},
+-    {"TEX_ALIAS", "performance"}, {"DEPTH_INIT_INLINE", "performance"}, {"DEPTH_ALIAS_LOG", "diagnostics"}, {"TEX_DISUSE", "performance"}, {"TEX_DISUSE_EVICT", "performance"}, {"TEX_GEN_UNDO", "performance"}, {"TEX_REUSE", "performance"}, {"TEX_SPLIT_FILL", "performance"}, {"TEX_VRAM_PRESSURE", "performance"}, {"TEX_DESC_STRICT", "performance"}, {"TEX_PROC_COMMIT_MB", "performance"}, {"ASTC_BC", "performance"}, {"LOD_GUARD", "performance"}, {"FIX_C0", "performance"}, {"FIX_ZERO", "performance"}, {"WATER_PROJECTIVE", "performance"},
++    {"TEX_ALIAS", "performance"}, {"DEPTH_INIT_INLINE", "performance"}, {"DEPTH_ALIAS_LOG", "diagnostics"}, {"TEX_DISUSE", "performance"}, {"TEX_DISUSE_EVICT", "performance"}, {"TEX_GEN_UNDO", "performance"}, {"TEX_REUSE", "performance"}, {"TEX_SPLIT_FILL", "performance"}, {"TEX_VRAM_PRESSURE", "performance"}, {"TEX_DESC_STRICT", "performance"}, {"TLD_CLAMP", "performance"}, {"TEX_PROC_COMMIT_MB", "performance"}, {"ASTC_BC", "performance"}, {"LOD_GUARD", "performance"}, {"FIX_C0", "performance"}, {"FIX_ZERO", "performance"}, {"WATER_PROJECTIVE", "performance"},
+     {"BIND_SKIP", "performance"}, {"SHADER_CACHE_FLUSH", "performance"}, {"SHADER_CARRY", "performance"}, {"PIPELINE_CACHE_PLAY", "performance"}, {"PIPELINE_CACHE_PLAY_MB", "performance"}, {"FFX_PIPE_CACHE", "performance"}, {"SHADER_MEMO", "performance"}, {"PIPE_MEMO", "performance"}, {"TEX_MEMO", "performance"}, {"DESC_TEMPLATE", "performance"},
+     {"TEX_CLOBBER", "performance"}, {"LOW_END_GPU", "performance"},
+     {"PUSH_SKIP", "performance"}, {"SPLIT_DRAWS", "performance"}, {"SPLIT_IDLE", "performance"}, {"SPLIT_IN_PASS", "performance"}, {"SPLIT_US", "performance"}, {"VK_VALIDATION", "performance"},
+@@ -330,7 +331,7 @@ static const CfgMeta metas[] = {
+     {"PASS_TIMES", "0", "0|1", RESTART}, {"DUMP_KEY", "", NULL, RESTART},   // vk_crumbs.c, vk_dump.c
      // textures and memory
      {"ASTC", "auto", "auto|gpu|native|cpu", RESTART}, {"MEMORY", "auto", "auto|import|mirror|verify", RESTART},
--    {"TEX_ALIAS", "1", "0|1", RESTART}, {"TEX_VRAM_PRESSURE", "90", "0..100", RESTART}, {"TEX_STALE_GONE", "0", "0|1", RESTART}, {"TEX_STALE_LIVE", "0", "0|1", RESTART}, {"TEX_DESC_STRICT", "0", "0|1", RESTART}, {"TEX_LIVE_EVICT", "85", "0..100", RESTART}, {"TEX_LIVE_RT_IDLE", "0", "0..1000000", RESTART}, {"VMA_BLOCK_MIB", "0", "0..1024", RESTART}, {"TEX_RT_RECYCLE", "0", "0|1", RESTART}, {"TEX_LIVE_IDLE", "3600", "1..1000000", RESTART}, {"TEX_LIVE_GUARD", "240", "0..1000000", RESTART}, {"ASTC_BC", "", "0|1", RESTART}, {"ZSTD_NATIVE", "1", "0|1", RESTART}, {"ZSTD_CHECK", "0", "0|1", RESTART},
-+    {"TEX_ALIAS", "1", "0|1", RESTART}, {"TEX_VRAM_PRESSURE", "90", "0..100", RESTART}, {"TEX_STALE_GONE", "0", "0|1", RESTART}, {"TEX_STALE_LIVE", "0", "0|1", RESTART}, {"TEX_DESC_STRICT", "0", "0|1", RESTART}, {"TLD_CLAMP", "0", "0|1", RESTART}, {"TEX_LIVE_EVICT", "85", "0..100", RESTART}, {"TEX_LIVE_RT_IDLE", "0", "0..1000000", RESTART}, {"VMA_BLOCK_MIB", "0", "0..1024", RESTART}, {"TEX_RT_RECYCLE", "0", "0|1", RESTART}, {"TEX_LIVE_IDLE", "3600", "1..1000000", RESTART}, {"TEX_LIVE_GUARD", "240", "0..1000000", RESTART}, {"ASTC_BC", "", "0|1", RESTART}, {"ZSTD_NATIVE", "1", "0|1", RESTART}, {"ZSTD_CHECK", "0", "0|1", RESTART},
-     // render fixes
-     {"LOD_GUARD", "1", "0|1", RESTART}, {"FIX_C0", "1", "0|1", RESTART}, {"FIX_ZERO", "1", "0|1", RESTART},
-     {"BIND_SKIP", "1", "0|1", RESTART}, {"SHADER_MEMO", "1", "0|1", RESTART}, {"PIPE_MEMO", "1", "0|1", RESTART}, {"TEX_MEMO", "1", "0|1", RESTART}, {"TEX_SAME", "1", "0|1", RESTART},
+-    {"TEX_ALIAS", "1", "0|1", RESTART}, {"DEPTH_INIT_INLINE", "1", "0|1", RESTART}, {"DEPTH_ALIAS_LOG", "0", "0|1", RESTART}, {"TEX_DISUSE", "1", "0|1|2", RESTART}, {"TEX_DISUSE_EVICT", "0", "0|1", RESTART}, {"TEX_GEN_UNDO", "1", "0|1", RESTART}, {"TEX_REUSE", "1", "0|1", RESTART}, {"TEX_SPLIT_FILL", "1", "0|1|2", RESTART}, {"TEX_VRAM_PRESSURE", "80", "0..100", RESTART}, {"TEX_DESC_STRICT", "0", "0|1", RESTART}, {"ASTC_BC", "", "0|1", RESTART}, {"ZSTD_NATIVE", "1", "0|1", RESTART}, {"ZSTD_CHECK", "0", "0|1", RESTART},
++    {"TEX_ALIAS", "1", "0|1", RESTART}, {"DEPTH_INIT_INLINE", "1", "0|1", RESTART}, {"DEPTH_ALIAS_LOG", "0", "0|1", RESTART}, {"TEX_DISUSE", "1", "0|1|2", RESTART}, {"TEX_DISUSE_EVICT", "0", "0|1", RESTART}, {"TEX_GEN_UNDO", "1", "0|1", RESTART}, {"TEX_REUSE", "1", "0|1", RESTART}, {"TEX_SPLIT_FILL", "1", "0|1|2", RESTART}, {"TEX_VRAM_PRESSURE", "80", "0..100", RESTART}, {"TEX_DESC_STRICT", "0", "0|1", RESTART}, {"TLD_CLAMP", "0", "0|1", RESTART}, {"ASTC_BC", "", "0|1", RESTART}, {"ZSTD_NATIVE", "1", "0|1", RESTART}, {"ZSTD_CHECK", "0", "0|1", RESTART},
+     {"TEX_CLOBBER", "0", "0|1", RESTART},
+     {"LOW_END_GPU", "0", "0|1", RESTART},   // LOWEND below
+     {"STG_ARENA", "1", "0|1", RESTART}, {"ASTC_GPU_DESWIZZLE", "1", "0|1", RESTART},
 diff --git a/runtime/gfx_shader.c b/runtime/gfx_shader.c
-index 18595bd..6c38d2f 100644
+index 11482fe..3e9c602 100644
 --- a/runtime/gfx_shader.c
 +++ b/runtime/gfx_shader.c
-@@ -122,7 +122,7 @@ static struct {                                            // translations in fl
- static char cache_dir[PATH_CAP];
+@@ -164,7 +164,7 @@ static char cache_dir[PATH_CAP];
  static char xlate_exe[PATH_CAP];
  static uint8_t xlate_id[32];                               // translator identity (see the keys at the top)
+ static uint8_t xlate_base[32];                             // the same before gfx_shader_set_host mixes in host options
 -static int host_f64 = 1, host_zero_locals, host_bda, host_set;                         // gfx_shader_set_host
 +static int host_f64 = 1, host_zero_locals, host_bda, host_set, host_tld_clamp;                         // gfx_shader_set_host
  static uint32_t host_sbuf, host_sg[3] = {32, 32, 32}, host_gather;
  static PlatOnce paths_once = PLAT_ONCE_INIT;
  
-@@ -324,7 +324,11 @@ void gfx_shader_set_host(int float64, uint32_t sbuf_align, const uint32_t subgro
+@@ -388,12 +388,13 @@ static void paths(void) { plat_once(&paths_once, init_paths, NULL); }
+ // defaults, which are not mixed in.
+ static int host_text(char *t) {
+     if (host_f64 && !host_sbuf && host_sg[0] == 32 && host_sg[1] == 32 && host_sg[2] == 32 && !host_gather &&
+-        !host_zero_locals && !host_bda)
++        !host_zero_locals && !host_bda && !host_tld_clamp)
+         return 0;
+     int n = snprintf(t, 96, "TKHO f64=%d sbuf=%u sg=%u,%u,%u", host_f64, host_sbuf, host_sg[0], host_sg[1], host_sg[2]);
+     if (host_gather) n += snprintf(t + n, (size_t)(96 - n), " gather=%u", host_gather);
+     if (host_zero_locals) n += snprintf(t + n, (size_t)(96 - n), " zero_locals");
+     if (host_bda) n += snprintf(t + n, (size_t)(96 - n), " bda");
++    if (host_tld_clamp) n += snprintf(t + n, (size_t)(96 - n), " tld_clamp");
+     return n;
+ }
+ 
+@@ -417,6 +418,9 @@ void gfx_shader_set_host(int float64, uint32_t sbuf_align, const uint32_t subgro
+     paths();
      if (host_set++) return;
      host_f64 = float64, host_sbuf = sbuf_align, host_gather = gather_bits, host_zero_locals = zero_locals, host_bda = bda;
-     memcpy(host_sg, subgroup, sizeof host_sg);
--    if (float64 && !sbuf_align && subgroup[0] == 32 && subgroup[1] == 32 && subgroup[2] == 32 && !gather_bits && !zero_locals && !bda)
 +    // NX2NAVI_TLD_CLAMP=1 (default 0): texelFetch clamps to the image size, so out-of-bounds fetches read the edge texel
 +    // instead of robustness's zero (fog edge bands, #174). Its own cache keys.
 +    host_tld_clamp = cfg_bool("NX2NAVI_TLD_CLAMP");
-+    if (float64 && !sbuf_align && subgroup[0] == 32 && subgroup[1] == 32 && subgroup[2] == 32 && !gather_bits && !zero_locals && !bda &&
-+        !host_tld_clamp)
-         return;
-     uint8_t buf[32 + 96];
-     int n = snprintf((char *)buf + 32, 96, "TKHO f64=%d sbuf=%u sg=%u,%u,%u", float64, sbuf_align, subgroup[0], subgroup[1],
-@@ -332,6 +336,7 @@ void gfx_shader_set_host(int float64, uint32_t sbuf_align, const uint32_t subgro
-     if (gather_bits) n += snprintf((char *)buf + 32 + n, (size_t)(96 - n), " gather=%u", gather_bits);
-     if (zero_locals) n += snprintf((char *)buf + 32 + n, (size_t)(96 - n), " zero_locals");
-     if (bda) n += snprintf((char *)buf + 32 + n, (size_t)(96 - n), " bda");
-+    if (host_tld_clamp) n += snprintf((char *)buf + 32 + n, (size_t)(96 - n), " tld_clamp");
-     memcpy(buf, xlate_id, 32);
-     rt_sha256(buf, 32 + (size_t)n, xlate_id);
-     rt_log("gfx_shader: host options %s: own shader cache keys", (char *)buf + 37);
-@@ -1203,7 +1208,8 @@ static size_t build_request(char *o0, const char *hex, const char *stage, const
-     if (host_sg[si] != 32) o += sprintf(o, ",\"subgroup\":%u", host_sg[si]);
+     memcpy(host_sg, subgroup, sizeof host_sg);
+     char t[96];
+     int n = host_text(t);
+@@ -1732,6 +1736,7 @@ static size_t build_request(char *o0, const char *hex, const char *stage, const
      if (host_gather) o += sprintf(o, ",\"gather_bias\":%u", host_gather);
      if (host_zero_locals) o += sprintf(o, ",\"zero_locals\":true");
--    if (host_bda) o += sprintf(o, ",\"bda\":true");   // the device address table (vk_gpa.c)
-+    if (host_bda) o += sprintf(o, ",\"bda\":true");
-+    if (host_tld_clamp) o += sprintf(o, ",\"tld_clamp\":true");   // NX2NAVI_TLD_CLAMP   // the device address table (vk_gpa.c)
+     if (host_bda) o += sprintf(o, ",\"bda\":true");   // the device address table (vk_gpa.c)
++    if (host_tld_clamp) o += sprintf(o, ",\"tld_clamp\":true");   // NX2NAVI_TLD_CLAMP
      uint32_t magic, nvn2_size;
      memcpy(&magic, control, 4), memcpy(&nvn2_size, control + 0x38, 4);
      if (magic == 0x98761234u) {   // NVN2_CONTROL_MAGIC, below
@@ -171,7 +181,7 @@ index 0000000..490ecca
 +if __name__ == "__main__":
 +    sys.exit(main())
 diff --git a/tools/xlate/Program.cs b/tools/xlate/Program.cs
-index e632c47..c18857c 100644
+index 8360dc9..4bbae45 100644
 --- a/tools/xlate/Program.cs
 +++ b/tools/xlate/Program.cs
 @@ -12,7 +12,7 @@
@@ -192,11 +202,11 @@ index e632c47..c18857c 100644
              try
              {
                  byte[] code = File.ReadAllBytes((string)job["code"]);
-diff --git a/tools/xlate/patches/0036-texel-fetch-clamp.patch b/tools/xlate/patches/0036-texel-fetch-clamp.patch
+diff --git a/tools/xlate/patches/0041-texel-fetch-clamp.patch b/tools/xlate/patches/0041-texel-fetch-clamp.patch
 new file mode 100644
 index 0000000..5212d10
 --- /dev/null
-+++ b/tools/xlate/patches/0036-texel-fetch-clamp.patch
++++ b/tools/xlate/patches/0041-texel-fetch-clamp.patch
 @@ -0,0 +1,58 @@
 +diff --git a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs
 +index e5e01ef..24836b8 100644

@@ -1,4 +1,4 @@
-From e1fbd678dd638faeb19ec4d324d33ec1b610ada1 Mon Sep 17 00:00:00 2001
+From c8efc7c86ada81cfb808f564681bd6282b3d79f0 Mon Sep 17 00:00:00 2001
 From: desocketed <desocketed@users.noreply.github.com>
 Date: Wed, 11 Nov 2026 22:07:08 -0500
 Subject: [PATCH] vk_memory: NX2NAVI_SHADOW_WB_REARM (default 1) takes the
@@ -12,10 +12,10 @@ Subject: [PATCH] vk_memory: NX2NAVI_SHADOW_WB_REARM (default 1) takes the
  1 file changed, 65 insertions(+), 4 deletions(-)
 
 diff --git a/runtime/vk_memory.c b/runtime/vk_memory.c
-index 8d2362f..e4eb358 100644
+index aad8be4..92318f8 100644
 --- a/runtime/vk_memory.c
 +++ b/runtime/vk_memory.c
-@@ -1588,6 +1588,36 @@ static int shadow_bulk_write(void) {
+@@ -1728,6 +1728,36 @@ static int shadow_bulk_write(void) {
      return on;
  }
  
@@ -52,7 +52,7 @@ index 8d2362f..e4eb358 100644
  // NX2NAVI_SHADOW_CHECK: the CPU wrote guest page pg after the copy-in that sgen stands for: a write-watch snapshot
  // stamped it later, or its write-watch bit is set and no snapshot has read it yet. A write-back that moves bytes into
  // such a page may have come after a CPU write it should have come before ("The game must not get ahead of the
-@@ -1612,7 +1642,7 @@ static int cpu_wrote_since(uint64_t pg, uint32_t sgen) {
+@@ -1752,7 +1782,7 @@ static int cpu_wrote_since(uint64_t pg, uint32_t sgen) {
  // Any other such page goes whole as before: a write nothing noted, into a shadow that holds it.
  static uint64_t shadow_write_back(uint64_t addr, uint64_t size) {
      uint64_t moved = 0;
@@ -61,7 +61,7 @@ index 8d2362f..e4eb358 100644
      uint64_t value = vk_sync_cb_value();   // the fence being completed; a call from elsewhere reports submitted work
      if (!value) value = vk_sync_issued();
      plat_mutex_lock_shared(&pool_lock);
-@@ -1624,6 +1654,21 @@ static uint64_t shadow_write_back(uint64_t addr, uint64_t size) {
+@@ -1764,6 +1794,21 @@ static uint64_t shadow_write_back(uint64_t addr, uint64_t size) {
          RT_ZONE(zw, "write-back");
          RT_ZONE_VALUE(zw, size);
          uint64_t t0 = qpc();
@@ -83,7 +83,7 @@ index 8d2362f..e4eb358 100644
          mem_thaw(addr, size);
          if (bulk) plat_mem_prepare_write(addr, size);
          for (uint64_t a = addr, end = addr + size; a < end;) {
-@@ -1638,6 +1683,22 @@ static uint64_t shadow_write_back(uint64_t addr, uint64_t size) {
+@@ -1778,6 +1823,22 @@ static uint64_t shadow_write_back(uint64_t addr, uint64_t size) {
              if (late && n) s_late_pages++, s_late_bytes += n;
              a = pe;
          }
@@ -106,7 +106,7 @@ index 8d2362f..e4eb358 100644
          s_wb_bytes += moved, s_wb_seen += size, s_wb_ticks += qpc() - t0;
          RT_ZONE_END(zw);
      }
-@@ -1814,13 +1875,13 @@ static void shadow_log(uint64_t frame) {
+@@ -1961,13 +2022,13 @@ static void shadow_log(uint64_t frame) {
      rt_log("mem: shadow at frame %llu: %lld pools %.1f MiB; since the last: %llu pool syncs, %llu queries, %.1f MiB "
             "copied in (%llu untracked), %.2f ms (queries %.2f); %.1f MiB written back of %.1f MiB the GPU may have written, %.2f ms; %llu "
             "pages the GPU writes keep a base copy; %llu pages not written back, their pool was made again or the CPU "

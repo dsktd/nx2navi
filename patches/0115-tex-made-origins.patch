@@ -1,4 +1,4 @@
-From a3d693b62cffd7fa533933b452a024fd483e2a5c Mon Sep 17 00:00:00 2001
+From ce895ad4c70e85510bf571d0898851bbb5897285 Mon Sep 17 00:00:00 2001
 From: desocketed <desocketed@users.noreply.github.com>
 Date: Thu, 12 Nov 2026 22:11:49 -0500
 Subject: [PATCH] NX2NAVI_TRACE=perf: where the textures made in a perf window

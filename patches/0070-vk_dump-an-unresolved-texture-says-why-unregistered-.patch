@@ -1,4 +1,4 @@
-From 02ee5fbbc979695ee4b884871605050b28029f28 Mon Sep 17 00:00:00 2001
+From 06cc0607b8bea97a7e49736faea675fde522d07c Mon Sep 17 00:00:00 2001
 From: desocketed <desocketed@users.noreply.github.com>
 Date: Tue, 10 Nov 2026 21:30:11 -0500
 Subject: [PATCH] vk_dump: an unresolved texture says why (unregistered,
@@ -12,10 +12,10 @@ Subject: [PATCH] vk_dump: an unresolved texture says why (unregistered,
  3 files changed, 20 insertions(+), 1 deletion(-)
 
 diff --git a/runtime/vk.h b/runtime/vk.h
-index 8e18a2f..e4b15bc 100644
+index 3dc0f96..6aa89e5 100644
 --- a/runtime/vk.h
 +++ b/runtime/vk.h
-@@ -442,6 +442,9 @@ VkImage vk_tonemap_record(VkCommandBuffer cb, VkImage src, VkFormat sf, uint32_t
+@@ -683,6 +683,9 @@ VkImage vk_tonemap_record(VkCommandBuffer cb, VkImage src, VkFormat sf, uint32_t
  uint64_t vk_texture_slot_token(int id);
  uint64_t vk_texture_same_regs(void);
  void vk_texture_bucket_stats(char *out, size_t n);   // diagnosis for the pool log (vk_texture.c)
@@ -26,10 +26,10 @@ index 8e18a2f..e4b15bc 100644
  uint32_t vk_texture_entry_gen(void);                 // vk_texture.c: bumped by every entry change   // registrations that changed nothing (vk_texture_register), for the pool log
  // Slots whose token may have changed since *pos (0 at first; then the value these calls leave): fn is called for each
 diff --git a/runtime/vk_dump.c b/runtime/vk_dump.c
-index 24de927..c699c9b 100644
+index 3753ea7..0b25cff 100644
 --- a/runtime/vk_dump.c
 +++ b/runtime/vk_dump.c
-@@ -768,7 +768,14 @@ static void describe_bindings(Str *b, const VkExec *ex, const VkPipeInfo *info)
+@@ -822,7 +822,14 @@ static void describe_bindings(Str *b, const VkExec *ex, const VkPipeInfo *info)
              view_t v;
              int hv = 0;
              const VkTexImage *t = vk_texture_by_id(NVN_HANDLE_TEX(h), &v, &hv);
@@ -46,10 +46,10 @@ index 24de927..c699c9b 100644
              sp(b, "tex %d %s(%d) %ux%ux%u levels %u layers %u image %s vkimage %p", NVN_HANDLE_TEX(h), fmt_name(t->format, fn),
                 (int)t->format, t->width, t->height, t->depth, t->levels, t->layers,
 diff --git a/runtime/vk_texture.c b/runtime/vk_texture.c
-index d0b2dd5..8f180a3 100644
+index 3f9af1b..095fe36 100644
 --- a/runtime/vk_texture.c
 +++ b/runtime/vk_texture.c
-@@ -2115,6 +2115,15 @@ int vk_texture_fresh_check_locked(int id) {
+@@ -4834,6 +4834,15 @@ const VkTexImage *vk_texture_exact_by_id_locked(int id, view_t *view, int *has_v
  }
  
  // vk_dump: the swizzle selectors of the descriptor registered in slot id; 0 when the slot is empty.

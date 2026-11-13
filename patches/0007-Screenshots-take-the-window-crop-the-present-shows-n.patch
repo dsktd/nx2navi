@@ -1,4 +1,4 @@
-From cfda1f65a68970cb29d8b2d4265f60f09f4c39d9 Mon Sep 17 00:00:00 2001
+From c258b8612356efbcfbf2a0d60d3161a0525662ea Mon Sep 17 00:00:00 2001
 From: desocketed <desocketed@users.noreply.github.com>
 Date: Sun, 8 Nov 2026 15:37:36 -0500
 Subject: [PATCH] Screenshots take the window crop the present shows, not the
@@ -11,10 +11,10 @@ Subject: [PATCH] Screenshots take the window crop the present shows, not the
  3 files changed, 13 insertions(+), 7 deletions(-)
 
 diff --git a/runtime/boot.c b/runtime/boot.c
-index f510cea..29849a1 100644
+index 9d0122e..19925c9 100644
 --- a/runtime/boot.c
 +++ b/runtime/boot.c
-@@ -244,7 +244,9 @@ static void save_shot(const tex_t *t, const char *path) {
+@@ -251,7 +251,9 @@ static void save_shot(const tex_t *t, const char *path) {
  // present), box-filtered to 480x270; NX2NAVI_SHOTS=w<lo>-<hi>:<step> takes them by world-clock seconds instead, the first
  // present at or after each step (full size with NX2NAVI_SHOTS_FULL=1), for finding short glitches. Pipeline builds stay asynchronous, so the
  // pictures show what a player sees.
@@ -25,7 +25,7 @@ index f510cea..29849a1 100644
      static int parsed;
      static unsigned long long lo, hi, step, next;
      static const char *dir;
-@@ -280,12 +282,16 @@ static void series_shot(const tex_t *t, uint64_t n) {
+@@ -287,12 +289,16 @@ static void series_shot(const tex_t *t, uint64_t n) {
      int fmt = t->d.format;
      int bgra = fmt == NVN_FORMAT_BGRA8 || fmt == NVN_FORMAT_BGRA8_SRGB;
      if (!bgra && fmt != NVN_FORMAT_RGBA8 && fmt != NVN_FORMAT_RGBA8_SRGB) return;
@@ -44,7 +44,7 @@ index f510cea..29849a1 100644
      if (gfx_replay_async()) gfx_backend()->finish();   // the presented frame may still be queued for the replay
      gfx_backend()->read_texels(t, &view, &r, px, 4ull * w, 4ull * w * h);
      for (uint32_t y = 0; y < oh; y++)
-@@ -317,9 +323,9 @@ static void series_shot(const tex_t *t, uint64_t n) {
+@@ -324,9 +330,9 @@ static void series_shot(const tex_t *t, uint64_t n) {
  // A --seconds run ends at the first present after the world clock (game time since the save's first frame,
  // frame_step_world_us) passed S seconds, so a run covers the same game time at any frame rate; any other frame is
  // counted by the back end only.
@@ -57,10 +57,10 @@ index f510cea..29849a1 100644
      if (w < 0 || (double)w < cfg->seconds * 1e6) return;
      if (cfg->shot) save_shot(t, cfg->shot);
 diff --git a/runtime/gfx.h b/runtime/gfx.h
-index cb67e01..8c2b609 100644
+index 7a99a01..e112d5b 100644
 --- a/runtime/gfx.h
 +++ b/runtime/gfx.h
-@@ -165,7 +165,7 @@ uint64_t nvn_proc_address(const char *name);               // synthetic host add
+@@ -197,7 +197,7 @@ uint64_t nvn_proc_address(const char *name);               // synthetic host add
  typedef struct { uint64_t frames, nvn_calls, nvn_distinct, unimplemented, validation_errors, shader_failures,
                   draws_skipped; } GfxStats;
  GfxStats gfx_stats(void);
@@ -70,15 +70,16 @@ index cb67e01..8c2b609 100644
  
  // Movie overlay (ov_movie2.c -> gfx_present.c): the latest decoded movie frame, RGBA8, shown over the game image
 diff --git a/runtime/nvn_api_obj.c b/runtime/nvn_api_obj.c
-index bb2e354..ebebb5e 100644
+index 30193af..992838f 100644
 --- a/runtime/nvn_api_obj.c
 +++ b/runtime/nvn_api_obj.c
-@@ -850,5 +850,5 @@ NVN_API(nvnQueuePresentTexture) {
+@@ -901,6 +901,6 @@ NVN_API(nvnQueuePresentTexture) {
      if (fe) *fe = nvn_fence_last();   // the frame drawn into it (nvnWindowAcquireTexture waits for it)
      last_present_fence = nvn_fence_last();
      frame_step_present(slot, o->interval);   // frame_rate.c: the real-time step follows the display times
 -    rt_frame_presented(t, o->presents);
 +    rt_frame_presented(t, o->crop, o->presents);
+     nvn_call_note(1, (uintptr_t)arg_p(c, 0), 0);
  }
 -- 
 2.56.0

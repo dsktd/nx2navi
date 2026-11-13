@@ -1,4 +1,4 @@
-From bd779c9e38bcdbf4e789eb0b537c6d852b89e281 Mon Sep 17 00:00:00 2001
+From e9a94d9331122671b2bd2bde9294cac4a5dfe6dc Mon Sep 17 00:00:00 2001
 From: desocketed <desocketed@users.noreply.github.com>
 Date: Thu, 12 Nov 2026 16:27:53 -0500
 Subject: [PATCH] vk_ffx: NX2NAVI_FFX_LIB, a dlopen path for the FSR 3.1

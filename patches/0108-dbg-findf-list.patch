@@ -1,4 +1,4 @@
-From 6d5c10bd47d6f2e5b7ede8edb0287027f53011e4 Mon Sep 17 00:00:00 2001
+From b26956cf6e5f09e8b4808fe1446b6ed9c28a02a5 Mon Sep 17 00:00:00 2001
 From: desocketed <desocketed@users.noreply.github.com>
 Date: Thu, 12 Nov 2026 14:30:53 -0500
 Subject: [PATCH] debug_tools: test-script commands findf <lo> <hi> (a search
@@ -10,10 +10,10 @@ Subject: [PATCH] debug_tools: test-script commands findf <lo> <hi> (a search
  1 file changed, 54 insertions(+), 1 deletion(-)
 
 diff --git a/runtime/debug_tools.c b/runtime/debug_tools.c
-index ade7c36..651eb33 100644
+index 6b96198..1dd939f 100644
 --- a/runtime/debug_tools.c
 +++ b/runtime/debug_tools.c
-@@ -740,6 +740,44 @@ int dbg_search_new(uint32_t value, int size) {
+@@ -742,6 +742,44 @@ int dbg_search_new(uint32_t value, int size) {
      return res_n;
  }
  
@@ -58,17 +58,17 @@ index ade7c36..651eb33 100644
  // Keeps the results whose value now passes: mode 0 equals value, 1 changed, 2 unchanged, 3 greater, 4 less than at the
  // search before (unsigned; a float is searched by its bits with mode 0).
  int dbg_search_next(int mode, uint32_t value) {
-@@ -1180,7 +1218,8 @@ static void facing_scan(FILE *f, float y) {
+@@ -1219,7 +1257,8 @@ static void facing_scan(FILE *f, float y) {
  // <tick>:next <mode> <value>;<tick>:setfirst <value>;<tick>:holdfirst <value>;<tick>:show [<hash hex>];
  // <tick>:warp <area> [<start position>];<tick>:event <name>;<tick>:text <game data text's name>;
- // <tick>:freecam <0|1> <sticks 0|1> <speed>;<tick>:camgo <dx> <dy> <dz> [<yaw> <pitch>];<tick>:camreset;<tick>:campos;
--// <tick>:camset <x> <y> <z> <yaw> <pitch>;<tick>:mark":
-+// <tick>:camset <x> <y> <z> <yaw> <pitch>;<tick>:mark;
+ // <tick>:freecam <0|1> <sticks 0|1> <speed>;<tick>:camavoid <0|1>;<tick>:camgo <dx> <dy> <dz> [<yaw> <pitch>];
+-// <tick>:camreset;<tick>:campos;<tick>:camset <x> <y> <z> <yaw> <pitch>;<tick>:mark":
++// <tick>:camreset;<tick>:campos;<tick>:camset <x> <y> <z> <yaw> <pitch>;<tick>:mark;
 +// <tick>:findf <lo> <hi>;<tick>:list <n>":
  // the menu's requests without the menu, for test runs. Ticks count the game's pad reads from the player's first appearance.
  static void test_script(uint64_t tick) {
      static char buf[2048];
-@@ -1288,6 +1327,20 @@ static void test_script(uint64_t tick) {
+@@ -1329,6 +1368,20 @@ static void test_script(uint64_t tick) {
              dbg_mem_read(dbg_search_addr(0), dbg_search_size(), &now);
              rt_log("debug: tick %llu: %d places left (mode %u, value %llu); the first holds %u; %d held", (unsigned long long)tick, n,
                     on, value, now, dbg_frozen_count());

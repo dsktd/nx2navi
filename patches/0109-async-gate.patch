@@ -1,4 +1,4 @@
-From ae9998f37a77cb1b34dccfe2ec0f4e803e146954 Mon Sep 17 00:00:00 2001
+From d3ce1b0dd5c4812dd19db60667a9feeb557f7d33 Mon Sep 17 00:00:00 2001
 From: desocketed <desocketed@users.noreply.github.com>
 Date: Thu, 12 Nov 2026 15:20:05 -0500
 Subject: [PATCH] NX2NAVI_ASYNC_GATE: async replay's submit call waits for the
@@ -12,10 +12,10 @@ Subject: [PATCH] NX2NAVI_ASYNC_GATE: async replay's submit call waits for the
  4 files changed, 26 insertions(+), 2 deletions(-)
 
 diff --git a/runtime/cfg.c b/runtime/cfg.c
-index ca04785..5293dec 100644
+index baa83fb..491fb98 100644
 --- a/runtime/cfg.c
 +++ b/runtime/cfg.c
-@@ -70,7 +70,7 @@ static const char *const known[] = {
+@@ -71,7 +71,7 @@ static const char *const known[] = {
      "SVC_SLOW_MS", "STALL_MS",
      "SHOTS_FULL", "SPEED_PROBE", "SPIN", "SPIN_HANDOFF_US", "SPLIT_DRAWS", "SPLIT_IDLE", "SPLIT_IN_PASS", "SPLIT_US", "SPV_MARK_TEST", "SPV_OVERRIDE", "STICK_DEADZONE", "STICK_SENS",
      "SWKBD_ANSWER",
@@ -23,8 +23,8 @@ index ca04785..5293dec 100644
 +    "SET_AT", "SWKBD_TEST", "TAA", "DBG_TEST", "DEBUG_MENU", "MENU_TEST_DEBUG", "FSR4", "FSR4_FG", "FG4_VERSION", "FG4_SWAPCHAIN", "TEST_PAD", "TEST_PAD_AT", "TEST_PREPARE_SHADERS", "TEX_ALIAS", "DEPTH_INIT_INLINE", "DEPTH_ALIAS_LOG", "TEX_DISUSE", "TEX_DISUSE_EVICT", "TEX_GEN_UNDO", "TEX_MEMO", "TEX_VRAM_PRESSURE", "TEX_RELEASED_MB", "TEX_RELEASED_MAX", "TEX_REUSE", "TEX_SPLIT_FILL", "TEX_COMMIT_FREE_MB", "TEX_PROC_COMMIT_MB", "TEX_EVICT", "TEX_COMMIT_EVICT", "MIRROR_EVICT", "VRAM_BUDGET_MB", "TIMER_1MS", "TRACE", "TXD_TRANSPOSE", "UBO_SNAPSHOT", "EVO_TRACE", "EVO_ASYNC", "ASYNC_GATE", "EVENT_AT_SYNC", "UPSCALER", "VK_DYN_A2C", "VK_DYN_VERTEX", "VK_NAN_PRESERVE", "VK_NOOPT", "VK_NO_FLOAT64",
      "VK_PRESENT", "VK_RECONVERGE", "VK_NAN_BITS", "VK_RECORDER", "VK_SSBO_ALIGN", "VK_SUBGROUP", "VK_SUBGROUP_PIN", "VK_VALIDATION", "VOLUME", "VRAM_HEADROOM", "VS_OUTS", "WATER_PROJECTIVE",
      "WAIT_WATCH_S", "WALK_KEY", "WALK_SCALE", "WB_EXACT", "WB_FENCE_LIMIT", "WB_MERGE", "WB_NO_REUP", "WB_MERGE_MAX", "WB_PROBE", "WB_SPLIT", "WB_LAZY", "WB_LAZY_CHUNK", "WB_LAZY_TOUCH", "WINDOW_SIZE", "XLATE", "XLATE_ID", "XLATE_KEEP", "XLATE_PROCS",
-     "ZSTD_CHECK", "ZSTD_NATIVE",
-@@ -213,6 +213,7 @@ static const CfgMeta metas[] = {
+     "UPLOAD_BATCH_MB", "VRAM_HEAP_LIMIT", "VRAM_RESERVE_MB", "TEX_CLOBBER", "LOW_END_GPU",
+@@ -221,6 +221,7 @@ static const CfgMeta metas[] = {
      {"SHADOW_SCALE", "1", "1..4", RESTART}, {"SHADOW_COMPARE", "1", "0|1", RESTART},   // vk_texture.c
      {"SHADOW_BULK_WRITE", "0", "0|1", RESTART},   // vk_memory.c shadow_write_back
      {"EVO_ASYNC", "1", "0|1", RESTART},   // vk_exec.c "ambient occlusion after its event"
@@ -33,10 +33,10 @@ index ca04785..5293dec 100644
      {"SHADOW_TABLE_STORES", "0", "0|1", RESTART}, {"SHADOW_CHECK", "0", "0|1", RESTART},
      {"SVC_SLOW_MS", "0", "0..60000", RESTART},   // kernel.c kern_svc: log services slower than this
 diff --git a/runtime/vk_backend.c b/runtime/vk_backend.c
-index a10c529..054ee72 100644
+index e71ec49..b23b454 100644
 --- a/runtime/vk_backend.c
 +++ b/runtime/vk_backend.c
-@@ -629,6 +629,7 @@ static uint64_t vk_be_submit(const uint64_t *handles, int n) {
+@@ -779,6 +779,7 @@ static uint64_t vk_be_submit(const uint64_t *handles, int n) {
          if (!it.h) rt_fatal("vk: out of memory (replay queue)");
          memcpy(it.h, handles, sizeof *it.h * (size_t)n);
      }
@@ -45,10 +45,10 @@ index a10c529..054ee72 100644
      return replay_enqueue(&it);
  }
 diff --git a/runtime/vk_exec.c b/runtime/vk_exec.c
-index 37c79f4..373d44d 100644
+index 8ea4d48..713b875 100644
 --- a/runtime/vk_exec.c
 +++ b/runtime/vk_exec.c
-@@ -1387,13 +1387,34 @@ static const void *gate_first_wait(const op_hdr *h) {
+@@ -1461,13 +1461,34 @@ static const void *gate_first_wait(const op_hdr *h) {
      return NULL;
  }
  
@@ -85,10 +85,10 @@ index 37c79f4..373d44d 100644
      if (!w || vk_exec_event_holds_now(w) || !vk_exec_event_cpu_known((const void *)((const p_wait_event *)w)->val)) return;
      uint64_t t0 = kern_now_ns(), now = t0;
 diff --git a/runtime/vk_exec.h b/runtime/vk_exec.h
-index 2ab145b..025b641 100644
+index 545b8a0..187c2c0 100644
 --- a/runtime/vk_exec.h
 +++ b/runtime/vk_exec.h
-@@ -302,6 +302,7 @@ int vk_exec_event_holds_now(const void *payload);   // an OP_WAIT_EVENT's condit
+@@ -312,6 +312,7 @@ int vk_exec_event_holds_now(const void *payload);   // an OP_WAIT_EVENT's condit
  // vk_backend.c submit_sync, before a submission is recorded: waits for the CPU's signal when the submission begins
  // with a wait for it (vk_exec.c "the gate").
  void vk_exec_gate_wait(const uint64_t *handles, int n);

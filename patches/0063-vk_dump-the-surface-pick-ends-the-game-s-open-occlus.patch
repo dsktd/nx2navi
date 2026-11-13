@@ -1,4 +1,4 @@
-From 854c915a6e6ee9ba23634b900385c6073a5661c3 Mon Sep 17 00:00:00 2001
+From bac1add2afda782bd85521260b8949ae763f006d Mon Sep 17 00:00:00 2001
 From: desocketed <desocketed@users.noreply.github.com>
 Date: Tue, 10 Nov 2026 18:35:05 -0500
 Subject: [PATCH] vk_dump: the surface pick ends the game's open occlusion
@@ -11,10 +11,10 @@ Subject: [PATCH] vk_dump: the surface pick ends the game's open occlusion
  1 file changed, 28 insertions(+), 6 deletions(-)
 
 diff --git a/runtime/vk_dump.c b/runtime/vk_dump.c
-index b5e45d8..2abfaf8 100644
+index 7c4d0ef..a2bd8dc 100644
 --- a/runtime/vk_dump.c
 +++ b/runtime/vk_dump.c
-@@ -1257,8 +1257,10 @@ void vk_dump_present(uint64_t frame) {
+@@ -1583,8 +1583,10 @@ void vk_dump_present(uint64_t frame) {
  // query of its own, then as usual. The query counts the samples that passed every test before the real draw ran, so a
  // nonzero count means this draw wrote (or, with colour writes off, would have written) that pixel over what was drawn
  // before it; the last such draw of a pass is its top surface there. The extra draw changes nothing but that pixel, and
@@ -27,7 +27,7 @@ index b5e45d8..2abfaf8 100644
  // logs/pick-<frame>.txt: per draw that hit, its pass number (as passes.txt of a dump of the same frame numbers them),
  // draw index in the pass, samples, shaders with their cache .spv paths (hot-reload targets), bound textures, storage
  // buffers and uniform blocks with their addresses (peek.req / watch.req targets); the log gets one line per pass with
-@@ -1275,6 +1277,11 @@ static VkQueryPool pick_pool;
+@@ -1601,6 +1603,11 @@ static VkQueryPool pick_pool;
  static const VkPipeInfo *pick_info;
  static const GfxShader *pick_vs, *pick_fs;
  static int pick_prim;
@@ -39,7 +39,7 @@ index b5e45d8..2abfaf8 100644
  
  void vk_pick_request(void) {
      if (__atomic_load_n(&pick_busy, __ATOMIC_ACQUIRE)) {
-@@ -1346,6 +1353,12 @@ void vk_pick_present(uint64_t frame) {
+@@ -1672,6 +1679,12 @@ void vk_pick_present(uint64_t frame) {
          PickJob *j = calloc(1, sizeof *j);
          if (j) {
              j->frame = pick_frame, j->n = pick_n, j->recs = pick_recs;
@@ -52,7 +52,7 @@ index b5e45d8..2abfaf8 100644
              if (!plat_thread_spawn(pick_read, j, "pick", 0)) pick_read(j);
          }
          pick_recs = NULL, pick_frame = 0;
-@@ -1372,32 +1385,40 @@ void vk_pick_present(uint64_t frame) {
+@@ -1698,32 +1711,40 @@ void vk_pick_present(uint64_t frame) {
      if (!pick_recs) return;
      __atomic_store_n(&pick_busy, 1, __ATOMIC_RELEASE);
      pick_frame = frame + 1, pick_seq = pick_draw = pick_n = 0;
@@ -97,7 +97,7 @@ index b5e45d8..2abfaf8 100644
      PickRec *r = &pick_recs[pick_n];
      r->pass = pick_seq, r->draw = draw, r->w = ex->pass_w, r->h = ex->pass_h;
      r->c0 = ex->color[0].tex ? (uint64_t)(uintptr_t)ex->color[0].tex->mem : 0;
-@@ -1424,4 +1445,5 @@ void vk_pick_post(VkExec *ex) {
+@@ -1750,4 +1771,5 @@ void vk_pick_post(VkExec *ex) {
      vkCmdEndQuery(ex->cb, pick_pool, (uint32_t)pick_q);
      vkCmdSetScissorWithCount(ex->cb, 1, &pick_sc);
      ex->recorded += 2;

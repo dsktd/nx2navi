@@ -1,8 +1,8 @@
-From b8ebaa9ded1b137b89729e8a936ca925fe04bba3 Mon Sep 17 00:00:00 2001
+From 3a6242f90593ca834775fc54d1da0a80c613c1e1 Mon Sep 17 00:00:00 2001
 From: desocketed <desocketed@users.noreply.github.com>
 Date: Mon, 9 Nov 2026 00:21:26 -0500
-Subject: [PATCH 18/18] vk_pipeline: map the RGBX, sRGB and BGRX vertex
- formats; log an attribute without a mapping
+Subject: [PATCH] vk_pipeline: map the RGBX, sRGB and BGRX vertex formats; log
+ an attribute without a mapping
 
 An NVN vertex attribute whose format had no entry in the table read the zero
 binding (0, 0, 0, 1) with no log line, which collapses any shape that carries
@@ -16,10 +16,10 @@ frame.
  1 file changed, 11 insertions(+), 1 deletion(-)
 
 diff --git a/runtime/vk_pipeline.c b/runtime/vk_pipeline.c
-index 40270f4..53b3b46 100644
+index 8fde28b..c543196 100644
 --- a/runtime/vk_pipeline.c
 +++ b/runtime/vk_pipeline.c
-@@ -443,7 +443,7 @@ typedef struct { VkFormat vk; uint8_t type; } VtxFmt;
+@@ -1195,7 +1195,7 @@ typedef struct { VkFormat vk; uint8_t type; } VtxFmt;
  #define F(v) {VK_FORMAT_##v, GFX_TYPE_FLOAT}
  #define U(v) {VK_FORMAT_##v, GFX_TYPE_UINT}
  #define I(v) {VK_FORMAT_##v, GFX_TYPE_SINT}
@@ -28,7 +28,7 @@ index 40270f4..53b3b46 100644
      [0x01] = F(R8_UNORM), [0x02] = F(R8_SNORM), [0x03] = U(R8_UINT), [0x04] = I(R8_SINT), [0x05] = F(R16_SFLOAT),
      [0x06] = F(R16_UNORM), [0x07] = F(R16_SNORM), [0x08] = U(R16_UINT), [0x09] = I(R16_SINT), [0x0A] = F(R32_SFLOAT),
      [0x0B] = U(R32_UINT), [0x0C] = I(R32_SINT), [0x0D] = F(R8G8_UNORM), [0x0E] = F(R8G8_SNORM), [0x0F] = U(R8G8_UINT),
-@@ -468,6 +468,14 @@ static const VtxFmt vtx_formats[0x9B] = {
+@@ -1220,6 +1220,14 @@ static const VtxFmt vtx_formats[0x9B] = {
      [0x61] = U(R32G32B32_UINT), [0x62] = I(R32G32B32_SINT), [0x67] = U(R32G32B32A32_UINT), [0x68] = I(R32G32B32A32_SINT),
      [0x69] = F(A2B10G10R10_SNORM_PACK32), [0x6A] = I(A2B10G10R10_SINT_PACK32), [0x6B] = F(A2B10G10R10_USCALED_PACK32),
      [0x6C] = F(A2B10G10R10_SSCALED_PACK32), [0x9A] = F(B8G8R8A8_UNORM),
@@ -43,7 +43,7 @@ index 40270f4..53b3b46 100644
  };
  #undef F
  #undef U
-@@ -591,6 +599,8 @@ static void vertex_input(const VkPipeState *s, VtxInput *v) {
+@@ -1339,6 +1347,8 @@ static void vertex_input(const VkPipeState *s, VtxInput *v) {
              a->binding = va.stream, a->format = f, a->offset = va.offset;
              streams |= 1u << va.stream;
          } else {

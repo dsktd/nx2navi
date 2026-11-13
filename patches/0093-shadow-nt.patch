@@ -1,4 +1,4 @@
-From 79bac9e963becc382877d944211b49c5115f894e Mon Sep 17 00:00:00 2001
+From b0b88ee3debbc58bfe5bd274b24d7787673388f1 Mon Sep 17 00:00:00 2001
 From: desocketed <desocketed@users.noreply.github.com>
 Date: Wed, 11 Nov 2026 23:04:35 -0500
 Subject: [PATCH] vk_memory: NX2NAVI_SHADOW_NT=1 (0: old memcpy) streams shadow
@@ -10,7 +10,7 @@ Subject: [PATCH] vk_memory: NX2NAVI_SHADOW_NT=1 (0: old memcpy) streams shadow
  1 file changed, 36 insertions(+), 1 deletion(-)
 
 diff --git a/runtime/vk_memory.c b/runtime/vk_memory.c
-index 3350684..b8b90b5 100644
+index c1bc51e..84cdb50 100644
 --- a/runtime/vk_memory.c
 +++ b/runtime/vk_memory.c
 @@ -11,6 +11,9 @@
@@ -23,7 +23,7 @@ index 3350684..b8b90b5 100644
  
  #include "cfg.h"
  #include "gfx.h"
-@@ -1507,9 +1510,38 @@ static void shadow_forget(PoolRec *r) {
+@@ -1647,9 +1650,38 @@ static void shadow_forget(PoolRec *r) {
      plat_mutex_unlock(&shadow_lock);
  }
  
@@ -62,7 +62,7 @@ index 3350684..b8b90b5 100644
      while (a < b) {
          uint64_t e = b;
          uint8_t *base = NULL;
-@@ -1532,7 +1564,7 @@ static void shadow_copy(PoolRec *r, uint64_t a, uint64_t b) {
+@@ -1672,7 +1704,7 @@ static void shadow_copy(PoolRec *r, uint64_t a, uint64_t b) {
          uint64_t t0 = s_check ? qpc() : 0;
          int marks = (s_learn || s_check) && r->gpa_rec && !((a | e) & (SB_PAGE - 1));
          if (marks) copy_marked(r, a, e);
@@ -71,7 +71,7 @@ index 3350684..b8b90b5 100644
          if (s_check) {
              *(marks ? &s_mark_ticks : &s_plain_ticks) += qpc() - t0;
              if (r->mstate != MS_ON) s_in_nomirror += e - a;
-@@ -1541,6 +1573,9 @@ static void shadow_copy(PoolRec *r, uint64_t a, uint64_t b) {
+@@ -1681,6 +1713,9 @@ static void shadow_copy(PoolRec *r, uint64_t a, uint64_t b) {
          s_copied += e - a;
          a = e;
      }

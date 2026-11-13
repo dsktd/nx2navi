@@ -1,19 +1,19 @@
-From b9891dc92e8dbd50fd8a9c69c6ccf380a77a5701 Mon Sep 17 00:00:00 2001
+From 407da64375621f89e60a6d0794204bb101f7f5c3 Mon Sep 17 00:00:00 2001
 From: desocketed <desocketed@users.noreply.github.com>
 Date: Sun, 8 Nov 2026 22:14:18 -0500
-Subject: [PATCH 14/15] input: prefer Steam Input's virtual pad at once and
- ignore the raw Steam Controller beside it
+Subject: [PATCH] input: prefer Steam Input's virtual pad at once and ignore
+ the raw Steam Controller beside it
 
 ---
  runtime/input.c | 26 ++++++++++++++++++++++++--
  1 file changed, 24 insertions(+), 2 deletions(-)
 
 diff --git a/runtime/input.c b/runtime/input.c
-index 1305ee6..2152db3 100644
+index 452183b..4454845 100644
 --- a/runtime/input.c
 +++ b/runtime/input.c
-@@ -430,6 +430,22 @@ static void pad_primary(SDL_Gamepad *p, const char *why) {
-            pad_east_a ? "labelled A" : "not labelled A");
+@@ -577,6 +577,22 @@ static void map_joysticks(void) {
+     SDL_free(ids);
  }
  
 +// Steam Input's virtual pad ("Steam Virtual Gamepad", "Steam Deck Controller") carries the player's Steam layout; the
@@ -34,8 +34,8 @@ index 1305ee6..2152db3 100644
 +
  // Under lock: closes the gamepads that went away and opens the ones that came; the primary falls back to the first
  // open one when it left. Logs each change.
- static void scan_pads(void) {
-@@ -456,7 +472,9 @@ static void scan_pads(void) {
+ // The game is always told one controller is connected, so a disconnect read as nothing pressed and play went on
+@@ -610,7 +626,9 @@ static void scan_pads(void) {
          if (pad) rt_log("input: gamepad \"%s\" connected (the game switches to it at its first press)", SDL_GetGamepadName(p));
      }
      SDL_free(ids);
@@ -43,10 +43,10 @@ index 1305ee6..2152db3 100644
 +    int v = pad_steam_input();
 +    if (v >= 0 && pads[v] != pad) pad_primary(pads[v], "in use (Steam Input, preferred)");
 +    else if (!pad && npads) pad_primary(pads[0], "in use");
- }
- 
- // Under lock: 1 when p has a button down, a trigger pulled or a stick past half way (a drifting stick does not count).
-@@ -471,8 +489,12 @@ static int pad_active(SDL_Gamepad *p) {
+     if (had && !pad && !menu_is_open()) {
+         rt_log("input: the gamepad in use went away and no other is connected: the menu opens");
+         menu_toggle();
+@@ -652,8 +670,12 @@ static int pad_active(SDL_Gamepad *p) {
  // Under lock: when the primary is idle and another open gamepad is pressed, that one becomes the primary.
  static void pad_follow(void) {
      if (npads < 2 || (pad && pad_active(pad))) return;

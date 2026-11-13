@@ -1,4 +1,4 @@
-From 78d728383e90bd207aa911084937bcbeda601598 Mon Sep 17 00:00:00 2001
+From 2bfa7fc3f27eee8ac20cc390d6443785a275dc3e Mon Sep 17 00:00:00 2001
 From: desocketed <desocketed@users.noreply.github.com>
 Date: Wed, 11 Nov 2026 17:32:25 -0500
 Subject: [PATCH] vk_dump: dispatch.txt holds each indirect dispatch's {x, y,
@@ -13,18 +13,18 @@ Subject: [PATCH] vk_dump: dispatch.txt holds each indirect dispatch's {x, y,
  3 files changed, 44 insertions(+), 1 deletion(-)
 
 diff --git a/runtime/vk_dump.c b/runtime/vk_dump.c
-index c699c9b..d4dcb26 100644
+index 0b25cff..092f8d6 100644
 --- a/runtime/vk_dump.c
 +++ b/runtime/vk_dump.c
 @@ -11,6 +11,7 @@
- //                hashes (sh_<hash>.spv written once) and the bound textures with their samplers
+ //                hashes (sh_<hash>.spv written once) and the bound textures with their samplers; draw preparation rejections by reason while the capture ran
  //   mesh.txt     indirect mesh draws: the {count, first} record each read, by pass and draw (NX2NAVI_DUMP_MESH=0: mesh
  //                draws left out of passes.txt and mesh.txt, as before)
 +//   dispatch.txt indirect dispatches (passes.txt shows them as 0x0x0): the {x, y, z} group counts each read, by pass
  //   images.txt   per image: channel min/max, distinct texel values over the image and over its top quarter
  // Sampled 8-bit 2D textures up to TEX2D_CAP texels are copied once each as pass_<seq>_tex<id>_... at the end of the pass
  // that samples them; texture lines carry the storage address, mirror state, upload count and the image's and slot's
-@@ -924,7 +925,7 @@ out:
+@@ -1093,7 +1094,7 @@ out:
  // in the frame's command buffer before the draw, written to mesh.txt once its fence completes, with the pass and draw
  // it belongs to in passes.txt. Called outside a render pass (mesh_ring_entry ends it), so the next pass is the draw's.
  typedef struct { VkBuffer buf; VmaAllocation alloc; const uint8_t *map; uint64_t addr, frame; int pass, draw; } MeshJob;
@@ -33,7 +33,7 @@ index c699c9b..d4dcb26 100644
  
  static void mesh_done(void *arg) {
      MeshJob *j = arg;
-@@ -962,6 +963,45 @@ out:
+@@ -1131,6 +1132,45 @@ out:
      plat_mutex_unlock(&rec_lock);
  }
  
@@ -79,7 +79,7 @@ index c699c9b..d4dcb26 100644
  static void target_line(VkExec *ex, const VkExecTarget *t, const char *tag, int n) {
      char fn[16], name[160];
      if (!t->image) {
-@@ -1299,6 +1339,7 @@ void vk_dump_present(uint64_t frame) {
+@@ -1616,6 +1656,7 @@ void vk_dump_present(uint64_t frame) {
      images_f = NULL;
      if (bufs_f) fclose(bufs_f), bufs_f = NULL;
      if (mesh_f) fclose(mesh_f), mesh_f = NULL;
@@ -88,24 +88,24 @@ index c699c9b..d4dcb26 100644
      fclose(passes_f);
      passes_f = NULL;
 diff --git a/runtime/vk_exec.h b/runtime/vk_exec.h
-index dda261d..5131da3 100644
+index 0173298..b74d044 100644
 --- a/runtime/vk_exec.h
 +++ b/runtime/vk_exec.h
-@@ -183,6 +183,7 @@ void vk_dump_init(void);                 // reads the environment; vk_exec_recor
- void vk_dump_pass_end(VkExec *ex);       // after vkCmdEndRendering
- void vk_dump_draw(VkExec *ex, const VkPipeState *s, VkPipeline p, const VkPipeInfo *info);   // after a draw's binds
+@@ -272,6 +272,7 @@ void vk_dump_draw_skipped(const VkExec *ex, int mesh, int why);
+ int vk_dump_mesh_begin(VkExec *ex);
+ void vk_dump_mesh_end(VkExec *ex, int q);
  void vk_dump_mesh_ind(VkExec *ex, uint64_t addr);   // an indirect mesh draw's record, read back to mesh.txt
 +void vk_dump_dispatch_ind(VkExec *ex, uint64_t addr);   // an indirect dispatch's group counts, read back to dispatch.txt
  extern int vk_dump_mesh;   // NX2NAVI_DUMP_MESH (default 1): mesh draws in dumps
  void vk_dump_dispatch(VkExec *ex, const GfxShader *cs, VkPipeline p, const VkPipeInfo *info, const p_dispatch *d);
  void vk_dump_copy(VkExec *ex, uint32_t op, const void *payload);   // before a copy or texture clear is replayed
 diff --git a/runtime/vk_exec_draw.c b/runtime/vk_exec_draw.c
-index ed040f2..cd8853c 100644
+index 0c326d3..3739818 100644
 --- a/runtime/vk_exec_draw.c
 +++ b/runtime/vk_exec_draw.c
-@@ -4530,6 +4530,7 @@ static void op_dispatch_ind(VkExec *ex, const p_dispatch_ind *d) {
+@@ -7287,6 +7287,7 @@ static void op_dispatch_ind(VkExec *ex, const p_dispatch_ind *d) {
          vk_exec_barrier(ex);
-         B.c0_valid[2] = 0;   // the range no longer holds B.c0[2]
+         cx->B.c0_valid[2] = 0;   // the range no longer holds B.c0[2]
      }
 +    if (vk_dump_armed) vk_dump_dispatch_ind(ex, d->ind);   // the group counts as the dispatch reads them (dispatch.txt)
      VkPassMark *m = dispatch_mark(ex, cs, 0, 0, 0);
