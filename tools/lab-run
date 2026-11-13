@@ -28,11 +28,22 @@ OUT=$ROOT/.lab/$label; log=$OUT/run.log
 # lock shared with every other lab/investigation run (held by the game via fd 9, gone when it exits)
 soft=${LAB_SOFT:-}
 [ $dry = 1 ] || [ -n "$soft" ] || {
-exec 9>/tmp/nx2navi-lab.lock; flock -w ${LAB_LOCK_WAIT:-3600} 9 || { echo "lab-run: lock busy" >&2; exit 3; }
+# Lock order (2026-11-13: a nightly cell held the lab lock for 2 h waiting for the build lock its own parent, tools/nightly,
+# holds for the whole night, so every later cell failed with no run.log): never hold the lab lock while waiting long
+# for the build lock. Take the lab lock, try the build lock for LAB_BUILD_TRY s (30); if a build holds it, let the
+# lab lock go, rest 20 s and retry, up to LAB_LOCK_WAIT s in all. NX2NAVI_BUILD_LOCK_HELD=1 (set by tools/nightly,
+# which holds the build lock for its cells) skips the build lock.
 # No build beside a GPU run (2026-11-12: a build on all cores during back-to-back GPU runs, then the host
 # hard-locked): hold the build lock too for the whole run, and rest LAB_COOLDOWN s (default 20) after the
 # previous GPU run ended so runs never go back to back
-exec 8>/tmp/nx2navi-build.lock; flock -w ${LAB_LOCK_WAIT:-3600} 8 || { echo "lab-run: build running" >&2; exit 3; }
+dl=$(( $(date +%s) + ${LAB_LOCK_WAIT:-3600} ))
+while :; do
+  left=$(( dl - $(date +%s) )); [ $left -gt 0 ] || { echo "lab-run: lock timeout (waited ${LAB_LOCK_WAIT:-3600} s for the lab or build lock)" >&2; exit 3; }
+  exec 9>/tmp/nx2navi-lab.lock; flock -w $left 9 || { echo "lab-run: lock timeout (lab lock busy ${LAB_LOCK_WAIT:-3600} s)" >&2; exit 3; }
+  [ -n "${NX2NAVI_BUILD_LOCK_HELD:-}" ] && break
+  exec 8>/tmp/nx2navi-build.lock; flock -w ${LAB_BUILD_TRY:-30} 8 && break
+  exec 8>&- 9>&-; sleep 20
+done
 last=/tmp/nx2navi-lab.last; [ -f $last ] && { rest=$(( $(stat -c %Y $last) + ${LAB_COOLDOWN:-20} - $(date +%s) )); [ $rest -gt 0 ] && sleep $rest; }
 trap 'touch $last' EXIT
 # VRAM guard (2026-11-09: two GPU jobs at once exhausted the 16 GiB card, amdgpu "Not enough memory for command

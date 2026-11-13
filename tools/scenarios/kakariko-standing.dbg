@@ -1,0 +1,3 @@
+# Kakariko Village (adult), from the field entrance; standing (tools/scn-cell)
+# base: .lab/scenarios/base-profile
+# warp: scene=KakarikoVillage_Adult entrance=KakarikoVillage_Entrance age=adult

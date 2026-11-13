@@ -1,0 +1,81 @@
+#!/bin/bash
+# scn-cell <exe> <scenario> <tag> <rep> [KEY=VAL...]: one run of a tools/scenarios recipe (base + warp, standing) with
+# Cal's play-run knobs (the fc-cell set) + the arm's, then fps, 1% low, >25 ms/min, interval, replay and GPU ms over
+# present frames LO..FRAME (default 1800..4200: the load settles by ~1100). Out: .lab/scn-<tag>-<rep>/{run.log,sum.txt}.
+# Scenario `field-running`: the field-west warp + .lab/parity/load-run.txt (stick loops from 2500; LO 2600, FRAME 6300):
+# moving, so replay drift applies (indicative). Standing scenarios use tools/scn-stand.txt (the save load, no stick).
+# Skips while Cal plays (exit 9: play log < 180 s old); waits for load average < 4; lab-run takes the lab lock + cooldown.
+# scn-cell sum <scenario> <tag>...: mean (min..max) over .lab/scn-<tag>-*/sum.txt, one line per tag; with RESULTS=1 also
+#   results.tsv rows (tools/results-add row, n = runs, tool scn-cell).
+R=$HOME/claude/nx2navi; P=$R/.lab/parity; B=$R/NX2navi/build/v111
+if [ "${1:-}" = sum ]; then
+  sc=$2; shift 2
+  for tag; do
+    python3 -I - "$R" "$sc" "$tag" <<'P'
+import glob, os, statistics as st, subprocess, sys
+R, sc, tag = sys.argv[1:4]
+runs = sorted(glob.glob(f'{R}/.lab/scn-{tag}-*/sum.txt'))
+rows = [dict(kv.split('=') for kv in open(f).read().split()) for f in runs]
+rows = [r for r in rows if 'fps' in r]
+if not rows: print(f'{tag}: no runs'); sys.exit()
+keys = ['fps', 'low1', 'over25_min', 'interval_ms', 'replay_ms', 'gpu_ms']
+out = [f'{tag} {sc} n={len(rows)}']
+for k in keys:
+    v = [float(r[k]) for r in rows]
+    out.append(f'{k} {st.mean(v):.2f} ({min(v):.2f}..{max(v):.2f})')
+    if os.environ.get('RESULTS') == '1':
+        log = os.path.dirname(runs[0]) + '/run.log'
+        subprocess.run([R + '/tools/results-add', 'row', log, sc, 'scn_' + k, f'{st.mean(v):.2f}', f'{min(v):.2f}',
+                        f'{max(v):.2f}', str(len(rows)), 'scn-cell', tag], check=False)
+print('; '.join(out))
+P
+  done
+  exit 0
+fi
+exe=$1 sc=$2 tag=$3 rep=$4; shift 4
+log=$(ls -t $B/logs/play-*.log | head -1)
+[ $(( $(date +%s) - $(stat -c %Y $log) )) -lt 180 ] && { echo "scn: Cal playing" >&2; exit 9; }
+while [ "$(cut -d' ' -f1 /proc/loadavg | cut -d. -f1)" -ge 4 ]; do sleep 20; done
+. $R/tools/cell-lib.sh
+if [ $sc = field-running ]; then
+  w=$($R/tools/recipe field-west-standing warp); rec=$P/load-run.txt; base=$($R/tools/recipe field-west-standing base)
+  lo=${LO:-2600} hi=${FRAME:-6300}; rh=$($R/tools/recipe field-west-standing hash)
+else
+  w=$($R/tools/recipe $sc warp) || exit 2; rec=$R/tools/scn-stand.txt; base=$($R/tools/recipe $sc base)
+  lo=${LO:-1800} hi=${FRAME:-4200}; rh=$($R/tools/recipe $sc hash)
+fi
+[[ $base == /* ]] || base=$R/$base
+l=scn-$tag-$rep; l0=$(cell_wait); cache=$(cell_cache $P/scR $P/pcR.bin)
+echo "load $l0 $l $(date +%T)"
+(cd $R && LAB_PROFILE_SRC=$base LAB_EXE=nx2navi.$exe LAB_TIMEOUT=${LAB_TIMEOUT:-500} \
+  taskset -c ${LAB_CPUS:-$(taskset -cp $$ | cut -d: -f2 | tr -d " ")} tools/lab-run --warp "$w" $rec $hi $l \
+  NX2NAVI_XLATE=$(cell_xlate $exe) NX2NAVI_SHADER_CACHE=$P/scR NX2NAVI_PIPELINE_CACHE=$P/pcR.bin NX2NAVI_PIPE_SKIP=any \
+  NX2NAVI_ALIAS_EXTRA_MIB=512 NX2NAVI_GPU_WAIT=0 NX2NAVI_POOL_IDLE_MS=8 NX2NAVI_SHADOW_BULK_WRITE=1 NX2NAVI_MARK_CHORD=off \
+  NX2NAVI_SHADOW_PRESYNC=1 NX2NAVI_SHADOW_TOUCH_LOCK=1 NX2NAVI_STALL_MS=100 NX2NAVI_TEX_DESC_STRICT=1 NX2NAVI_RUN_NAME=$l \
+  NX2NAVI_TEX_RELEASED_MB=3072 NX2NAVI_TEX_RELEASED_MIB=3072 NX2NAVI_TRACE=perf,present NX2NAVI_VK_RECORDER=1 "$@" \
+  > $R/.lab/$l.out 2>&1)
+[ -f $R/.lab/$l/run.log ] || { echo "$l: no run.log (lab-run: $(tail -1 $R/.lab/$l.out | cut -c1-120))"; grep -q 'lock timeout' $R/.lab/$l.out && echo "status=locktimeout" >&2; exit 3; }
+cell_note $l $cache "$rh" $l0
+# present lines: fps = frames / summed intervals, 1% low = upstream's (1 / the 99th percentile interval), >25 ms per minute
+# of summed intervals; perf windows ending in LO..hi-1 (the dump frame's own window excluded): interval, replay, gpu
+python3 -I - $R/.lab/$l/run.log $lo $hi > $R/.lab/$l/sum.txt <<'P'
+import re, sys
+log, lo, hi = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+iv, win = [], {}
+for s in open(log, errors='replace'):
+    m = re.search(r'present: frame (\d+) interval ([\d.]+) ms', s)
+    if m and lo < int(m[1]) < hi: iv.append(float(m[2])); continue
+    m = re.search(r'perf: frame (\d+): (?:interval avg ([\d.]+)|gpu avg ([\d.]+))', s)
+    if m and lo < int(m[1]) < hi:
+        w = win.setdefault(int(m[1]), {})
+        if m[2]: w['iv'] = float(m[2]); r = re.search(r'replay avg ([\d.]+)', s); w['rp'] = float(r[1]) if r else 0
+        else: w['gpu'] = float(m[3])
+if len(iv) < 100: print('status=short frames=%d' % len(iv)); sys.exit()
+tot = sum(iv); srt = sorted(iv); p99 = srt[min(len(srt) - 1, int(len(srt) * 0.99))]
+w = [x for x in win.values() if 'iv' in x and 'gpu' in x]
+avg = lambda k: sum(x[k] for x in w) / len(w) if w else 0
+print('status=ok frames=%d fps=%.2f low1=%.2f over25_min=%.1f interval_ms=%.2f replay_ms=%.2f gpu_ms=%.2f windows=%d' % (
+    len(iv), 1000 * len(iv) / tot, 1000 / p99, sum(x > 25 for x in iv) * 60000 / tot, avg('iv'), avg('rp'), avg('gpu'), len(w)))
+P
+grep -q 'the SDK aborted' $R/.lab/$l/run.log && echo "status=sdkabort" >> $R/.lab/$l/sum.txt
+echo "$l $(cat $R/.lab/$l/sum.txt | tr '\n' ' ') load-after $(cut -d' ' -f1 /proc/loadavg)"

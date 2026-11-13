@@ -169,6 +169,7 @@ def quiet_host():
     while True:
         try:
             fcntl.flock(LOCKFD, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            os.environ['NX2NAVI_BUILD_LOCK_HELD'] = '1'   # its cells' lab-run must not wait for this lock
             return True
         except OSError:
             if time.time() - t > 1800:
