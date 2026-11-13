@@ -16,6 +16,7 @@
 #   (VK_DRIVER_FILES), LP_NUM_THREADS=8, pinned to cores LAB_SOFT_CPUS (12-15,28-31; never 0-7,16-23), render scale
 #   50, fps limit 30, a scratch pipeline cache. Skips the lock, VRAM and Cal's-game guards (software runs may overlap his
 #   play), aborts if the log names any device but llvmpipe. Slow (about 1-3 fps): keep replays short, LAB_TIMEOUT up.
+# LAB_HOOK=<command>: run at the dump frame while the game still runs (env LAB_OUT, LAB_LOG, LAB_PGID); see tools/ab.
 # Never touches shader-cache or the binary; the game itself still writes its caches in the bin dir's cwd.
 set -u
 # lab-run [--show] ...: --show also writes latest-frame.png (only if the dump frame was reached); off by default.
@@ -171,6 +172,9 @@ for ((i=0; i<tmo*2; i++)); do sleep 0.5
   kill -0 $pgid 2>/dev/null || break
 done
 t1=$(date +%s.%N)
+# LAB_HOOK=<command>: run (bash -c) once the dump frame was reached, game still running, with LAB_OUT, LAB_LOG, LAB_PGID
+# set (tools/ab --soft uses it for the live hot-reload A/B); the run ends when it returns
+[ $hit = 1 ] && [ -n "${LAB_HOOK:-}" ] && { echo "lab-run: hook"; LAB_OUT=$OUT LAB_LOG=$log LAB_PGID=$pgid bash -c "$LAB_HOOK" || echo "lab-run: hook failed ($?)"; }
 # the last capture is written in EndFrameCapture after its present: wait for the log line before stopping the game
 [ -n "${LAB_RENDERDOC:-}" ] && for ((i=0;i<120;i++)); do
   grep -aqE "rdoc: frame ${LAB_RENDERDOC##*,} (captured|capture failed)|rdoc: (cannot|RENDERDOC_GetAPI)|missing required" "$log" && break

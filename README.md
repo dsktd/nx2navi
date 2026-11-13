@@ -539,6 +539,41 @@ Both are opt-in environment variables for `tools/lab-run` (see its header):
 - `LAB_HANG=1`: `RADV_DEBUG=nogpl,hang`; the `radv_dumps_*` hang reports land in `.lab/<label>/hang`. Known: replays to frame 1100 hit `radv: GPU hang detected`, then radv crashes
   (libvulkan_radeon.so+0xfae0c) before writing a report.
 
+## Automatic A/B (tools/ab)
+
+**Status: written 2026-11-11, not run.** The authoring session could not execute it (no approval surface), so nothing
+below is proven yet; first run it with `--dry` and on a `--soft` replay.
+
+`tools/ab` automates the manual hot-reload loop (swap a shader in the cache, wait for `reload <key16> ok`, `shot.req`,
+restore, compare). Needs a game started with `NX2NAVI_SHADER_RELOAD=1` (it refuses without the log's
+`gfx_shader: reload: watching` line, and refuses the plain `build/v111/shader-cache`). It re-execs itself under
+`nix shell nixpkgs#spirv-tools nixpkgs#imagemagick`.
+
+- Candidates: fragment shaders of full-size render passes of a dump's `passes.txt` (`--dump`, `--passes 150-200`, newest
+  pass first), a live surface pick (`--pick`: `pick.req`, centre pixel, needs `NX2NAVI_WATCH_REQ=1`) and `--fs h,h`.
+- Variants, generated with `spirv-dis`/`spirv-as --preserve-numeric-ids`/`spirv-val` (a variant that does not validate
+  is listed as refused, never loaded): `kill` (OpKill after the entry function's OpVariables) and `zero` (each
+  colour-output store writes OpConstantNull). The interface is unchanged, as the reload requires.
+- Per variant: back up to `<control dir>/reload-bak/ab-<ts>/`, write by temp (`.ab-tmp-<name>`) + rename, wait for the
+  reload line, settle, `shot.req`, restore by rename and `cmp`, shoot again. Region RMSE (ImageMagick) of the variant
+  shot against the base shot before it; the two base shots around it give the noise floor; ranked by RMSE minus noise.
+- Safety: `ACTIVE` marker with pid + journal in the backup dir, `try/finally`, atexit and SIGINT/SIGTERM/SIGHUP
+  restore; after a SIGKILL `tools/ab --restore <bakdir>` puts everything back and the next run refuses until then.
+- Outputs in `.lab/ab/<ts>-<label>/`: `report.md`, `results.json`, `ab.png` (per top variant: base | variant |
+  difference x4, region outlined), published to `~/claude/.services/view` (`images/` + `index.jsonl`); feed `step:` and
+  `result:` lines.
+
+```nu
+# own lavapipe replay (no GPU, may overlap play); region as fractions of the shot: centre 10 %
+tools/ab --soft scenarios/<recording>.txt 600 --label abtest --region 0.45,0.45,0.1,0.1 --settle 3 --wait 120
+# candidate list and variant validation only, swaps nothing
+tools/ab --dry --live --dump .lab/<run>/dump --cache <copy of a shader cache> --log <a reload-enabled run log> --region 0.5,0.5
+```
+
+`tools/lab-run` got `LAB_HOOK=<command>` for this: the command runs once the dump frame is reached, with the game still
+running (`LAB_OUT`, `LAB_LOG`, `LAB_PGID` set). Limits: a moving scene voids the numbers (read the noise column); a pick
+only samples the centre pixel of each pass; no "term-disabled" variants yet (only whole-shader kill/zero).
+
 ## Modding: text mods and the RE database
 
 Design: `design/modding/DESIGN.md`. The runtime already loads RomFS mods (`runtime/mods.c`, `NX2NAVI_MODS_DIR`, default
