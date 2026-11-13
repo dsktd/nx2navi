@@ -1,0 +1,142 @@
+From a3d693b62cffd7fa533933b452a024fd483e2a5c Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Thu, 12 Nov 2026 22:11:49 -0500
+Subject: [PATCH] NX2NAVI_TRACE=perf: where the textures made in a perf window
+ come from (made again after a drop of their key, by reason and age, or never
+ dropped, by what else is at their address) and what the released entries hold
+
+---
+ runtime/vk_texture.c | 91 ++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 91 insertions(+)
+
+diff --git a/runtime/vk_texture.c b/runtime/vk_texture.c
+index 547c989..ba0a669 100644
+--- a/runtime/vk_texture.c
++++ b/runtime/vk_texture.c
+@@ -2000,6 +2000,7 @@ static void wb_cfg_init(void);
+ static int storage_rewritten(const Tex *e, uint32_t since, uint32_t *now);
+ static void write_back_n(Tex **v, int n);
+ static uint64_t n_drop_wb;   // entries written back before their drop since the last perf line
++static void remade_note(const Tex *e, int why);
+ 
+ static void drop_tex(Tex *e, int why) {
+     flight_ev(e, FLIGHT_TEX_DROP, (uint32_t)why, 0);
+@@ -2011,6 +2012,7 @@ static void drop_tex(Tex *e, int why) {
+         else if (wb_wanted(e)) write_back_n(&e, 1), n_drop_wb++;
+     }
+     n_drop_by[why]++;
++    if (rt_trace & RT_TRACE_PERF) remade_note(e, why);
+     if (rt_trace & RT_TRACE_PERF)
+         drops[ndrops++ % DROPS_N] = (DropRec){key_hash(&e->key), e->key.addr, frames_now(), (uint32_t)e->t.d.format,
+                                               (uint32_t)e->t.d.flags, e->t.d.width, e->t.d.height, (uint8_t)why,
+@@ -2018,11 +2020,66 @@ static void drop_tex(Tex *e, int why) {
+     destroy_tex(e);
+ }
+ 
++// Where the entries made between two perf lines come from (NX2NAVI_TRACE=perf, patch 0115; no knob: counts only). In
++// some places the game turns hundreds of textures over a second with nothing read from disk: Cal turning the camera in
++// a Hyrule Field grotto (play-20261112-212219, skysh) had 400-450 textures made a window of 60 frames at 56-60 fps and
++// about as many released entries dropped past their size cap, and the log could not tell whether the ones made were
++// those dropped coming back (the drops ring above holds about ten windows of such drops and is not counted). remade[]
++// keeps the newest drop of each key, direct-mapped by key hash (a collision forgets the older one): a key made again
++// counts by the drop's reason and the presents since it; one never dropped counts by what else is at its address.
++// [0] entries the CPU does not write (render targets and other GPU content), [1] mirrored (CPU-written) ones.
++#define REMADE_N (1u << 16)
++#define AGE_N 4
++typedef struct { uint64_t kh, addr, frame; uint8_t why, backs; } RemadeRec;
++static RemadeRec *remade;
++static const uint64_t age_top[AGE_N - 1] = {120, 600, 3600};   // presents: 2 s, 10 s and 60 s at 60 a second
++static uint64_t n_made[2];              // entries made
++static uint64_t n_again[2][DROP_N];     // ... again after a drop of their key, by the drop's reason
++static uint64_t n_again_age[2][AGE_N];  // ... by presents since that drop
++static uint64_t n_again_backs[2];       // ... whose dropped entry the game had taken back after a release before
++static uint64_t n_new_at[2][4];         // never dropped: over a live entry that differs in flags only, over another live
++                                        // one, over a released one, nothing at the address
++static uint64_t n_cap_backs;            // entries dropped past the size cap that had been taken back before
++
++static void remade_note(const Tex *e, int why) {   // drop_tex, NX2NAVI_TRACE=perf
++    if (!remade && !(remade = calloc(REMADE_N, sizeof *remade))) return;
++    uint64_t kh = key_hash(&e->key);
++    remade[kh & (REMADE_N - 1)] = (RemadeRec){kh, e->key.addr, frames_now(), (uint8_t)why,
++                                              (uint8_t)(e->og_backs > 255 ? 255 : e->og_backs)};
++    if (why == DROP_CAP && e->og_backs) n_cap_backs++;
++}
++
++static void remade_count(const Tex *e, uint64_t kh) {   // origin_made, before e is listed at its address
++    int m = e->pub.mirrored != 0;
++    n_made[m]++;
++    RemadeRec *r = remade ? &remade[kh & (REMADE_N - 1)] : NULL;
++    if (r && r->kh == kh && r->addr == e->key.addr && r->frame) {
++        uint64_t age = frames_now() - r->frame;
++        int a = 0;
++        while (a < AGE_N - 1 && age >= age_top[a]) a++;
++        n_again[m][r->why]++, n_again_age[m][a]++;
++        if (r->backs) n_again_backs[m]++;
++        r->frame = 0;
++        return;
++    }
++    int at = 3;
++    for (const Tex *p = nvn_hm_get(&by_addr, &e->key.addr); p; p = p->next_at) {
++        if (p == e) continue;
++        if (p->released) { if (at == 3) at = 2; continue; }
++        TexKey x = p->key;
++        x.d.flags = e->key.d.flags;
++        if (!memcmp(&x, &e->key, sizeof x)) { at = 0; break; }
++        at = 1;
++    }
++    n_new_at[m][at]++;
++}
++
+ // A new entry: the frame, and the drop of its descriptor's last entry when the ring still holds it.
+ static void origin_made(Tex *e) {
+     e->og_frame = frames_now();
+     commit_back_note(e);
+     if (!(rt_trace & RT_TRACE_PERF)) return;
++    remade_count(e, key_hash(&e->key));
+     uint64_t kh = key_hash(&e->key), n = ndrops < DROPS_N ? ndrops : DROPS_N;
+     for (uint64_t i = 1; i <= n; i++) {   // newest first
+         const DropRec *r = &drops[(ndrops - i) % DROPS_N];
+@@ -4953,6 +5010,40 @@ void vk_texture_new_submit(void) {
+                (unsigned long long)f * 60, (unsigned long long)n_drop_by[DROP_MAX], (unsigned long long)n_drop_by[DROP_REPLACED],
+                (unsigned long long)n_cpu_empty[0], (unsigned long long)n_cpu_empty[1], (unsigned long long)n_cpu_empty[2],
+                (unsigned long long)n_mark_empty, (unsigned long long)n_mark_none, (unsigned long long)n_drop_wb);
++        {   // patch 0115: where the entries made came from (remade_count), and what the released entries hold
++            uint64_t now = frames_now(), rb[4] = {0, 0, 0, 0};   // intact: idle and stale, not yet; overwritten; other
++            int rn[4] = {0, 0, 0, 0};
++            for (const Tex *e = rel_head; e; e = e->rel_next) {
++                int c = e->overwritten ? 2 : !comes_back_intact(e) ? 3
++                        : now - e->rel_frame >= stale_after(e) && idle(e, now) ? 0 : 1;
++                rb[c] += e->bytes, rn[c]++;
++            }
++            for (int m = 1; m >= 0; m--)
++                rt_log("perf: frame %llu: %s made %llu: again after a drop of their key %llu (past the size cap %llu, "
++                       "under VRAM pressure %llu, replaced at their address %llu, other %llu; within 2 s %llu, 2-10 s %llu, "
++                       "10-60 s %llu, later %llu; taken back before the drop %llu); never dropped: over a live entry that "
++                       "differs in flags only %llu, over another live one %llu, over a released one %llu, alone %llu",
++                       (unsigned long long)f * 60, m ? "CPU-written textures" : "other textures",
++                       (unsigned long long)n_made[m],
++                       (unsigned long long)(n_again_age[m][0] + n_again_age[m][1] + n_again_age[m][2] + n_again_age[m][3]),
++                       (unsigned long long)n_again[m][DROP_CAP], (unsigned long long)(n_again[m][DROP_VRAM] + n_again[m][DROP_IDLE_VRAM]),
++                       (unsigned long long)n_again[m][DROP_REPLACED],
++                       (unsigned long long)(n_again_age[m][0] + n_again_age[m][1] + n_again_age[m][2] + n_again_age[m][3] -
++                                            n_again[m][DROP_CAP] - n_again[m][DROP_VRAM] - n_again[m][DROP_IDLE_VRAM] -
++                                            n_again[m][DROP_REPLACED]),
++                       (unsigned long long)n_again_age[m][0], (unsigned long long)n_again_age[m][1],
++                       (unsigned long long)n_again_age[m][2], (unsigned long long)n_again_age[m][3],
++                       (unsigned long long)n_again_backs[m], (unsigned long long)n_new_at[m][0],
++                       (unsigned long long)n_new_at[m][1], (unsigned long long)n_new_at[m][2], (unsigned long long)n_new_at[m][3]);
++            rt_log("perf: frame %llu: released entries by kind: intact, stale and idle (the size cap may drop them) %d "
++                   "(%.0f MiB), intact and not yet %d (%.0f MiB), overwritten %d (%.0f MiB), with content only in their "
++                   "image %d (%.0f MiB); dropped past the size cap after the game had taken them back before %llu",
++                   (unsigned long long)f * 60, rn[0], rb[0] / 1048576.0, rn[1], rb[1] / 1048576.0, rn[2],
++                   rb[2] / 1048576.0, rn[3], rb[3] / 1048576.0, (unsigned long long)n_cap_backs);
++            memset(n_made, 0, sizeof n_made), memset(n_again, 0, sizeof n_again);
++            memset(n_again_age, 0, sizeof n_again_age), memset(n_again_backs, 0, sizeof n_again_backs);
++            memset(n_new_at, 0, sizeof n_new_at), n_cap_backs = 0;
++        }
+         memset(n_drop_by, 0, sizeof n_drop_by), memset(n_cpu_empty, 0, sizeof n_cpu_empty);
+         n_mark_empty = n_mark_none = n_drop_wb = 0;
+         rt_log("perf: frame %llu: texture finalizes: slots marked %llu; slots of another live texture with the same "
+-- 
+2.56.0
+
