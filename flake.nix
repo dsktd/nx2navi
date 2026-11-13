@@ -87,8 +87,24 @@
           echo "nx2navi shell: clang $(clang --version | head -1 | cut -d' ' -f3), dotnet $(dotnet --version), run the game as: ${vulkanWrapper.name} build/<ver>/nx2navi"
         '';
       };
+      # The launcher (launcher/, `just launcher`): an egui window on Wayland, drawn with OpenGL through nixGL's Mesa
+      # like the game's Vulkan; the wrapper hands the window its libraries and run.rs strips them again for the game
+      launcherUnwrapped = pkgs.rustPlatform.buildRustPackage {
+        pname = "nx2navi-launcher";
+        version = "0.1.0";
+        src = ./launcher;
+        cargoLock.lockFile = ./launcher/Cargo.lock;
+      };
+      launcher = pkgs.writeShellScriptBin "nx2navi-launcher" ''
+        export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath (with pkgs; [ wayland libxkbcommon libglvnd ])}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+        exec ${gl.nixGLIntel}/bin/nixGLIntel ${launcherUnwrapped}/bin/nx2navi-launcher "$@"
+      '';
     in
     {
+      packages.${system} = {
+        inherit launcher;
+        default = launcher;
+      };
       devShells.${system} = {
         default = shell vulkan;
         # the same shell, Vulkan through nixpkgs stable's Mesa (just mesa=stable ...)

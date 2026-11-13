@@ -491,6 +491,15 @@ All upstream analysers are portable: `runtime/perf.c`, `runtime/flight.c` and `k
 | Spin-wait loops holding virtual cores | `spin_waits.py` | ExeFS; emits patch-table lines |
 | Guest PGO | `pgo.py` (llvm-mingw, Windows build path) | not usable on our Linux link as is |
 
+### Launcher and what a run uses (2026-11-12)
+`just launcher` (`launcher/`, README "Launcher") reads which exe and caches the default run uses without starting it:
+the `runs/*.sh` chain ends in `exec just -f <justfile> play`, so running the script with a stand-in `just` first on
+PATH that does `env -0` yields its final environment (`launcher/src/run.rs` Plan::probe; play49: exe play49,
+`shader-cache-rebase`, `pipeline-cache-rebase.bin`, `xlate-play33`). Game files are found the runtime's way
+(`runtime/main.c` portable_paths: NX2NAVI_EXEFS/NX2NAVI_ROMFS, else `exefs/`+`romfs/` beside the exe, else the baked
+`build/extracted/v111`); 1.1.1 = main.npdm ACI0 program id 0x0400486024DEC000 (ACI0 offset at 0x70, id at +0x10)
+and main's NSO build id e0f3ccfa... at 0x40 (`tools/make_game.py` check). Upstream's own launcher is Windows-only.
+
 ### A/B cells in one run: `tools/ab-cell` (2026-11-12)
 `tools/ab-cell <exe> <west|grave|mid> <tag> <reps> NX2NAVI_<KNOB> [KEY=VAL...]`: lab-run `--warp` straight into the scene (save load only, no walking), the knob set to `ab` with `NX2NAVI_AB=5` (ABBA 5 s blocks, perf.c `rt_ab`), `ab_summary.py --skip 40` per run, then mean and spread of B-A over the reps (`.lab/ab-<tag>-<scene>.txt`). Warm parity caches (`.lab/parity/scR`, `pcR.bin`); FRAME=5400 is ~3 min per run. Always run a null cell beside it (`NX2NAVI_NULL_KNOB`). The perf window holding the dump frame (~280 ms a frame) must be left out: it lands on one side and read as a -13 ms B-A interval with a null knob; ab-cell drops perf windows from FRAME on (`run-ab.log`). With that, play35 (70965ce) null cells give interval B-A -0.04..-0.09 ms in Hyrule west and 0.00 in Graveyard, which runs at the 60 fps cap (16.67 ms), so Graveyard can only show replay time. Only knobs read through `RT_KNOB_ON(mode)` at each use switch live. An exe that aborts at boot (svc 0x26 Break after appletOE) was built while another build ran in `build/v111-rebase`: build under `flock /tmp/nx2navi-build.lock`.
 

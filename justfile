@@ -294,6 +294,12 @@ run NAME="play49" *args:
     [ -e "$f" ] || { echo "no run '{{NAME}}'; have: $(ls "${f%/*}" | sed 's/\.sh$//' | tr '\n' ' ')"; exit 1; }
     exec sh "$f" {{args}}
 
+# The launcher (launcher/, built by the flake): finds or asks for the game files (remembered in
+# ~/.config/nx2navi-launcher), shows the start checks green/yellow/red, Play = `just run` with them (mods off, HDR
+# left to the game). `just launcher --check` prints the checks instead (exit 1 when one is red)
+launcher *args:
+    nix run "{{flake}}#launcher" -- --root "{{justfile_directory()}}" {{args}}
+
 # Log summary per build (fps/1% low/>25 ms per minute, shadow sync totals, stall sites); two logs: A/B diff.
 # just logstat build/v111/logs/play-A.log [build/v111/logs/play-B.log]   (paths relative to src)
 logstat +logs:

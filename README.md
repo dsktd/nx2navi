@@ -28,6 +28,20 @@ A `.nup` dump is unencrypted and needs no keys: `NX2NAVI_NUP=/path/game.nup just
 `tools/make_game.py` (its exefs and romfs steps, stopped before the Windows compile) into the same
 `build/extracted/<ver>` tree `tools/extract.py` would write from an NSP/XCI and prod.keys. Every later step is the same.
 
+### Launcher (`just launcher`, launcher/)
+
+A small egui window (Rust, `launcher/`, built by the flake's `packages.launcher`, OpenGL through nixGL) that finds
+the game files, shows six start checks green/yellow/red with a one-line reason and fix, and Play starts the default
+`just run` with them (`NX2NAVI_EXEFS`/`NX2NAVI_ROMFS` set, `NX2NAVI_HDR` and mods dropped). `just launcher --check`
+prints the same checks for scripts (exit 1 when one is red). Game files: `--game`, else the remembered choice
+(`~/.config/nx2navi-launcher/config.toml`), else `exefs/`+`romfs/` beside the launcher, in the working folder, beside
+the game binaries or in `build/extracted/<ver>`, else a `.nup` there (red: unpack it first). Validated as 1.1.1 by
+main.npdm's title, main's build id and romfs.bin's size. Checks: game files, the run's exe, `/dev/udmabuf`
+read-write (yellow = shadow copies, ~20% slower), GPU from sysfs (amdgpu, VRAM, render node; never opens the GPU),
+the run's shader/pipeline caches warm, CPU governor/EPP. The run's exe and caches are read by running its
+`runs/<name>.sh` with a stand-in `just` that prints the environment (run.rs `Plan::probe`). Upstream's launcher
+(`launcher/` on origin/main) is Windows-only (it installs a toolchain and builds the Windows game).
+
 ## Build
 
 Game version code: `v111` for the 1.1.1 update (`v121`, `v143` exist too). Allow 60 GB in the checkout.
