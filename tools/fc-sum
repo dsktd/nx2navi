@@ -1,0 +1,5 @@
+#!/bin/bash
+# fc-sum <cell-dir...>: standing summary from run.log, windows 1800..3000 (60fps agent; fc.sh's mean once took the exit window)
+for d; do grep -oP 'perf: frame \d+: (interval avg [\d.]+|gpu avg [\d.]+)|replay avg [\d.]+' $d/run.log | awk -v l=${d##*/} '
+/interval/ {split($0,a," "); fr=a[3]+0; iv=a[6]} /replay avg/ {rp=$3} /gpu avg/ {if (fr>=1800 && fr<=3000) {n++; si+=iv; sr+=rp; sg+=$6}}
+END {if (n) printf "%s n=%d interval %.2f ms (%.1f fps) replay %.2f gpu %.2f\n", l, n, si/n, 1000*n/si, sr/n, sg/n}'; done

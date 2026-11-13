@@ -1,0 +1,16 @@
+#!/bin/bash
+# fc-cell <exe> <tag> <rep> [KEY=VAL...]: Hyrule Field f2663 recipe, stand, per-60 frame intervals (field-perf agent)
+# Cal's play-run knobs (play46 build line) + the arm's; skip while Cal plays; wait for load average < 4.
+R=$HOME/claude/nx2navi; exe=$1 tag=$2 rep=$3; shift 3
+log=$(ls -t $R/NX2navi/build/v111/logs/play-*.log | head -1)
+[ $(( $(date +%s) - $(stat -c %Y $log) )) -lt 180 ] && { echo "fc: Cal playing" >&2; exit 9; }
+while [ "$(cut -d' ' -f1 /proc/loadavg | cut -d. -f1)" -ge 4 ]; do sleep 20; done
+l=fc-$tag-$rep; echo "load $(cut -d' ' -f1-3 /proc/loadavg) $l"
+REPRO_EXE=$exe REPRO_FRAME=${FRAME:-3000} $R/tools/repro $R/NX2navi/build/v111/dump/f2663/recipe.dbg $l \
+  NX2NAVI_ALIAS_EXTRA_MIB=512 NX2NAVI_GPU_WAIT=0 NX2NAVI_POOL_IDLE_MS=8 NX2NAVI_SHADOW_BULK_WRITE=1 \
+  NX2NAVI_SHADOW_PRESYNC=1 NX2NAVI_SHADOW_TOUCH_LOCK=1 NX2NAVI_STALL_MS=100 NX2NAVI_TEX_DESC_STRICT=1 \
+  NX2NAVI_TEX_RELEASED_MB=3072 NX2NAVI_TEX_RELEASED_MIB=3072 NX2NAVI_TRACE=perf NX2NAVI_VK_RECORDER=1 "$@" >/dev/null 2>&1
+echo "load-after $(cut -d' ' -f1-3 /proc/loadavg)"
+grep -oP 'perf: frame \d+: (interval avg [\d.]+|gpu avg [\d.]+)|replay avg [\d.]+' $R/.lab/$l/run.log | awk -v lo=${LO:-1800} -v hi=${FRAME:-3000} '
+/interval/ {split($0,a," "); fr=a[3]+0; iv=a[6]} /replay avg/ {rp=$3} /gpu avg/ {if (fr>=lo && fr<=hi) {n++; si+=iv; sr+=rp; sg+=$6}}
+END {if (n) printf "%s n=%d interval %.2f ms (%.1f fps) replay %.2f gpu %.2f\n", l, n, si/n, 1000*n/si, sr/n, sg/n; else print "no windows"}' l=$l

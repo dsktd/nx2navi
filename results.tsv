@@ -198,3 +198,7 @@ date	entry	exe	commit	xlate	scenario	metric	mean	min	max	n	tool	source	knobs	sta
 2026-11-12	-	play43	e4db2a723610	xlate-play33/e8d52df68016	repro-roundtrip	repro_pos_m	0.00	0.00	0.00	1	repro-cell	.lab/rc-play43-b	DBG_TEST=120:mark MARK_RECIPE=1	ok	d088798f		
 2026-11-12	-	play43	e4db2a723610	xlate-play33/e8d52df68016	repro-roundtrip	repro_gd_diff	3.00	3.00	3.00	1	repro-cell	.lab/rc-play43-b	DBG_TEST=120:mark MARK_RECIPE=1	ok	d088798f		
 2026-11-12	-	play43	e4db2a723610	xlate-play33/e8d52df68016	repro-roundtrip	repro_shot_score	0.00	0.00	0.00	1	repro-cell	.lab/rc-play43-b	DBG_TEST=120:mark MARK_RECIPE=1	ok	d088798f		
+2026-11-12	fc-d49	play49	f12f898598be	xlate-rebase/53afad07286c	field-f2663-standing	interval_ms	19.19	18.95	19.40	3	tools/fc-cell	.lab/fq3.out .lab/fq4.out		ok	LAB_CPUS=0-7,16-23		f2663
+2026-11-12	fc-b48x	play48	29aed3c	xlate-rebase/53afad07286c	field-f2663-standing	interval_ms	24.11	23.88	24.56	3	tools/fc-cell	.lab/fq3.out .lab/fq4.out		ok	LAB_CPUS=0-7,16-23		f2663
+2026-11-12	fc-w3	play49	f12f898598be	xlate-rebase/53afad07286c	field-f2663-standing	interval_ms	20.62	20.06	21.24	3	tools/fc-cell	.lab/fq3.out .lab/fq4.out	REPLAY_WORKERS=3	ok	LAB_CPUS=0-7,16-23		f2663
+2026-11-12	fc-w0	play49	f12f898598be	xlate-rebase/53afad07286c	field-f2663-standing	interval_ms	19.94	19.56	20.42	3	tools/fc-cell	.lab/fq3.out .lab/fq4.out		ok	LAB_CPUS=0-7,16-23		f2663
