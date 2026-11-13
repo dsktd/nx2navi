@@ -39,3 +39,13 @@ APPLIED 2026-11-13 13:40 in build/v111/nx2navi.ini and play.sh (not yet A/B'd on
 Undo: delete the lines (or the file); the Steam Deck device profile of the runtime then gives its defaults.
 - play.sh also sets NX2NAVI_DMABUF_MB=8 (smaller imported spans: 5.4-7.0 GiB instead of 7.2+) and NX2NAVI_TEXTURE_DETAIL=low.
 - Deck access: login `tally` (wheel) runs the game and these files as `deck` through sudo.
+
+## Offline building on the Deck (2026-11-13 14:20-14:35)
+- By root (login tally): `/home/purplg/claude/nx2navi` created, owned by deck (5.0 GB): the build tree at the desktop's
+  paths (sources `.lab/wt-deck` as a git checkout of branch deckres, build-linux.py, runtime-linux, kit venv, lifted
+  code, deck2's objects, .ccache). 156 more Nix store paths (3.3 GB, the flake dev shell's toolchain) in `/nix/store`.
+  `~/nx2navi/deckbuild.sh <name> [patch.mbox...]` builds there with `~/nx2navi/devenv.sh` (nix print-dev-env), no Nix
+  install and no network. Undo: `sudo rm -rf /home/purplg`; store paths as above.
+- Test 14:29-14:35 (`offline-test.sh`, root): deck3 = deck2 + a 1.2 KB patch built inside `unshare -n` in 243 s. For the
+  game run an nft table `inet nx2cut` dropped everything but ssh and loopback for about a minute; it was deleted at the
+  end (checked: gone). Steam went offline for that minute and logged on again at 14:34.

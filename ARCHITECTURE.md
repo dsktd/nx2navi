@@ -765,3 +765,13 @@ All figures: entry as named, exe=nx2navi.play50 commit=15d14ce xlate=xlate-play3
   to 1440 -> clamped 1080); 0120 uses `window_size` then.
 - **First frame rate (ONE run, indicative):** Hyrule Field mid standing, picture 1080, scene 1280x720, uncapped:
   19.4 fps, GPU 29.2 ms and replay 20.2 ms a frame (entry f4, system gtt 12 / udmabuf 4096 / epp balance_performance).
+- **Building on the Deck, offline** (`tools/deck/deckbuild.sh`, 2026-11-13): the build tree is mirrored at the desktop's
+  absolute paths (`/home/purplg/claude/nx2navi` on the Deck, so the kit venv, ninja state and ccache stay valid) and the
+  dev shell is entered by sourcing `nix print-dev-env` output; its closure is 156 store paths beyond the runtime's.
+  deck3 (a7db98a = deck2 + a comment patch sent as a 1.2 KB mbox) built inside `unshare -n` in 243 s on the Deck.
+  deck3 was built there only (builds.tsv row, no stored copy on the desktop). Not verified: a game run with the network
+  cut (the Steam entry did not start the game during or after the test; Steam logs `ExecuteSteamURL` and starts nothing;
+  cause open; another agent's cargo build held every core at the time).
+- **Settle detector pitfalls** (`tools/deck/stable.py`): the title scene and loading screens are steady too. A void
+  "50 fps" (entry base-1, GPU 8.5 ms) was the title scene; the detector now needs a loading screen (GPU < 2 ms) first.
+  No 3-run cell result exists yet: every arm of `tools/deck/plan.sh` is still to run.

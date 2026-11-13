@@ -10,7 +10,7 @@ cd $B
 { for kv in NX2NAVI_PIPE_SKIP=strict NX2NAVI_INPUT_SCRIPT=$N/scn-stand.txt NX2NAVI_PROFILE_DIR=$O/profile NX2NAVI_DUMP_DIR=$O/dump \
     NX2NAVI_RUN_NAME=$tag NX2NAVI_TRACE=perf,present NX2NAVI_FPS_LIMIT=unlimited NX2NAVI_VK_PRESENT=immediate \
     NX2NAVI_FULLSCREEN=1 NX2NAVI_WINDOW_SIZE=1280x800 NX2NAVI_GAME_RES=window NX2NAVI_GAME_RES_MIN=720 NX2NAVI_GAME_RES_MAX=1080 \
-    NX2NAVI_GAME_ASPECT=16:9 NX2NAVI_HDR=0 NX2NAVI_TEXTURE_DETAIL=low NX2NAVI_AA=game NX2NAVI_UPSCALER=fsr NX2NAVI_DLAA=0 \
+    NX2NAVI_GAME_ASPECT=16:9 NX2NAVI_HDR=0 NX2NAVI_TEXTURE_DETAIL=low NX2NAVI_AA=game NX2NAVI_UPSCALER=fsr NX2NAVI_DLAA=0 NX2NAVI_LOW_END_GPU=0 NX2NAVI_OPERATION_MODE=docked NX2NAVI_ANISO=16 \
     NX2NAVI_PERF_OVERLAY=full NX2NAVI_EXE=${EXE:-deck2} CELL_LOG=$O/run.log "$@"; do echo "$kv"; done; } > $N/cell.env
 exec 9>&-   # play.sh takes the one-game lock itself
 DISPLAY=:0 XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus steam steam://rungameid/16393611824920002560 >/dev/null 2>&1 &
@@ -23,8 +23,8 @@ for ((i=0; i<${TMO:-600}; i++)); do sleep 1
   [ $av -lt ${LOWMEM:-700} ] && { echo "cell: MemAvailable $av MiB, stopping" >> $O/run.log; break; }
   cur=$(grep -aoE 'present: frame [0-9]+' $O/run.log | tail -1 | grep -oE '[0-9]+$'); [ "${cur:-0}" -ge $hi ] && break
   # short standing cell: once the frame time has settled (stable.py), take SECS (10) more seconds and stop
-  if [ -z "${LONG:-}" ] && [ $((i % 2)) = 0 ] && [ "${cur:-0}" -ge ${MINF:-1300} ]; then
-    st=$(python3 -I $N/stable.py $O/run.log ${MINF:-1300}); [ -n "$st" ] && { lo=$st; sleep ${SECS:-10}; hi=$(grep -aoE 'present: frame [0-9]+' $O/run.log | tail -1 | grep -oE '[0-9]+$'); break; }
+  if [ -z "${LONG:-}" ] && [ $((i % 2)) = 0 ] && [ "${cur:-0}" -ge ${MINF:-400} ]; then
+    st=$(python3 -I $N/stable.py $O/run.log ${MINF:-400}); [ -n "$st" ] && { lo=$st; sleep ${SECS:-10}; hi=$(grep -aoE 'present: frame [0-9]+' $O/run.log | tail -1 | grep -oE '[0-9]+$'); break; }
   fi
   grep -aqE 'FATAL|=== end' $O/run.log && break; kill -0 $pid 2>/dev/null || break
 done
