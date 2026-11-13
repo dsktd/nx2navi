@@ -1,0 +1,177 @@
+From a1f225feea49a1de5741ace6b50fb85673956823 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Thu, 12 Nov 2026 20:01:55 -0500
+Subject: [PATCH] NX2NAVI_BIND_STATS: what a cache of descriptor sets or of
+ builds would reuse: sets equal but for their uniform (and storage) buffer
+ offsets, builds with the inputs of an earlier one, and the descriptors that
+ differ from the build before
+
+---
+ runtime/vk_exec_draw.c | 123 +++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 123 insertions(+)
+
+diff --git a/runtime/vk_exec_draw.c b/runtime/vk_exec_draw.c
+index c9a3ee7..b313120 100644
+--- a/runtime/vk_exec_draw.c
++++ b/runtime/vk_exec_draw.c
+@@ -180,6 +180,15 @@ typedef struct { uint32_t n[2], pn[2]; uint8_t sig[2][DS_SIG_BYTES], psig[2][DS_
+ static struct {
+     int on;
+     uint64_t draws, bind[2], desc[2], push, push_skip, set_new, set_reuse, ac_miss, same_prog, same_all, bind_skip;
++    // bind_stats_reuse: builds; sets without their uniform (dyn[0]) or uniform and storage (dyn[1]) offsets, equal to
++    // the build before, one of this command buffer, one of the last builds of any; builds with over 16 uniform or 8
++    // storage descriptors; all descriptors equal to the build before, one of this command buffer; inputs known, equal
++    // to a build of this submission, of this command buffer, to one when neither copied guest bytes; builds that
++    // copied, with the pool set;
++    // builds with the info of the one before, their descriptors that differ by kind (uniform, storage, others), those
++    // with none, only uniform ones, only uniform offsets
++    uint64_t builds, dyn[2][3], dyn_over[2], full[2], sig, sig_sub, sig_cb, sig_cb_ok, vol, pool;
++    uint64_t si, si_diff[3], si_same, si_ubo, si_ubo_off;
+ } BS = {-1};
+ 
+ // The inputs of the last graphics bind_resources (bind_sig, DrawCtx.RS) and what its build counted for the traffic
+@@ -3533,6 +3542,20 @@ static void bind_stats(const VkPipeInfo *info) {
+                "same program and state as the draw before %.3f, also same buffers %.3f; descriptor builds skipped %.3f",
+                BS.push / d, BS.push_skip / d, BS.set_new / d, BS.set_reuse / d, BS.ac_miss / d, BS.same_prog / d,
+                BS.same_all / d, BS.bind_skip / d);
++        double b = BS.builds ? (double)BS.builds : 1, si = BS.si ? (double)BS.si : 1;
++        rt_log("vk_exec: per build over %llu builds: a set without its uniform offsets equals the build before's %.3f, one of "
++               "this command buffer %.3f, one of the last builds %.3f (over 16 uniform descriptors %.3f); without uniform and "
++               "storage offsets %.3f, %.3f, %.3f (over the limits %.3f); all descriptors equal the build before's %.3f, one "
++               "of this command buffer %.3f",
++               (unsigned long long)BS.builds, BS.dyn[0][0] / b, BS.dyn[0][1] / b, BS.dyn[0][2] / b, BS.dyn_over[0] / b,
++               BS.dyn[1][0] / b, BS.dyn[1][1] / b, BS.dyn[1][2] / b, BS.dyn_over[1] / b, BS.full[0] / b, BS.full[1] / b);
++        rt_log("vk_exec: per build: inputs known %.3f, equal to an earlier build's in this submission %.3f, in this "
++               "command buffer %.3f, with no guest bytes copied in either %.3f; copied %.3f, with the pool set %.3f; "
++               "pipeline info of the build before "
++               "%.3f: of those, no descriptor differs %.3f, only uniform ones %.3f, only uniform offsets %.3f; differing "
++               "descriptors per such build: uniform %.2f, storage %.2f, texture and image %.2f",
++               BS.sig / b, BS.sig_sub / b, BS.sig_cb / b, BS.sig_cb_ok / b, BS.vol / b, BS.pool / b, BS.si / b, BS.si_same / si,
++               BS.si_ubo / si, BS.si_ubo_off / si, BS.si_diff[0] / si, BS.si_diff[1] / si, BS.si_diff[2] / si);
+     }
+ }
+ 
+@@ -3881,6 +3904,104 @@ static void gpa_reader(const VkPipeInfo *info) {
+     if (g == 2) vk_mem_note_live();
+ }
+ 
++// NX2NAVI_BIND_STATS: what a cache of sets or of builds would reuse, counted at the end of every graphics build and
++// logged with bind_stats's lines. Counted on one recording thread (the tables are not locked).
++// - Sets with dynamic offsets: a set whose uniform buffers (or uniform and storage buffers) were dynamic-offset
++//   descriptors would hold everything but those offsets. How often it equals the set of the build before, a set of an
++//   earlier build in this command buffer, a set among the last builds of any command buffer (BSR_N keys, the newest
++//   kept); builds over RADV's 16 dynamic uniform and 8 dynamic storage descriptors are counted apart.
++// - A build cache keyed on the inputs (bind_sig's words and bound-slot bytes): how often they equal an earlier
++//   build's in this submission and in this command buffer, and how often neither build copied guest bytes into
++//   transient memory (copied: the build's RS.volatile_ before the pool set, which a cache would bind as now).
++// - Against the build before when it had the same pipeline info: the descriptors that differ, by kind.
++#define BSR_N (1u << 17)
++static inline uint64_t bsr_mix(uint64_t h, uint64_t v) {
++    h = (h ^ v) * 0x9E3779B97F4A7C15ull;
++    return h ^ h >> 29;
++}
++
++static int bsr_seen(int t, uint64_t key) {   // 1 when table t holds key; holds it after
++    static uint64_t *tab[8];
++    if (!tab[t] && !(tab[t] = calloc(BSR_N, sizeof(uint64_t)))) return 0;
++    uint64_t *e = &tab[t][key >> 20 & (BSR_N - 1)];
++    int hit = *e == (key | 1);
++    *e = key | 1;
++    return hit;
++}
++
++static void bind_stats_reuse(const VkExec *ex, const VkPipeInfo *info, const VkDescSlot *d, uint32_t nd, int copied) {
++    static VkCommandBuffer cb;
++    static uint64_t cb_n, last[3];
++    static const VkPipeInfo *pinfo;
++    static VkDescSlot pd[MAX_DESC];
++    static uint32_t pnd;
++    const DrawCtx *cx = ex->dc;
++    if (ex->cb != cb) cb = ex->cb, cb_n++, last[0] = last[1] = last[2] = 0, pinfo = NULL;
++    uint64_t k[3], k0 = bsr_mix((uintptr_t)info->set_layout, (uintptr_t)info->set_layout1);
++    uint32_t nu = 0, ns = 0, diff[3] = {0, 0, 0}, off_only = 1, j = 0;
++    k[0] = k[1] = k[2] = k0;
++    int si = info == pinfo && nd == pnd;
++    for (uint32_t i = 0; i < info->n_bindings; i++) {
++        const VkPipeBinding *b = &info->bindings[i];
++        uint32_t cnt = b->count ? b->count : 1;
++        int ubo = b->kind == GFX_RES_UBO || b->kind == VK_PIPE_SUPPORT, ssbo = b->kind == GFX_RES_SSBO;
++        for (uint32_t c = 0; c < cnt; c++, j++) {
++            const uint64_t *w = d[j].w;
++            for (int q = 0; q < 3; q++) {   // word 1: a buffer descriptor's offset
++                if (q != 1 || !ubo) k[0] = bsr_mix(k[0], w[q]);
++                if (q != 1 || !(ubo || ssbo)) k[1] = bsr_mix(k[1], w[q]);
++                k[2] = bsr_mix(k[2], w[q]);
++            }
++            nu += (uint32_t)ubo, ns += (uint32_t)ssbo;
++            if (si && memcmp(w, pd[j].w, sizeof d[j].w)) {
++                diff[ubo ? 0 : ssbo ? 1 : 2]++;
++                if (!ubo || w[0] != pd[j].w[0] || w[2] != pd[j].w[2]) off_only = 0;
++            }
++        }
++    }
++    BS.builds++;
++    uint64_t cbk = cb_n * 0xD6E8FEB86659FD93ull;
++    for (int v = 0; v < 2; v++) {
++        if (v ? nu > 16 || ns > 8 : nu > 16) {
++            BS.dyn_over[v]++;
++            last[v] = 0;
++            continue;
++        }
++        BS.dyn[v][0] += last[v] == k[v];
++        BS.dyn[v][1] += (uint64_t)bsr_seen(2 * v, k[v] ^ cbk);
++        BS.dyn[v][2] += (uint64_t)bsr_seen(2 * v + 1, k[v]);
++        last[v] = k[v];
++    }
++    BS.full[0] += last[2] == k[2];
++    BS.full[1] += (uint64_t)bsr_seen(4, k[2] ^ cbk);
++    last[2] = k[2];
++    BS.vol += copied != 0, BS.pool += info->pool != 0;
++    if (rs_on > 0 && cx->RS.hn && cx->RS.info == info) {
++        const RsList *l = rs_list(ex, info);
++        uint64_t h = 0;   // vk_mem_gen is among the words: equal inputs are of one submission
++        for (uint32_t i = 0; i < cx->RS.hn; i++) h = bsr_mix(h, cx->RS.h[i]);
++        for (uint32_t i = 0; i < l->bytes; i += 8) {
++            uint64_t v = 0;
++            memcpy(&v, cx->RS.body + i, l->bytes - i < 8 ? l->bytes - i : 8);
++            h = bsr_mix(h, v);
++        }
++        BS.sig++;
++        BS.sig_sub += (uint64_t)bsr_seen(7, h);
++        BS.sig_cb += (uint64_t)bsr_seen(5, h ^ cbk);
++        if (!copied) BS.sig_cb_ok += (uint64_t)bsr_seen(6, h ^ cbk);   // table 6: the builds that copied nothing
++    }
++    if (si) {
++        uint32_t all = diff[0] + diff[1] + diff[2];
++        BS.si++;
++        for (int q = 0; q < 3; q++) BS.si_diff[q] += diff[q];
++        BS.si_same += !all;
++        BS.si_ubo += all && all == diff[0];
++        BS.si_ubo_off += all && all == diff[0] && off_only;
++    }
++    pinfo = info, pnd = nd;
++    memcpy(pd, d, nd * sizeof *d);
++}
++
+ static void bind_resources(VkExec *ex, const VkPipeInfo *info) {
+     gpa_reader(info);
+     DrawCtx *const cx = ex->dc;
+@@ -4092,6 +4213,7 @@ static void bind_resources(VkExec *ex, const VkPipeInfo *info) {
+             }
+         }
+     }
++    int copied = cx->RS.volatile_;   // bind_stats_reuse
+     if (info->pool) {   // set 2: the texture and sampler pools
+         pool_sync_draw(ex);
+         vkCmdBindDescriptorSets(ex->cb, info->bind_point, info->layout, 2, 1, &PL.set, 0, NULL);
+@@ -4120,6 +4242,7 @@ static void bind_resources(VkExec *ex, const VkPipeInfo *info) {
+         cx->B.res_valid = valid;
+     }
+     vk_exec_frame.bind_push_ns += (uint64_t)(bt_now() - push_t0);
++    if (gfx && BS.on > 0) bind_stats_reuse(ex, info, d, nd, skip && copied);
+     ex->recorded++;
+ }
+ 
+-- 
+2.56.0
+
