@@ -1,0 +1,685 @@
+From d9e8adfe6d5f1506b79482bd8e7ccb93dc0d0c6c Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Thu, 12 Nov 2026 22:10:03 -0500
+Subject: [PATCH] NX2NAVI_STATE_PUB / NX2NAVI_STATE_FOLLOW: a game publishes
+ its moment as a recipe (v2: + camera, vectors, texts) at state.req or
+ periodically, and a follower takes one on live (game data, age, teleport to
+ the exact place, camera)
+
+---
+ runtime/boot.c        |  83 ++++++++
+ runtime/debug_tools.c | 431 ++++++++++++++++++++++++++++++++++++++++--
+ runtime/debug_tools.h |   6 +-
+ 3 files changed, 504 insertions(+), 16 deletions(-)
+
+diff --git a/runtime/boot.c b/runtime/boot.c
+index 61dcf10..ec727d0 100644
+--- a/runtime/boot.c
++++ b/runtime/boot.c
+@@ -12,6 +12,9 @@
+ // With --seconds S the run continues past that call; rt_frame_presented ends it once the world clock passed S.
+ #include <ctype.h>
+ #include <stdio.h>
++#ifndef _WIN32
++#include <unistd.h>   // symlink (state_latest)
++#endif
+ #include <stdlib.h>
+ #include <string.h>
+ 
+@@ -801,6 +804,85 @@ static void moment_recipe(const char *kind, uint64_t n, const char *what, int no
+     }
+ }
+ 
++// NX2NAVI_STATE_PUB (0 off, the default): this game is a reference for followers (tools/sync; ARCHITECTURE.md 11
++// "State sync"). 1: a file state.req beside the shader cache folder (polled every 4th present) writes the moment's
++// recipe as logs/state-<present>.dbg (NX2NAVI_STATE_DIR elsewhere): no shot, no mark, nothing in the game changes;
++// <presents> (60 or more): also every that many presents, each replacing the previous periodic one. state-latest.dbg
++// beside them names the newest (a symbolic link; a copy on Windows). The game's own camera is noted for the recipe's
++// # camera: game line (debug_tools.c dbg_camera_watch). A follower (NX2NAVI_STATE_FOLLOW=<recipe>, debug_tools.c
++// follow_tick) also polls follow.req there: a recipe's path to take on, or nothing for the same path read again.
++static void state_latest(const char *dir, const char *name, const char *path) {
++    char link[PLAT_PATH_MAX + 32], tmp[PLAT_PATH_MAX + 40];
++    snprintf(link, sizeof link, "%s/state-latest.dbg", dir);
++    snprintf(tmp, sizeof tmp, "%s.tmp", link);
++    remove(tmp);
++#ifdef _WIN32
++    (void)name;
++    uint64_t sz = 0;
++    uint8_t *b = plat_file_read(path, &sz);
++    if (b && plat_file_write(tmp, b, (size_t)sz)) remove(link), rename(tmp, link);
++    free(b);
++#else
++    (void)path;
++    if (!symlink(name, tmp)) rename(tmp, link);
++#endif
++}
++
++static void state_poll(uint64_t n) {
++    static int init, every, follow;
++    static char req[PLAT_PATH_MAX], freq[PLAT_PATH_MAX], dir[PLAT_PATH_MAX], last[PLAT_PATH_MAX + 32];
++    static uint64_t next;
++    if (!init) {
++        init = 1;
++        const char *e = cfg_get("NX2NAVI_STATE_PUB"), *d = cfg_get("NX2NAVI_STATE_DIR"), *fo = cfg_get("NX2NAVI_STATE_FOLLOW");
++        int v = e ? atoi(e) : 0;
++        if (v > 0 && dbg_supported() && gfx_shader_beside_cache("state.req", req, sizeof req)) {
++            every = v >= 60 ? v : 0, next = (uint64_t)every;
++            if (d && *d) snprintf(dir, sizeof dir, "%s", d);
++            else if (!gfx_shader_beside_cache("logs", dir, sizeof dir)) dir[0] = 0;
++            if (dir[0]) plat_file_mkdir_p(dir);
++            int cam = dbg_camera_watch();
++            rt_log("state: publishing %s/state-<present>.dbg at each %s%s%s, the game's camera %s (NX2NAVI_STATE_PUB)", dir,
++                   req, every ? " and every " : "", every ? e : "", cam ? "noted" : "not noted (no free camera site)");
++        }
++        follow = fo && *fo && dbg_supported() && gfx_shader_beside_cache("follow.req", freq, sizeof freq);
++        if (follow) rt_log("state: following %s, again at each %s (NX2NAVI_STATE_FOLLOW)", fo, freq);
++    }
++    if (n % 4) return;
++    uint64_t sz = 0;
++    uint8_t *b;
++    if (follow && plat_file_exists(freq) && (b = plat_file_read(freq, &sz))) {
++        plat_file_delete(freq);
++        char path[PLAT_PATH_MAX];
++        snprintf(path, sizeof path, "%.*s", (int)(sz < sizeof path ? sz : sizeof path - 1), (const char *)b);
++        path[strcspn(path, "\r\n")] = 0;
++        free(b);
++        rt_log("state: follow.req at present %llu: %s", (unsigned long long)n, path[0] ? path : "the same recipe again");
++        dbg_follow(path);
++    }
++    if (!dir[0]) return;
++    int asked = plat_file_exists(req), periodic = every && n >= next;
++    if (!asked && !periodic) return;
++    if (asked) plat_file_delete(req);
++    if (periodic) next = n + (uint64_t)every;
++    char name[64], path[PLAT_PATH_MAX + 80], what[96];
++    snprintf(name, sizeof name, "state-%05llu.dbg", (unsigned long long)n);
++    snprintf(path, sizeof path, "%s/%s", dir, name);
++    snprintf(what, sizeof what, "state at present %llu (%s)", (unsigned long long)n, asked ? "state.req" : "periodic");
++    uint64_t t0 = plat_now_ns();
++    if (!dbg_mark_recipe(path, what)) {
++        if (asked) rt_log("state: no recipe at present %llu (no save loaded, or %s not writable)", (unsigned long long)n, path);
++        return;
++    }
++    state_latest(dir, name, path);
++    if (!asked) {   // the periodic one before it goes; asked ones stay
++        if (last[0]) remove(last);
++        snprintf(last, sizeof last, "%s", path);
++    }
++    double ms = (double)(plat_now_ns() - t0) / 1e6;   // periodic ones: the first and any slow one
++    if (asked || n < (uint64_t)every * 2 || ms > 8) rt_log("state: %s written in %.1f ms (%s)", path, ms, asked ? "state.req" : "periodic");
++}
++
+ static void mark_poll(uint64_t n) {
+     static int init, dump_req, marks;
+     static char mark_req[PLAT_PATH_MAX], dump_path[PLAT_PATH_MAX];
+@@ -830,6 +912,7 @@ static void mark_poll(uint64_t n) {
+         }
+     }
+     watch_req_poll(n);
++    state_poll(n);
+     plat_write_trace_rearm();
+     int keys = input_debug_keys();
+     if (keys) debug_keys(keys, n, dump_req ? dump_path : NULL);
+diff --git a/runtime/debug_tools.c b/runtime/debug_tools.c
+index 10e070a..b483095 100644
+--- a/runtime/debug_tools.c
++++ b/runtime/debug_tools.c
+@@ -77,6 +77,7 @@ int dbg_player_pos(float xyz[3]) {
+ }
+ 
+ static float speed_factor = 1.0f;
++static uint64_t game_tick;   // dbg_tick's: the game's pad reads since the player first appeared
+ float dbg_speed_factor(void) { return speed_factor; }
+ void dbg_speed_set(float factor) { speed_factor = factor >= 0.05f && factor <= 8.0f ? factor : 1.0f; }
+ 
+@@ -284,6 +285,8 @@ typedef struct {
+     const char *area, *pos;
+     float xyz[3];              // where it is in the area, metres, when the file gives it (has_xyz)
+     int has_xyz;
++    float rot[3];              // its Rot, XYZ radians, as the file holds them (has_rot; NX2NAVI_STATE_FOLLOW)
++    int has_rot;
+ } Place;
+ static Place *places;          // by area, as the game's file lists them; the texts stay in the file's buffer
+ static const char *place_xyz_key;   // the key the positions' coordinates were found under, for the log
+@@ -355,10 +358,18 @@ static void places_in(const uint8_t *p, size_t n) {
+             const uint8_t *pe = p + at + 4 + 8 * (size_t)k;
+             const char *pos = byml_key(p, n, keys, u24(pe));
+             if (!pos || !pos[0] || strlen(pos) > 63) continue;
+-            Place pl = {area, pos, {0, 0, 0}, 0};
++            Place pl = {area, pos, {0, 0, 0}, 0, {0, 0, 0}, 0};
+             uint32_t val;
+             memcpy(&val, pe + 4, 4);
+             pl.has_xyz = byml_vec3(p, n, keys, val, pe[3], pl.xyz, 2, &place_xyz_key);
++            if (pe[3] == 0xc1 && (size_t)val + 4 <= n && p[val] == 0xc1)   // the position's own Rot
++                for (uint32_t r = 0; r < u24(p + val + 1) && (size_t)val + 12 + 8 * (size_t)r <= n; r++) {
++                    const uint8_t *re = p + val + 4 + 8 * (size_t)r;
++                    const char *rk = byml_key(p, n, keys, u24(re));
++                    uint32_t rat;
++                    memcpy(&rat, re + 4, 4);
++                    if (rk && !strcmp(rk, "Rot")) pl.has_rot = byml_vec3(p, n, keys, rat, re[3], pl.rot, 0, NULL);
++                }
+             list[count++] = pl;
+         }
+     }
+@@ -810,6 +821,10 @@ static struct {
+     uint64_t last_ns, updates;
+     float ground[9], ground_tan, ground_aspect;   // dbg_freecam_ground's, under ground_lock
+     volatile uint64_t ground_ns;        // and when; 0 none
++    volatile int watch;                 // dbg_camera_watch: the site stays on to see the game's own camera
++    double game_pos[3], game_at[3];     // the game thread's: the scene camera's own position and target, last update
++    uint64_t game_updates;
++    char game_name[16];
+ } fc = {.sticks = 1, .speed = 8.0f, .reach = 5.0};
+ static PlatMutex ground_lock = PLAT_MUTEX_INIT;
+ 
+@@ -892,7 +907,14 @@ static int scene_camera(uint64_t state) {
+ // the game version's patches.h, which has the page's address.
+ void dbg_freecam_host(Cpu *c) {
+     fc.updates++;
+-    if (fc.on && scene_camera(c->x[19])) {
++    int scene = (fc.on || fc.watch) && scene_camera(c->x[19]);
++    if (scene && fc.watch) {   // the game's own choice, before the free camera's: what a recipe gives as # camera
++        for (int i = 0; i < 3; i++) fc.game_pos[i] = reg_d(c, i), fc.game_at[i] = reg_d(c, 3 + i);
++        uint64_t actor = rd_ptr(c->x[19] + 0x10), np = actor ? rd_ptr(actor + 0x20) : 0;
++        if (!np || !rd(np, fc.game_name, sizeof fc.game_name - 1)) fc.game_name[0] = 0;
++        fc.game_updates++;
++    }
++    if (scene && fc.on) {
+         if (fc.capture) {   // start where the game's camera is, looking where it looks
+             double d[3] = {reg_d(c, 3) - reg_d(c, 0), reg_d(c, 4) - reg_d(c, 1), reg_d(c, 5) - reg_d(c, 2)};
+             double len = sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+@@ -921,7 +943,17 @@ void dbg_freecam_set(int on, int sticks, float speed) {
+     if (on && !fc.on) fc.capture = 1;
+     if ((on != 0) != fc.on) rt_log("debug: free camera %s", on ? "on" : "off");   // what a tester changed, for the log
+     fc.on = on != 0;
+-    rt_patch_switch(rt_patch_set("freecam"), on != 0);
++    rt_patch_switch(rt_patch_set("freecam"), on != 0 || fc.watch);
++}
++
++// NX2NAVI_STATE_PUB (boot.c): the free camera's site stays on with the free camera off, so a recipe can give the game's
++// own camera (# camera: game); the site then only notes the camera and does the instruction it stands in for.
++int dbg_camera_watch(void) {
++    if (!dbg_freecam_available()) return 0;
++    if (!fc.watch) rt_log("debug: the game's camera is noted at each update (free camera site on; NX2NAVI_STATE_PUB)");
++    fc.watch = 1;
++    rt_patch_switch(rt_patch_set("freecam"), 1);
++    return 1;
+ }
+ 
+ void dbg_freecam_reset(void) { fc.capture = 1; }   // back to the game's view, and free from there
+@@ -1085,13 +1117,56 @@ static void hex_line(FILE *f, const char *what, uint64_t a, size_t n) {
+ // game data's layout, found 2026-11-12 (1.1.1; kinds = the save's sections, each entry begins with its kind's vtable):
+ // bool 0x18 a entry, value byte +0x16; int 2, float 4, uint 20: 0x28, value +0x1c (+0x20 holds the same at a load);
+ // enum 6: 0x38, the value's name hash +0x1c; int/float/uint arrays 3/5/21: 0x40, enum arrays 7: 0x50, the element
+-// count +0x20 and the elements (4 bytes each) at the pointer +0x28 (a second copy at +0x38). Not written: bool arrays
+-// (1: packed bits), vectors (10), texts (16 and up; the area is # warp), binaries, 64-bit kinds.
++// count +0x20 and the elements (4 bytes each) at the pointer +0x28 (a second copy at +0x38). Recipe v2 adds vectors
++// (10: 0x40, three floats at +0x24) as `# gdv` and 64-character texts (16: 0x108, the text at the pointer +0x68) as
++// `# gdt`. Not written: bool arrays (1: packed bits), longer texts, binaries, 64-bit kinds.
+ static const struct { int kind, stride, at, array; } gd_kinds[] = {
+     {0, 0x18, 0x16, 0}, {2, 0x28, 0x1c, 0}, {4, 0x28, 0x1c, 0}, {6, 0x38, 0x1c, 0}, {20, 0x28, 0x1c, 0},
+     {3, 0x40, 0x28, 1}, {5, 0x40, 0x28, 1}, {7, 0x50, 0x28, 1}, {21, 0x40, 0x28, 1},
+ };
+ 
++// v2: every vector as `# gdv 10 <hash> <x>,<y>,<z>` (the floats' bits in hex, as # gd gives floats) and every
++// 64-character text as `# gdt 16 <hash> <text>`, the text's bytes below '!', above '~' and '%' as %XX (empty: nothing).
++static int gd_write_v2(FILE *f, uint64_t m) {
++    static const struct { int kind, stride; } v2[] = {{10, 0x40}, {GD_TEXT64, 0x108}};
++    int lines = 0;
++    for (size_t g = 0; m && g < sizeof v2 / sizeof v2[0]; g++) {
++        int k = v2[g].kind, stride = v2[g].stride;
++        uint64_t sec = m + (uint64_t)k * 0x60, table = rd_ptr(sec + 0x20), entries = rd_ptr(sec + 0x18);
++        uint32_t count = 0, size = 0;
++        if (!table || !entries || !rd(sec + 0x10, &count, 4) || !rd(sec + 0x2c, &size, 4) || !count || count > 200000 ||
++            size > 1000000)
++            continue;
++        Pair *pairs = malloc(sizeof(Pair) * size);
++        uint8_t *raw = malloc((size_t)count * (size_t)stride);
++        if (pairs && raw && rd(table, pairs, sizeof(Pair) * size) && rd(entries, raw, (size_t)count * (size_t)stride))
++            for (uint32_t i = 0; i < size; i++) {
++                if (!pairs[i].hash || pairs[i].index >= count) continue;
++                const uint8_t *e = raw + (size_t)pairs[i].index * (size_t)stride;
++                if (k == 10) {
++                    uint32_t v[3];
++                    memcpy(v, e + 0x24, 12);
++                    fprintf(f, "# gdv 10 %08x %x,%x,%x\n", pairs[i].hash, v[0], v[1], v[2]);
++                    lines++;
++                    continue;
++                }
++                uint64_t text = 0;
++                char s[64];
++                memcpy(&text, e + 0x68, 8);
++                if (!text || !rd(text, s, 63)) continue;
++                s[63] = 0;
++                fprintf(f, "# gdt 16 %08x ", pairs[i].hash);
++                for (const unsigned char *q = (const unsigned char *)s; *q; q++)
++                    if (*q < '!' || *q > '~' || *q == '%') fprintf(f, "%%%02X", *q);
++                    else fputc(*q, f);
++                fputc('\n', f);
++                lines++;
++            }
++        free(pairs), free(raw);
++    }
++    return lines;
++}
++
+ static int gd_write(FILE *f) {
+     uint64_t m = gmd();
+     int lines = 0;
+@@ -1131,7 +1206,7 @@ static int gd_write(FILE *f) {
+             }
+         free(pairs), free(raw);
+     }
+-    return lines;
++    return lines + gd_write_v2(f, m);
+ }
+ 
+ // Link's facing: the actor's rotation matrix, 3x3 floats row by row at +0x328 (a second copy at +0x60c), a turn about
+@@ -1156,7 +1231,9 @@ int dbg_mark_recipe(const char *path, const char *mark) {
+     if (!has_area || !has_pos) return 0;   // no area or no Link (title, menus before a save): nothing to recreate
+     FILE *f = fopen(path, "w");
+     if (!f) return 0;
+-    fprintf(f, "# recipe v1\n# %s\n# mark: %s\n# base: .lab/scenarios/base-profile\n", rt_build_line(), mark);
++    // v2 (2026-11-12): v1 plus # moment, # camera: game, # gdv vectors and # gdt texts; v1 readers skip the new lines
++    fprintf(f, "# recipe v2\n# %s\n# mark: %s\n# base: .lab/scenarios/base-profile\n", rt_build_line(), mark);
++    fprintf(f, "# moment: tick=%llu speed=%.3f\n", (unsigned long long)game_tick, speed_factor);
+     fprintf(f, "# warp: scene=%s pos=%.4f,%.4f,%.4f", area, p[0], p[1], p[2]);
+     if (has_yaw) fprintf(f, " face=%.3f", yaw * 57.29578f);
+     if (has_age) fprintf(f, " age=%s", young & 1 ? "child" : "adult");
+@@ -1174,18 +1251,339 @@ int dbg_mark_recipe(const char *path, const char *mark) {
+     if (fc.on)   // the free camera where it stands: on without sticks, then placed
+         fprintf(f, "1:freecam 1 0 %.1f\n2:camset %.4f %.4f %.4f %.4f %.4f\n", fc.speed, fc.pos[0], fc.pos[1], fc.pos[2],
+                 fc.yaw, fc.pitch);
+-    else fprintf(f, "# camera: the game's own (follows Link; not captured)\n");
++    else if (!fc.game_updates) fprintf(f, "# camera: the game's own (follows Link; not captured: NX2NAVI_STATE_PUB notes it)\n");
++    if (fc.game_updates) {   // the game's own camera as a free camera would stand: position, yaw, pitch, the target's distance
++        double d[3] = {fc.game_at[0] - fc.game_pos[0], fc.game_at[1] - fc.game_pos[1], fc.game_at[2] - fc.game_pos[2]};
++        double len = sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
++        if (isfinite(len) && len > 1e-3)
++            fprintf(f, "# camera: game %.4f %.4f %.4f %.5f %.5f %.3f %s\n", fc.game_pos[0], fc.game_pos[1], fc.game_pos[2],
++                    atan2(d[0], d[2]), asin(d[1] / len), len, fc.game_name[0] ? fc.game_name : "-");
++    }
+     for (int i = 0; i < frozen_n; i++)
+         fprintf(f, "# held: %#llx = %llu (%d bytes; a heap address, valid only in the same session)\n",
+                 (unsigned long long)frozen[i].addr, (unsigned long long)frozen[i].value, frozen[i].size);
+-    fprintf(f, "# not captured: actors (enemies, NPCs, objects) and their state, RNG, Link's motion and action, sound, "
+-               "bool arrays, vectors and texts of the game data\n");
++    fprintf(f, "# not captured: the time of day and the weather (not found in the game data), actors (enemies, NPCs, "
++               "objects) and their state, RNG, Link's motion and action, sound, bool arrays of the game data\n");
+     int n = gd_write(f);
+     fclose(f);
+     rt_log("mark: recipe %s (%s, %.1f %.1f %.1f, %d game data lines)", path, area, p[0], p[1], p[2], n);
+     return 1;
+ }
+ 
++// ---- NX2NAVI_STATE_FOLLOW=<recipe>|req: a follower takes on another game's moment live (a reference game's
++// NX2NAVI_STATE_PUB state, a mark, a shot.req recipe; v1 or v2), once Link is there and again at each follow.req
++// (boot.c follow_poll: the file names another recipe, or is empty for the same path read again, so a path to the
++// reference's state-latest.dbg follows it). All on the game's thread (follow_tick, from dbg_tick):
++//   F_DATA: the game data first, so the area the teleport loads sees the reference's flags: bools and ints through the
++//     game's own SetBool (main+0x682b20) and SetInt (main+0x163b70) as co-op does (coop_game.c), enums through the enum
++//     setter (main+0x3e0980), floats, uints, arrays and vectors by plain writes of their values; only values that
++//     differ; texts are left (the area is the teleport's)
++//     and so are the sequence's own (FOLLOW_SKIP), which would start or hold a change of area. Age: the flag
++//     Sequence_IsChildhood, before the teleport (the area's own name carries the age suffix).
++//   then, unless Link stands in the recipe's area within NX2NAVI_STATE_WARP_M (default 0.5) metres, the teleport
++//     (dbg_warp) to the area's start position nearest the recipe's place. NX2NAVI_STATE_EXACT (default 2; 1 position
++//     only, 0 off): that start position's Trans (and Rot, as {0, -face, 0}) are looked for in the game's memory as the
++//     file holds them (12 bytes), before the teleport and during its flight, and where found at most FOLLOW_HITS
++//     times they are replaced by the recipe's place until Link landed, so the game puts him there itself.
++//   F_LAND: the game data again (an arrival sets the area's own), the free camera at the recipe's # camera: game
++//     (NX2NAVI_STATE_CAM, default 1; 0 the game's own camera), one "follow:" log line with what landed where.
++enum { F_IDLE, F_DATA, F_AGE, F_WARP, F_LAND, FOLLOW_HITS = 8 };
++static struct {
++    char path[PLAT_PATH_MAX];   // q_lock: the recipe asked for
++    volatile int32_t asked;
++    int state, exact, cam_on, child, has_face, has_cam, applied, same, missing, skipped, tries, patched_n, hits[2];
++    char *text, area[64], pos[64];   // the recipe's text; where it was taken
++    const char *cursor;              // follow_gd's place in text; NULL between passes
++    int landed;                      // F_LAND: the patches are put back and the second pass runs
++    float xyz[3], face;              // Link's place and facing there
++    double cam[6];                   // # camera: game x y z yaw pitch reach
++    uint64_t at, t0;
++    struct { uint64_t addr; uint8_t old[12]; } patched[2 * FOLLOW_HITS];
++    float start_xyz[3], start_rot[3];
++    int start_has_rot;
++    char start[64];
++} fw;
++
++void dbg_follow(const char *path) {
++    plat_mutex_lock(&q_lock);
++    if (path && *path) snprintf(fw.path, sizeof fw.path, "%s", path);
++    if (fw.path[0]) __atomic_store_n(&fw.asked, 1, __ATOMIC_RELEASE);
++    plat_mutex_unlock(&q_lock);
++}
++
++static int follow_skip(int kind, uint32_t hash) {
++    static const char *const names[] = {"Sequence_ControlInEvent", "Sequence_BancChangeFadePattern",
++                                        "Sequence_IsEventBancChangePause", "Sequence_IsChildhood"};
++    (void)kind;
++    for (size_t i = 0; i < sizeof names / sizeof names[0]; i++)
++        if (hash == hash_of(names[i])) return 1;
++    return 0;
++}
++
++// The recipe's game data into the game's (above, F_DATA), from fw.cursor on (NULL: a new pass, the counts fw.applied /
++// same / missing / skipped from 0), at most FOLLOW_SETS calls of the game's setters a tick (they queue on a ring the
++// game drains once a frame; co-op's apply, coop_game.c, takes 16 a frame): answers 1 at the end.
++enum { FOLLOW_SETS = 16 };
++static int follow_gd(Cpu *c) {
++    uint64_t m = gmd();
++    int sets = 0;
++    if (!fw.cursor) fw.cursor = fw.text, fw.applied = fw.same = fw.missing = fw.skipped = 0;
++    const char *l = fw.cursor;
++    for (; m && l && *l && sets < FOLLOW_SETS; l = strchr(l, '\n'), l = l ? l + 1 : NULL) {
++        int k = -1, used = 0;
++        unsigned hash = 0, v = 0, n = 0;
++        if (strncmp(l, "# gd", 4)) continue;
++        if (l[4] == 't') { fw.skipped++; continue; }
++        if (sscanf(l + 4, "%*1[ av]%d %x %n", &k, &hash, &used) < 2 || !used) continue;
++        const char *rest = l + 4 + used;
++        int g = -1;
++        for (size_t i = 0; i < sizeof gd_kinds / sizeof gd_kinds[0]; i++)
++            if (gd_kinds[i].kind == k) g = (int)i;
++        int stride = k == 10 ? 0x40 : g >= 0 ? gd_kinds[g].stride : 0;
++        if (!stride || follow_skip(k, hash)) { fw.skipped++; continue; }
++        uint64_t e = gmd_entry(k, (uint32_t)stride, hash);
++        if (!e) { fw.missing++; continue; }
++        if (k == 10) {   // # gdv 10 <hash> x,y,z (float bits)
++            uint32_t want[3], now[3];
++            if (sscanf(rest, "%x,%x,%x", &want[0], &want[1], &want[2]) != 3 || !rd(e + 0x24, now, 12)) continue;
++            if (!memcmp(want, now, 12)) fw.same++;
++            else fw.applied += wr(e + 0x24, want, 12);
++        } else if (!gd_kinds[g].array) {   // # gd <kind> <hash> <value>
++            uint32_t now = 0;
++            if (sscanf(rest, "%x", &v) != 1 || !rd(e + gd_kinds[g].at, &now, k == 0 ? 1 : 4)) continue;
++            if (k == 0) now &= 1;
++            if (now == v) { fw.same++; continue; }
++            if (k == 0) rt_call(c, MOD_MAIN_BASE + 0x682b20, 3, m, (uint64_t)(v != 0), (uint64_t)hash), sets++;
++            else if (k == 2) rt_call(c, MOD_MAIN_BASE + 0x163b70, 3, m, (uint64_t)v, (uint64_t)hash), sets++;   // SetInt
++            else if (k == 6) rt_call(c, MOD_MAIN_BASE + 0x3e0980, 3, m, (uint64_t)v, (uint64_t)hash), sets++;
++            else wr(e + gd_kinds[g].at, &v, 4);
++            fw.applied++;
++        } else {   // # gda <kind> <hash> <count> <index>:<value>...: the elements not listed are 0
++            uint32_t have = 0;
++            uint64_t data = 0;
++            if (sscanf(rest, "%u%n", &n, &used) != 1 || !rd(e + 0x20, &have, 4) || have != n || !n || n > 4096 ||
++                !rd(e + gd_kinds[g].at, &data, 8)) {
++                fw.missing++;
++                continue;
++            }
++            uint32_t *want = calloc(n, 4), *now = malloc(n * 4u);
++            const char *q = rest + used, *eol = strchr(q, '\n');
++            unsigned i, x;
++            int step = 0;
++            if (!eol) eol = q + strlen(q);
++            while (want && q < eol && sscanf(q, " %u:%x%n", &i, &x, &step) == 2 && q + step <= eol) {
++                if (i < n) want[i] = x;
++                q += step;
++            }
++            if (want && now && rd(data, now, n * 4u)) {
++                if (!memcmp(want, now, n * 4u)) fw.same++;
++                else fw.applied += wr(data, want, n * 4u);
++            }
++            free(want), free(now);
++        }
++    }
++    fw.cursor = l && *l ? l : NULL;
++    return !fw.cursor;
++}
++
++// The 12 bytes from[] wherever the game's heap holds them, at most FOLLOW_HITS places, replaced by to[] (and kept in
++// fw.patched to be put back); answers how many places hold them (more than FOLLOW_HITS: none replaced).
++static int follow_patch(const float from[3], const float to[3]) {
++    const RtGuestLayout *l = mem_layout();
++    const RtRange ranges[2] = {l->heap, l->alias};
++    uint64_t found[FOLLOW_HITS];
++    int hits = 0;
++    uint32_t first;
++    memcpy(&first, from, 4);
++    for (int r = 0; r < 2 && hits <= FOLLOW_HITS; r++) {
++        uint64_t a = ranges[r].base, end = ranges[r].base + ranges[r].size;
++        while (a < end && hits <= FOLLOW_HITS) {
++            RtMemoryInfo mi;
++            if (mem_query(a, &mi) || !mi.size) break;
++            uint64_t stop = mi.base + mi.size < end ? mi.base + mi.size : end;
++            if (!mi.state || (mi.perm & 3) != 3) { a = stop; continue; }
++            while (a < stop && hits <= FOLLOW_HITS) {
++                uint64_t n = stop - a < (16u << 20) ? stop - a : (16u << 20);
++                if (mem_read_hold(a, n)) {
++                    const uint32_t *v = (const uint32_t *)(uintptr_t)a;
++                    for (uint64_t i = 0; i + 3 <= n / 4 && hits <= FOLLOW_HITS; i++)
++                        if (v[i] == first && !memcmp(v + i, from, 12)) {
++                            if (hits < FOLLOW_HITS) found[hits] = a + i * 4;
++                            hits++;
++                        }
++                    mem_read_release();
++                }
++                a += n;
++            }
++        }
++    }
++    if (hits > FOLLOW_HITS) return hits;
++    for (int i = 0; i < hits && fw.patched_n < 2 * FOLLOW_HITS; i++) {
++        if (!rd(found[i], fw.patched[fw.patched_n].old, 12) || !wr(found[i], to, 12)) continue;
++        fw.patched[fw.patched_n++].addr = found[i];
++    }
++    return hits;
++}
++
++static void follow_unpatch(void) {
++    for (int i = 0; i < fw.patched_n; i++) wr(fw.patched[i].addr, fw.patched[i].old, 12);
++    fw.patched_n = 0;
++}
++
++static void follow_exact(void) {
++    if (fw.exact <= 0 || fw.patched_n) return;
++    fw.hits[0] = follow_patch(fw.start_xyz, fw.xyz);
++    if (fw.exact >= 2 && fw.has_face && fw.start_has_rot) {
++        float rot[3] = {0, -fw.face / 57.29578f, 0};   // the file's Rot y = -face (radians), as the spawn's 0x1ea93bd8
++        fw.hits[1] = follow_patch(fw.start_rot, rot);
++    }
++    fw.tries++;
++}
++
++static int follow_read(void) {
++    char path[PLAT_PATH_MAX];
++    plat_mutex_lock(&q_lock);
++    snprintf(path, sizeof path, "%s", fw.path);
++    plat_mutex_unlock(&q_lock);
++    uint64_t size = 0;
++    uint8_t *b = plat_file_read(path, &size);
++    char *text = b ? realloc(b, size + 1) : NULL;
++    if (!text || strncmp(text, "# recipe v", 10)) {
++        rt_log("follow: %s is not a recipe (or unreadable): nothing followed", path);
++        free(text ? text : (char *)b);
++        return 0;
++    }
++    text[size] = 0;
++    free(fw.text);
++    fw.text = text;
++    fw.area[0] = fw.pos[0] = 0, fw.child = -1, fw.has_face = fw.has_cam = 0;
++    const char *w = strstr(text, "\n# warp: "), *cam = strstr(text, "\n# camera: game ");
++    if (w) {
++        char line[256];
++        snprintf(line, sizeof line, "%.*s", (int)strcspn(w + 9, "\n"), w + 9);
++        for (char *tok = strtok(line, " "); tok; tok = strtok(NULL, " ")) {
++            if (!strncmp(tok, "scene=", 6)) snprintf(fw.area, sizeof fw.area, "%s", tok + 6);
++            else if (!strncmp(tok, "pos=", 4)) sscanf(tok + 4, "%f,%f,%f", &fw.xyz[0], &fw.xyz[1], &fw.xyz[2]);
++            else if (!strncmp(tok, "face=", 5)) fw.has_face = sscanf(tok + 5, "%f", &fw.face) == 1;
++            else if (!strncmp(tok, "age=", 4)) fw.child = !strcmp(tok + 4, "child");
++        }
++    }
++    if (cam)
++        fw.has_cam = sscanf(cam + 16, "%lf %lf %lf %lf %lf %lf", &fw.cam[0], &fw.cam[1], &fw.cam[2], &fw.cam[3],
++                            &fw.cam[4], &fw.cam[5]) == 6;
++    if (!fw.area[0]) {
++        rt_log("follow: %s has no # warp: line with scene=: nothing followed", path);
++        return 0;
++    }
++    rt_log("follow: %s: %s %.2f %.2f %.2f%s%s", path, fw.area, fw.xyz[0], fw.xyz[1], fw.xyz[2],
++           fw.child < 0 ? "" : fw.child ? " child" : " adult", fw.has_cam ? ", with the game's camera" : "");
++    return 1;
++}
++
++static void follow_tick(Cpu *c, uint64_t tick) {
++    static int knob = -1;
++    static uint64_t after;
++    if (knob < 0) {
++        const char *e = cfg_get("NX2NAVI_STATE_FOLLOW");
++        knob = e && *e;
++        // taken once Link has been there NX2NAVI_STATE_FOLLOW_TICK (default 60) ticks; "req": only at follow.req
++        if (knob && strcmp(e, "req")) dbg_follow(e);
++        const char *x = cfg_get("NX2NAVI_STATE_EXACT"), *cm = cfg_get("NX2NAVI_STATE_CAM"), *at = cfg_get("NX2NAVI_STATE_FOLLOW_TICK");
++        fw.exact = x && *x ? atoi(x) : 2, fw.cam_on = cm && *cm ? atoi(cm) : 1, after = at && *at ? strtoull(at, NULL, 10) : 60;
++    }
++    if (fw.state == F_IDLE) {
++        if (tick < after || dbg_busy() || !__atomic_exchange_n(&fw.asked, 0, __ATOMIC_ACQ_REL)) return;
++        if (dbg_names(NULL) != 2) {   // the start positions come with the flag names
++            dbg_flags_refresh(), dbg_names(NULL), __atomic_store_n(&fw.asked, 1, __ATOMIC_RELEASE);
++            return;
++        }
++        if (follow_read())
++            fw.state = F_DATA, fw.t0 = plat_now_ns(), fw.tries = 0, fw.hits[0] = fw.hits[1] = 0, fw.cursor = NULL, fw.landed = 0;
++        return;
++    }
++    if (fw.state == F_DATA) {
++        if (!follow_gd(c)) return;
++        rt_log("follow: game data %d changed, %d already so, %d not in this game, %d left (texts, the sequence's)",
++               fw.applied, fw.same, fw.missing, fw.skipped);
++        char now[64] = "";
++        float p[3] = {0, 0, 0};
++        uint8_t young = 0;
++        uint64_t ch = gmd_entry(0, 0x18, hash_of("Sequence_IsChildhood"));
++        int has_age = ch && rd(ch + 0x16, &young, 1);
++        const char *e = cfg_get("NX2NAVI_STATE_WARP_M");
++        float near_m = e && *e ? (float)atof(e) : 0.5f, dx = 0, dy = 0, dz = 0;
++        int here = text_get("Sequence_CurrentBanc", now) && !strcmp(now, fw.area) && dbg_player_pos(p);
++        dx = p[0] - fw.xyz[0], dy = p[1] - fw.xyz[1], dz = p[2] - fw.xyz[2];
++        if (here && sqrtf(dx * dx + dy * dy + dz * dz) <= near_m && (fw.child < 0 || !has_age || (young & 1) == fw.child)) {
++            fw.state = F_LAND, fw.at = tick + 2;
++            return;
++        }
++        if (fw.child >= 0 && has_age && (young & 1) != fw.child) {
++            rt_call(c, MOD_MAIN_BASE + 0x682b20, 3, gmd(), (uint64_t)fw.child, (uint64_t)hash_of("Sequence_IsChildhood"));
++            rt_log("follow: age %s (Sequence_IsChildhood) before the teleport", fw.child ? "child" : "adult");
++        }
++        int best = -1;
++        float best_d = 0;
++        for (int i = 0; i < dbg_places(); i++) {
++            if (strcmp(places[i].area, fw.area) || !places[i].has_xyz) continue;
++            float ax = places[i].xyz[0] - fw.xyz[0], ay = places[i].xyz[1] - fw.xyz[1], az = places[i].xyz[2] - fw.xyz[2];
++            float d = sqrtf(ax * ax + ay * ay + az * az);
++            if (best < 0 || d < best_d) best = i, best_d = d;
++        }
++        if (best < 0) {
++            rt_log("follow: %s has no start position with coordinates: no teleport", fw.area);
++            fw.state = F_LAND, fw.at = tick;
++            return;
++        }
++        snprintf(fw.start, sizeof fw.start, "%s", places[best].pos);
++        memcpy(fw.start_xyz, places[best].xyz, 12), memcpy(fw.start_rot, places[best].rot, 12);
++        fw.start_has_rot = places[best].has_rot;
++        fw.state = F_AGE, fw.at = tick + 4;   // the flag setter's changes are made at the manager's next update
++        return;
++    }
++    if (fw.state == F_AGE && tick >= fw.at) {
++        follow_exact();
++        dbg_warp(fw.area, fw.start);
++        fw.state = F_WARP, fw.at = tick + 15;
++        return;
++    }
++    if (fw.state == F_WARP) {
++        if (dbg_busy()) {   // not found before: the area's file may be read only for the change
++            if (fw.exact > 0 && !fw.patched_n && fw.tries < 12 && tick >= fw.at) follow_exact(), fw.at = tick + 15;
++            return;
++        }
++        fw.state = F_LAND, fw.at = tick + 30;
++        return;
++    }
++    if (fw.state == F_LAND && tick >= fw.at) {
++        static int patched;
++        if (!fw.landed) patched = fw.patched_n, follow_unpatch(), fw.landed = 1;
++        if (!follow_gd(c)) return;
++        fw.landed = 0;
++        if (fw.has_cam && fw.cam_on && dbg_freecam_available()) {
++            dbg_freecam_set(1, 0, 8.0f);
++            for (int i = 0; i < 3; i++) fc.pos[i] = fw.cam[i];
++            fc.yaw = (float)fw.cam[3], fc.pitch = (float)fw.cam[4], fc.reach = fw.cam[5] >= 1 && fw.cam[5] <= 50 ? fw.cam[5] : 5;
++            fc.capture = 0;
++        }
++        float p[3] = {0, 0, 0}, yaw = 0;
++        char now[64] = "";
++        text_get("Sequence_CurrentBanc", now);
++        int has_pos = dbg_player_pos(p), has_yaw = player_yaw(&yaw);
++        float dx = p[0] - fw.xyz[0], dy = p[1] - fw.xyz[1], dz = p[2] - fw.xyz[2];
++        float dyaw = has_yaw && fw.has_face ? fabsf(fmodf(yaw * 57.29578f - fw.face + 540.0f, 360.0f) - 180.0f) : -1;
++        rt_log("follow: done in %.1f s: area %s (%s), Link %s %.2f m from the recipe's place, facing %.1f deg off; start "
++               "position %s, its Trans found %d and Rot %d times (%d places replaced, %d searches); game data %d changed "
++               "after the arrival; camera %s",
++               (double)(plat_now_ns() - fw.t0) / 1e9, now, strcmp(now, fw.area) ? "NOT the recipe's" : "the recipe's",
++               has_pos ? "stands" : "is not seen,", has_pos ? sqrtf(dx * dx + dy * dy + dz * dz) : -1.0f, dyaw,
++               fw.start[0] ? fw.start : "-", fw.hits[0], fw.hits[1], patched, fw.tries, fw.applied,
++               fw.has_cam && fw.cam_on ? "the recipe's (free camera)" : "the game's own");
++        fw.start[0] = 0;
++        fw.state = F_IDLE;
++    }
++}
++
+ // NX2NAVI_MARK_RECIPE=2: the game data's sections and the player actor raw, for finding their layout
+ static void facing_scan(FILE *f, float y);
+ void dbg_mark_probe(FILE *f) {
+@@ -1289,11 +1687,13 @@ static void test_script(uint64_t tick) {
+             int cam_on = 0, sticks = 1;
+             float speed = 8;
+             if (sscanf(colon + 9, "%d %d %f", &cam_on, &sticks, &speed) >= 1) dbg_freecam_set(cam_on, sticks, speed);
+-        } else if (!strncmp(colon + 1, "camset ", 7)) {     // camset <x> <y> <z> <yaw> <pitch>: the free camera placed
+-            double d[3];
++        } else if (!strncmp(colon + 1, "camset ", 7)) {   // camset <x> <y> <z> <yaw> <pitch> [<reach>]: the free camera placed
++            double d[3], reach = 0;
+             float yaw = 0, pitch = 0;
+-            if (sscanf(colon + 8, "%lf %lf %lf %f %f", &d[0], &d[1], &d[2], &yaw, &pitch) == 5)
++            if (sscanf(colon + 8, "%lf %lf %lf %f %f %lf", &d[0], &d[1], &d[2], &yaw, &pitch, &reach) >= 5) {
+                 memcpy(fc.pos, d, sizeof d), fc.yaw = yaw, fc.pitch = pitch, fc.capture = 0;
++                if (reach >= 1 && reach <= 50) fc.reach = reach;
++            }
+         } else if (!strncmp(colon + 1, "camreset", 8)) {
+             dbg_freecam_reset();
+         } else if (!strncmp(colon + 1, "camgo ", 6)) {      // camgo <dx> <dy> <dz> <yaw> <pitch>: the free camera moved by hand
+@@ -1409,11 +1809,12 @@ static void test_script(uint64_t tick) {
+ 
+ // The game's thread, at its pad read.
+ void dbg_tick(Cpu *c) {
+-    static uint64_t tick;
++    uint64_t tick = game_tick;
+     if (!dbg_supported() || (!tick && !player())) return;
+-    tick++;
++    game_tick = ++tick;
+     test_script(tick);
+     warp_tick(c, tick);
++    follow_tick(c, tick);
+     static Req todo[Q_MAX];
+     int n;
+     plat_mutex_lock(&q_lock);
+diff --git a/runtime/debug_tools.h b/runtime/debug_tools.h
+index 5f9a498..5265363 100644
+--- a/runtime/debug_tools.h
++++ b/runtime/debug_tools.h
+@@ -72,9 +72,13 @@ int dbg_frozen_count(void);
+ void dbg_unfreeze_all(void);
+ // A mark's recipe (boot.c mark_poll): dbg_mark_take answers 1 once after the test script's "mark"
+ int dbg_mark_take(void);
+-// Writes the moment's recipe to path (recipe v1: area, Link's place, age, camera, game data); mark: the "# mark:" text.
++// Writes the moment's recipe to path (recipe v2: area, Link's place, age, camera, game data); mark: the "# mark:" text.
+ // 0 without a save loaded (no area or no Link) or when the file cannot be written.
+ int dbg_mark_recipe(const char *path, const char *mark);
++// State sync (boot.c state_poll, NX2NAVI_STATE_PUB / NX2NAVI_STATE_FOLLOW): the game's own camera noted for the recipe's
++// # camera: game line (0: the build has no free camera site); a follower takes on a recipe live (follow_tick).
++int dbg_camera_watch(void);
++void dbg_follow(const char *path);     // any thread; NULL or "": the last path again (a state-latest.dbg follows on)
+ #ifdef __cplusplus
+ }
+ #endif
+-- 
+2.56.0
+

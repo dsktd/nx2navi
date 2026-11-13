@@ -579,7 +579,7 @@ one is v0, the hand-written `tools/scenarios/*.dbg` of 2026-11-12), so old marks
   (same address in two boots) rising 4.64 -> 4.81 -> 4.99 over 1800 ticks, like hours at ~0.035/s; holding it at 12
   for 600 ticks left the Market-front view at night (grey 0.536), so it is not the lighting's clock either, and the
   same base save is daylight at the Gerudo Valley gate: the visible time may be per area or scripted there. Open.); `# not captured:` actors, RNG, Link's motion/action, sound, bool arrays,
-  vectors, texts.
+  vectors, texts (v2, patch 0116, adds vectors, 64-char texts and the game's camera: "State sync" below).
 - **Game data layout** (1.1.1, manager **[main+0x4c7e180], section kind*0x60: +0x10 count, +0x18 entries, +0x20
   {hash,index} table, +0x2c its size). The kinds ARE the save's sections (progress.sav: pairs {hash,u32} from 0x28 up to
   the offset at +8, kind 0 first, each later kind opened by {0, kind}; inline values for bool/int/float/enum/uint, else
@@ -615,6 +615,54 @@ one is v0, the hand-written `tools/scenarios/*.dbg` of 2026-11-12), so old marks
 - **One-shot pass:** a pass into targets never rendered before (a LUT or volume made once). Its draws wait for their pipeline instead of being skipped.
 - **c0/c1:** NVN constant banks. c0 is driver data (storage and uniform tables, group counts) filled by the back end; c1 holds the program's own constants.
 - **Patch page:** a page right after `main` (`0x7004ea0000`) that patched instructions read and the runtime writes each present (frame step, sizes, ratios).
+
+### State sync: a running game as the reference for followers (2026-11-12, patch 0116)
+
+One game (Cal's) is the **reference**; lab followers take on its moment, so A/B builds compare at exactly his place
+without saves or hand-made recipes. The state travels as a **recipe v2** file (v1 plus `# moment: tick= speed=`,
+`# camera: game x y z yaw pitch reach <camera actor>`, `# gdv 10 <hash> x,y,z` vectors (float bits) and `# gdt 16 <hash>
+<text>` 64-char texts, %XX-escaped; v1 readers skip them; tools/repro, repro-diff, warp-save, recipe read both).
+- **Reference** (`NX2NAVI_STATE_PUB`, default 0 off; `runtime/boot.c` state_poll from mark_poll, every 4th present):
+  1 = `state.req` beside the shader cache folder writes `logs/state-<present>.dbg` (`NX2NAVI_STATE_DIR` elsewhere);
+  N >= 60 also every N presents (each replacing the previous periodic one); `state-latest.dbg` is a symlink to the
+  newest. Nothing in the game changes; the write is dbg_mark_recipe (~250 KB, ~13k lines) on the present thread. The
+  game's camera: the free-camera patch site stays switched on with the free camera off (`dbg_camera_watch`,
+  `fc.watch`): `dbg_freecam_host` notes PlayerCamera/EventCamera position and target (d0-d2, d3-d5) and runs the
+  instruction it stands in for (fcvt s17, d0).
+- **Follower** (`NX2NAVI_STATE_FOLLOW=<recipe>|req`, `runtime/debug_tools.c` follow_tick from dbg_tick, game thread):
+  once Link has been there `NX2NAVI_STATE_FOLLOW_TICK` (60) ticks, and again at each `follow.req` (beside the shader
+  cache; holds a path or nothing = the same path again, so pointing it at a reference's state-latest.dbg follows on):
+  F_DATA game data: bools/ints/enums through the game's setters (SetBool main+0x682b20, SetInt main+0x163b70, enum
+  main+0x3e0980; at most 16 setter calls a tick, as co-op), floats/uints/arrays/vectors by plain writes, only values
+  that differ, Sequence_ControlInEvent / BancChangeFadePattern / IsEventBancChangePause / IsChildhood left; age by
+  Sequence_IsChildhood before the teleport; then unless Link already stands in the area within `NX2NAVI_STATE_WARP_M`
+  (0.5) m, dbg_warp to the area's start position nearest the recipe's place; `NX2NAVI_STATE_EXACT` (2; 1 position only,
+  0 off) finds that start position's Trans/Rot (12 bytes, as the area's BYML holds them, `Place.rot`) in the heap and
+  alias ranges, before and during the flight, and if at most 8 places hold them replaces them with the recipe's place
+  and {0, -face rad, 0} until arrival (put back then); F_LAND: game data again, the free camera fixed at
+  `# camera: game` (`NX2NAVI_STATE_CAM`, 1; 0 = the game's own), one `follow: done` log line (area, metres and degrees
+  off, hits, game data changed after arrival).
+- **Tool**: `tools/sync <state>|latest|now <exe> [label]` (SYNC_MODE=start: boot on the state by save edit as
+  tools/repro, follower re-syncable via `tools/sync again [<state>]`; live: base save, then STATE_FOLLOW); `now` asks
+  Cal's game through `state.req` (when its log says `state: publishing`) or `shot.req` (SHADER_RELOAD=1), read-only.
+  Out: `.lab/<label>/state.dbg`, `mark/`, `diff.txt` (repro-diff, v2 also vectors + camera distance).
+- **Covered**: area, Link's place, facing, age, every scalar/4-byte-array game data (flags, counters, items, health,
+  rupees, magic), vectors, 64-char texts (start mode), the game's camera. **Missing**: time of day and weather (not in
+  the game data, see Recipes), actors and their state, RNG, Link's motion/action, bool arrays, longer texts, sound;
+  live mode cannot set texts (the area is the teleport's). Upstream co-op (`runtime/coop_game.c`) syncs progress flags
+  between networked games only (no place, time or camera), through the same setters.
+- **Checked (LAB_SOFT, exe sync, 2026-11-12/13; lavapipe, so times are not GPU times)**: reference write 6 ms at
+  state.req (18 ms the first periodic one, cold pages): leave `NX2NAVI_STATE_PUB=1` on in play, periodic writes cost a
+  hitch each. Start mode from v1 grotto-pan: Link 0.02 m, 0.0 deg off; 38 of 12867 game data differ when only the save
+  carries them (bools the save does not hold, values the load resets), so start mode also runs the live data pass:
+  from the reference's v2 state 0.00 m, 0.0 deg, 2 of 12867 differ (the running counter 0xe53eb6d1), vectors 2 of 26.
+  Live mode from the base save at FrontOfMarket: 429 game data changed, teleport to HyruleField_FrontOfZoraRiver_UnderWater
+  whose Trans was found 3 times and Rot 2 times in the heap, Link 0.00 m from the reference's place, 6 of 12867 differ.
+  **The start position's Rot y is -face in radians** (as the spawn's 0x1ea93bd8): writing +face left Link 28.2 deg
+  (2 x 14.09) off, fixed in d9e8adf. Worn equipment, the BGM and map names are `# gdt` texts (Armor_Adult_Goron,
+  Weapon_Shield_Hylian): start mode sets them in the save, live mode does not. Float array 0x8f76b998 (32 entries, -1
+  unused) counts down ~4/s (timers), not the clock. The mark's shot stops the game (FATAL) when `logs/` beside the
+  shader cache is missing (boot.c shot writer has no mkdir); tools/sync makes it.
 
 ### Lab parity: run-scenario noise and upstream 0.9.0 (2026-11-12)
 - The `load-run` replay (.lab/parity/run1.sh run) is too noisy for A/B: play32 (d9c9e0a) gave 47.5 fps / 174 frames >25 ms in one run and 42.1 fps / 624 in the next. Judge running-stutter changes on standing windows or with upstream's in-run ABBA (`NX2NAVI_AB`, `just ab`).

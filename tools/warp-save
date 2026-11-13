@@ -13,7 +13,10 @@ the save: each into the pair of that hash in the save's section of that kind (th
 order, each section opened by a pair {0, kind}); values of kinds kept inline (bool 0, int 2, float 4, enum 6, uint 20)
 only, and `# gda <kind> <hash> <count> <index>:<value hex>...` arrays of 4-byte elements (int 3, float 5, enum 7,
 uint 21; the save holds a u32 count, then the elements, at the pair's offset; elements not listed are 0; an array whose
-count differs is left). Applied before scene/pos/yaw/age, so those win. Prints how many changed and how many hashes the save lacks.
+count differs is left). Recipe v2 adds `# gdv 10 <hash> <x>,<y>,<z>` vectors (float bits in hex) and `# gdt 16 <hash>
+<text>` 64-character texts (%XX escapes; the Sequence_Reserved* texts of a change of area under way are left), both
+values the save holds at an offset. Applied before scene/pos/yaw/age, so those win. Prints how many changed and how
+many hashes the save lacks.
 Save layout (1.1.1, found 2026-11-11): magic 04030201, then (u32 murmur3 hash, u32 value) pairs from 0x28;
 String64/Vector3 values are offsets to the data. Keys used: 0x1d6189da current scene (String64), Player_Pos_For_Map
 + 0x960ad56a, 0xc884818d, 0x8773f02d (Vector3, all hold Link's position), Player_Rot_For_Map + 0xa4aee8cd (float
@@ -65,11 +68,26 @@ INLINE = {0, 2, 4, 6, 20}
 ARRAYS = {3, 5, 7, 21}
 
 
+K_RESERVED = {mm3(n) for n in ("Sequence_ReservedNextBanc", "Sequence_ReservedNextStartPosName",
+                                 "Sequence_ReservedBootEventName", "Sequence_ReservedEventStarterName")}
+
+
+def unescape(s):
+    return re.sub(rb"%([0-9A-Fa-f]{2})", lambda m: bytes([int(m.group(1), 16)]), s.encode())
+
+
 def read_gd(path):
-    """{(kind, hash): u32 | (count, {index: u32})} from a recipe's # gd / # gda lines."""
+    """{(kind, hash): u32 | (count, {index: u32}) | ("vec", bytes) | ("text", bytes)} from a recipe's # gd / # gda
+    (v1) and # gdv / # gdt (v2) lines."""
     gd = {}
     for l in open(path):
         f = l.split()
+        if len(f) == 5 and f[:3] == ["#", "gdv", "10"]:
+            gd[(10, int(f[3], 16))] = ("vec", struct.pack("<3I", *(int(x, 16) for x in f[4].split(","))))
+            continue
+        if len(f) in (4, 5) and f[:3] == ["#", "gdt", "16"] and int(f[3], 16) not in K_RESERVED:
+            gd[(16, int(f[3], 16))] = ("text", unescape(f[4] if len(f) == 5 else "")[:63].ljust(64, b"\0"))
+            continue
         if len(f) == 5 and f[:2] == ["#", "gd"] and int(f[2]) in INLINE:
             gd[(int(f[2]), int(f[3], 16))] = int(f[4], 16)
         elif len(f) >= 5 and f[:2] == ["#", "gda"] and int(f[2]) in ARRAYS:
@@ -90,7 +108,10 @@ def apply_gd(b, gd):
         want = gd.get((kind, h))
         if want is None: continue
         seen.add((kind, h))
-        if isinstance(want, tuple):
+        if isinstance(want, tuple) and want[0] in ("vec", "text"):
+            data = want[1]
+            if b[v:v + len(data)] != data: b[v:v + len(data)] = data; changed += 1
+        elif isinstance(want, tuple):
             n, el = want
             if struct.unpack_from("<I", b, v)[0] != n: continue
             new = struct.pack(f"<{n}I", *(el.get(i, 0) for i in range(n)))

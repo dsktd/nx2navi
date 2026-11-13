@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""repro-diff <a.dbg> <b.dbg>: compare two recipes v1 (a mark and the mark its repro took): area, Link's position and
+"""repro-diff <a.dbg> <b.dbg>: compare two recipes v1/v2 (a mark and the mark its repro took): area, Link's position and
 yaw, age, and every `# gd` game data value. Prints one `repro:` line (and the differing game data, at most 20) and exits
 1 when the area or age differ, Link stands over REPRO_POS_M (default 1.0) metres apart or faces over REPRO_YAW_DEG (default 5) degrees apart, or over REPRO_GD_MAX (default
 20) game data values differ. Game data that moves with play by itself (the clock, play time, positions) is expected to
-drift a little between the mark and the repro's own mark ticks later; those count too, so keep the tolerance."""
+drift a little between the mark and the repro's own mark ticks later; those count too, so keep the tolerance.
+v2 only, shown but not judged: vectors (# gdv) that differ, and how far apart the game's cameras (# camera: game) stand."""
 import math, os, sys
 
 
 def load(path):
-    r = {"warp": {}, "gd": {}}
+    r = {"warp": {}, "gd": {}, "gdv": {}, "cam": None}
     lines = open(path).read().split("\n")
     if not lines[0].startswith("# recipe v"):
         sys.exit(f"repro-diff: {path} is not a recipe")
@@ -17,6 +18,10 @@ def load(path):
         if l.startswith("# warp:"):
             r["warp"] = dict(kv.partition("=")[::2] for kv in l[7:].split())
         f = l.split()
+        if len(f) == 5 and f[:2] == ["#", "gdv"]:
+            r["gdv"][f[3]] = f[4]
+        if len(f) >= 9 and f[:3] == ["#", "camera:", "game"]:
+            r["cam"] = [float(x) for x in f[3:9]]
         if len(f) == 5 and f[:2] == ["#", "gd"]:
             r["gd"][(int(f[2]), f[3])] = f[4]
     return r
@@ -40,6 +45,13 @@ if len(diff) > int(os.environ.get("REPRO_GD_MAX", "20")): bad.append("game data"
 print(f"repro: {'FAIL ' + ','.join(bad) if bad else 'ok'}: area {wa.get('scene')} -> {wb.get('scene')}, "
       f"position {dist:.2f} m apart, yaw {dyaw:.1f} deg, age {wa.get('age')} -> {wb.get('age')}, "
       f"game data {len(diff)} of {len(keys)} differ")
+if a["gdv"] or b["gdv"]:
+    vk = set(a["gdv"]) & set(b["gdv"])
+    line = (f"repro: v2: vectors {sum(a['gdv'][k] != b['gdv'][k] for k in vk)} of {len(vk)} differ" if vk else
+            f"repro: v2: vectors only in {'the first' if a['gdv'] else 'the second'} recipe")
+    if a["cam"] and b["cam"]:
+        line += f", cameras {math.dist(a['cam'][:3], b['cam'][:3]):.2f} m apart, yaw {math.degrees(abs((a['cam'][3] - b['cam'][3] + math.pi) % (2 * math.pi) - math.pi)):.1f} deg"
+    print(line)
 for k in diff[:20]:
     print(f"  gd kind {k[0]} {k[1]}: {a['gd'].get(k, '-')} -> {b['gd'].get(k, '-')}")
 sys.exit(1 if bad else 0)

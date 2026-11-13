@@ -1,5 +1,5 @@
 #!/bin/bash
-# repro <recipe.dbg> [label] [KEY=VALUE...]: boot the lab on a recipe (recipe v1: a mark's logs/mark-<present>.dbg or a
+# repro <recipe.dbg> [label] [KEY=VALUE...]: boot the lab on a recipe (recipe v1 or v2: a mark's logs/mark-<present>.dbg or a
 # shot.req's shot-<present>.dbg, written by the runtime, NX2NAVI_MARK_RECIPE; ARCHITECTURE.md "Recipes") and mark again
 # once Link stands there: a shot plus the recipe of where the repro ended up, compared with the first (tools/repro-diff).
 #   - profile: the recipe's `# base:` (the neutral base profile), never Cal's live one; tools/warp-save writes its
@@ -14,7 +14,7 @@ set -u
 R=$HOME/claude/nx2navi; P=$R/.lab/parity; B=$R/NX2navi/build/v111
 [ $# -ge 1 ] || { sed -n 2,4p "$0"; exit 2; }
 rec=$(realpath "$1"); label=${2:-repro-$(basename "$rec" .dbg)}; shift; [ $# -gt 0 ] && shift
-v=$(head -1 "$rec"); [ "$v" = "# recipe v1" ] || { echo "repro: $rec: first line '$v', want '# recipe v1'" >&2; exit 2; }
+v=$(head -1 "$rec"); case $v in "# recipe v1"|"# recipe v2") ;; *) echo "repro: $rec: first line '$v', want '# recipe v1' or v2" >&2; exit 2;; esac
 warp=$(sed -n 's/^# warp: *//p' "$rec" | head -1)
 base=$(sed -n 's/^# base: *//p' "$rec" | head -1); base=${base:-.lab/scenarios/base-profile}
 [[ $base == /* ]] || base=$R/$base

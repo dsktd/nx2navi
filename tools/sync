@@ -1,0 +1,91 @@
+#!/bin/bash
+# sync <state> <exe> [label] [KEY=VALUE...]: start a follower game in the lab at a reference game's moment (ARCHITECTURE.md
+# 11 "State sync"), so an A/B of builds happens at exactly that moment instead of a playthrough or a hand-made recipe.
+#   <state>: a recipe (v1 or v2: logs/state-<P>.dbg of a game with NX2NAVI_STATE_PUB, a mark's or a shot.req's .dbg);
+#     `latest`: the reference's newest (NX2navi/build/v111/logs/state-latest.dbg, else the newest state-, shot- or
+#     mark-*.dbg there); `now`: ask Cal's running game for one first, through its existing request files only: state.req
+#     when its log says it publishes (patch 0116), else shot.req when it runs with NX2NAVI_SHADER_RELOAD=1 (a full-size
+#     shot and the recipe, nothing in his game changes); waits up to 20 s for the file.
+#   <exe>: the follower's variant (nx2navi.<exe>; needs 0106 for start, 0116 for live and `again`).
+#   out: .lab/<label>/state.dbg (the state as taken), mark/ (the follower's own recipe + shot at SYNC_MARK_TICK),
+#     diff.txt (tools/repro-diff state vs follower: area, place, facing, game data; v2: vectors, camera); exit 1 on FAIL.
+# Env: SYNC_MODE=start (default: the follower boots on the state by save edit, tools/warp-save, as tools/repro does:
+#   Link's exact place and facing, then at tick 60 the game data again live: what the save cannot hold) or live (the base save boots and takes the state on live, NX2NAVI_STATE_FOLLOW:
+#   game data, teleport, exact place through the start position, camera; tests the live path);
+#   SYNC_CAM=1 (default; 0 off): the reference's game camera (# camera: game, v2) as a fixed free camera, so both games
+#   look from the same place; SYNC_FRAME (when the run stops: 1300 start, 2600 live), SYNC_MARK_TICK (240 / 1500);
+#   SYNC_REC (the title-to-save recording, default .lab/parity/load-west.txt); SYNC_SC (the follower's shader cache
+#   folder, default .lab/parity/scR; its pipeline cache, follow.req and state.req sit beside it); lab-run's own (LAB_SOFT, LAB_TIMEOUT,
+#   ...). The follower polls follow.req beside its shader cache:
+# sync again [<state>]: re-sync a running follower (writes follow.req beside SYNC_SC; no state = the same file read again).
+# GPU: lab-run takes the lab lock and refuses beside Cal's game; `now` only reads his game's state.
+set -u
+R=$HOME/claude/nx2navi; P=$R/.lab/parity; B=$R/NX2navi/build/v111
+SC=$(realpath -m "${SYNC_SC:-$P/scR}"); D=$(dirname "$SC"); PC=$P/pcR.bin; [ -n "${SYNC_SC:-}" ] && PC=$SC.pipe.bin
+[ $# -ge 1 ] || { sed -n 2,22p "$0"; exit 2; }
+if [ "$1" = again ]; then
+  f=${2:+$(realpath "$2")}; printf '%s\n' "$f" >"$D/follow.req.tmp" && mv "$D/follow.req.tmp" "$D/follow.req"
+  echo "sync: $D/follow.req (${f:-the same recipe again})"; exit 0
+fi
+[ $# -ge 2 ] || { sed -n 2,22p "$0"; exit 2; }
+state=$1 exe=$2; shift 2; label=sync-$exe; [[ ${1:-} == *=* ]] || { [ $# -gt 0 ] && label=$1 && shift; }
+newest() { ls -t "$B"/logs/state-*.dbg "$B"/logs/shot-*.dbg "$B"/logs/mark-*.dbg 2>/dev/null | grep -v latest | head -1; }
+case $state in
+  latest) src=$( [ -e "$B/logs/state-latest.dbg" ] && realpath "$B/logs/state-latest.dbg" || newest );;
+  now)
+    log=$(ls -t "$B"/logs/play-*.log | head -1)
+    [ $(( $(date +%s) - $(stat -c %Y "$log") )) -lt 30 ] || { echo "sync: no running game (${log##*/} quiet)" >&2; exit 2; }
+    sc=$(grep -am1 'build: entry' "$log" | tr ',' '\n' | sed -n 's/.*NX2NAVI_SHADER_CACHE=//p')
+    dir=$(dirname "${sc:-$B/shader-cache}")
+    if grep -aq 'state: publishing' "$log"; then req=$dir/state.req
+    elif grep -am1 'build: entry' "$log" | grep -q 'NX2NAVI_SHADER_RELOAD=1'; then req=$dir/shot.req
+    else echo "sync: the running game neither publishes states nor takes shot.req" >&2; exit 2; fi
+    before=$(newest); touch "$req"; echo "sync: asked the running game ($req)"
+    for i in $(seq 40); do sleep 0.5; src=$(newest); [ -n "$src" ] && [ "$src" != "$before" ] && break; src=; done
+    [ -n "$src" ] || { echo "sync: no new recipe within 20 s" >&2; exit 1; };;
+  *) src=$(realpath "$state");;
+esac
+[ -f "$src" ] || { echo "sync: no state ($state)" >&2; exit 2; }
+v=$(head -1 "$src"); case $v in "# recipe v1"|"# recipe v2") ;; *) echo "sync: $src is not a recipe ('$v')" >&2; exit 2;; esac
+mkdir -p "$D/logs"   # the mark's shot goes there (the game stops when it cannot write it)
+out=$R/.lab/$label   # lab-run empties it: the state is kept beside it until the run is over
+rec=$R/.lab/$label.state.dbg; cp "$src" "$rec"
+echo "sync: state $src ($(sed -n 's/^# warp: //p' "$rec"))"
+mode=${SYNC_MODE:-start}; cam=${SYNC_CAM:-1}
+dbg=$(grep -v '^#' "$rec" | grep . | paste -sd';')
+c=$(sed -n 's/^# camera: game //p' "$rec" | head -1)
+if [ "$cam" = 1 ] && [ -n "$c" ] && ! grep -q '^[0-9]*:freecam' "$rec"; then
+  read -r cx cy cz cyaw cpitch creach _ <<<"$c"
+  dbg="$dbg${dbg:+;}1:freecam 1 0 8;2:camset $cx $cy $cz $cyaw $cpitch $creach"
+fi
+xd=$(awk -F'\t' -v e=$exe '$1 == e { split($4, a, "/"); print a[1] }' $R/builds.tsv); xd=${xd:-xlate-rebase}
+warp=(); knobs=()
+if [ "$mode" = live ]; then
+  frame=${SYNC_FRAME:-2600}; tick=${SYNC_MARK_TICK:-1500}
+  # the base save as it is; the follower takes the state on at tick 60 (its own camera lines come from the recipe then)
+  dbg=$(grep -v '^#' "$rec" | grep -v ':freecam\|:camset' | grep . | paste -sd';')
+  knobs=("NX2NAVI_STATE_FOLLOW=$rec" "NX2NAVI_STATE_CAM=$cam")
+  base=$(sed -n 's/^# base: *//p' "$rec" | head -1); base=${base:-.lab/scenarios/base-profile}; [[ $base == /* ]] || base=$R/$base
+  warp=(--warp "scene=HyruleField_Adult entrance=HyruleField_FrontOfMarket")
+else
+  frame=${SYNC_FRAME:-1300}; tick=${SYNC_MARK_TICK:-240}
+  base=$(sed -n 's/^# base: *//p' "$rec" | head -1); base=${base:-.lab/scenarios/base-profile}; [[ $base == /* ]] || base=$R/$base
+  warp=(--warp "$(sed -n 's/^# warp: *//p' "$rec" | head -1) gd=$rec")
+  # and takes it on live once more at tick 60: Link already stands there, so only the game data the save cannot hold
+  # (bools that load as defaults, values the load resets) and the camera; follow.req re-syncs it (sync again)
+  knobs=("NX2NAVI_STATE_FOLLOW=$rec" "NX2NAVI_STATE_CAM=$cam")
+fi
+dbg="$dbg${dbg:+;}$tick:mark"
+cd $R && LAB_PROFILE_SRC=$base LAB_EXE=nx2navi.$exe LAB_TIMEOUT=${LAB_TIMEOUT:-900} \
+  tools/lab-run "${warp[@]}" "${SYNC_REC:-.lab/parity/load-west.txt}" "$frame" "$label" \
+  NX2NAVI_XLATE=$B/$xd/nx2navi_xlate NX2NAVI_SHADER_CACHE=$SC NX2NAVI_PIPELINE_CACHE=$PC \
+  NX2NAVI_PIPE_SKIP=any "NX2NAVI_DBG_TEST=$dbg" NX2NAVI_MARK_RECIPE=1 "NX2NAVI_MARK_DIR=$out/mark" "${knobs[@]}" "$@" | tail -3
+grep -a 'follow: \|state: ' "$out/run.log" | cut -c1-260
+mv "$rec" "$out/state.dbg"; rec=$out/state.dbg
+got=$(ls -t "$out"/mark/mark-*.dbg 2>/dev/null | head -1)
+[ -n "$got" ] || { echo "sync: the follower wrote no recipe (Link not there by frame $frame?)" >&2; exit 1; }
+p=${got##*mark-}; p=${p%.dbg}
+mv "$D/logs/shot-$p.png" "$out/mark/shot.png" 2>/dev/null; rm -f "$D/logs/shot-$p.build.txt"
+"$R/tools/repro-diff" "$rec" "$got" | tee "$out/diff.txt"; rc=${PIPESTATUS[0]}
+echo "sync: follower shot $out/mark/shot.png"
+exit $rc
