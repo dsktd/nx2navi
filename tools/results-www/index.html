@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NX2navi results</title>
+<style>
+:root{--bg:#fff;--fg:#1d2330;--mut:#5f6678;--line:#d9dde6;--grid:#e7eaf0;--a:#2f6fdb;--ok:#2a9d5c;--warn:#d98a1c;--bad:#c94545;--card:#f6f7fa;--ref:#c94545;
+--s1:#2a78d6;--s2:#eb6834;--s3:#1baf7a;--s4:#e87ba4;--s5:#8a8f9c}
+:root[data-theme=dark]{--bg:#14171d;--fg:#e4e7ee;--mut:#9aa2b3;--line:#2b303b;--grid:#252a34;--a:#6ea0ff;--ok:#4cc585;--warn:#e8a840;--bad:#e56b6b;--card:#1b1f27;--ref:#e56b6b;
+--s1:#3987e5;--s2:#d95926;--s3:#199e70;--s4:#d55181;--s5:#8a8f9c}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#14171d;--fg:#e4e7ee;--mut:#9aa2b3;--line:#2b303b;--grid:#252a34;--a:#6ea0ff;--ok:#4cc585;--warn:#e8a840;--bad:#e56b6b;--card:#1b1f27;--ref:#e56b6b;
+--s1:#3987e5;--s2:#d95926;--s3:#199e70;--s4:#d55181;--s5:#8a8f9c}}
+*{box-sizing:border-box}
+body{margin:0 auto;padding:16px;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,sans-serif;max-width:1180px}
+h1{font-size:20px;margin:.3em 0}h2{font-size:16px;margin-top:28px}h3{font-size:14px;margin:18px 0 6px}.mut{color:var(--mut)}
+a{color:var(--a)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,420px),1fr));gap:12px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:10px 10px 6px;min-width:0}
+.card b{font-size:13px}.card .sub{color:var(--mut);font-size:12px}
+svg{width:100%;height:auto;display:block}svg text{font-family:inherit}
+.leg{display:flex;flex-wrap:wrap;gap:4px 12px;font-size:12px;color:var(--mut);margin:4px 0}
+.leg i{display:inline-block;width:14px;height:0;border-top:2px solid;vertical-align:middle;margin-right:4px;position:relative}
+.leg i:after{content:"";position:absolute;left:3px;top:-5px;width:6px;height:6px;border-radius:50%;background:currentColor}
+.ctl{display:flex;gap:14px;flex-wrap:wrap;font-size:13px;margin:8px 0}
+.bar{display:flex;height:18px;border-radius:4px;overflow:hidden;margin:6px 0}.bar div{min-width:2px}
+.tw{overflow-x:auto}table{border-collapse:collapse;width:100%;min-width:620px;font-size:13px}td,th{border-bottom:1px solid var(--line);padding:3px 6px;text-align:left;vertical-align:top}
+.s-open{color:var(--bad)}.s-fixed{color:var(--ok)}.s-mitigated{color:var(--warn)}.s-regressed{color:var(--bad);font-weight:600}
+.tag{font-size:11px;border:1px solid var(--line);border-radius:3px;padding:0 4px;color:var(--mut)}
+details{margin-top:18px}summary{cursor:pointer;font-weight:600}
+.hide-old .old{display:none}
+</style></head><body>
+<h1>NX2navi results</h1>
+<p class="mut">One chart per scenario and metric. x: builds in build order (builds.tsv); a line joins each series' means, the band is min..max over the runs, markers are builds (hollow = a single run, indicative only). A series is a knob arm (the run's knob set; the most common arm is "baseline", other arms show how they differ from it). Current builds (play49, play50 and its arms, skysh, ssnap, texchurn, sync) are bright; older builds are faded and squeezed. Hover or tap a marker for details. Sources: <a href="results.tsv">results.tsv</a>, <a href="builds.tsv">builds.tsv</a>, <a href="SYMPTOMS.md">SYMPTOMS.md</a>.</p>
+<p><a href="review.html">Visual review (flagged pairs)</a></p>
+<h2>Symptoms: done vs open</h2><div class="tw" id="sym"></div>
+<h2>Current builds</h2>
+<div class="ctl"><label><input type="checkbox" id="hideold"> hide old builds on the x axis</label></div>
+<div id="cur"></div>
+<details><summary>Older measurements (no current build)</summary><div id="old"></div></details>
+<script>
+const $=id=>document.getElementById(id);
+const tsv=t=>{const l=t.trim().split('\n').map(x=>x.split('\t'));const h=l.shift();return l.map(r=>Object.fromEntries(h.map((k,i)=>[k,r[i]||''])))};
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+let HIDE=false;const CUR=new Set(['play49','p49stat','skysh','texchurn','ssnap','sync','play50']);
+const UNIT={fps:'fps',fps_1pc_low:'fps (1% low)',over25ms_per_min:'frames >25 ms per min',interval_ms:'frame interval (ms)',replay_A_ms:'replay frame (ms)',
+ ab_replay_BminusA_ms:'B minus A, replay (ms)',ab_interval_BminusA_ms:'B minus A, interval (ms)',load_longest_ms:'longest frame (ms)',load_lost_ms:'time lost (ms)',
+ scn_fps:'fps',scn_gpu_ms:'GPU (ms)',scn_interval_ms:'frame interval (ms)',scn_low1:'fps (1% low)',scn_over25_min:'frames >25 ms per min',scn_replay_ms:'replay frame (ms)',
+ vram_mib:'VRAM (MiB)',live_textures:'live textures',shadow_sync_ms_per_frame:'shadow sync (ms per frame)'};
+const FPS=new Set(['fps','fps_1pc_low','scn_fps','scn_low1']);
+const ZERO=m=>/BminusA/.test(m);
+const nice=(lo,hi)=>{const span=hi-lo||1,raw=span/4,p=Math.pow(10,Math.floor(Math.log10(raw))),f=raw/p,st=(f<1.5?1:f<3?2:f<7?5:10)*p;
+ const a=Math.floor(lo/st)*st,t=[];for(let v=a;v<=hi+st*.001;v+=st)t.push(+v.toFixed(10));return t};
+const fmt=v=>{let t=Math.abs(v)>=100?v.toFixed(0):Math.abs(v)>=10?v.toFixed(1):v.toFixed(2);if(t.includes('.'))t=t.replace(/\.?0+$/,'');return t};
+Promise.all(['results.tsv','builds.tsv','SYMPTOMS.md'].map(f=>fetch(f).then(r=>r.text()))).then(([rt,bt,st])=>{
+  const R=tsv(rt).filter(r=>r.metric!=='run_status'&&r.mean!==''&&!isNaN(+r.mean)),B=tsv(bt),order=B.map(b=>b.exe),bi=Object.fromEntries(B.map((b,i)=>[b.exe,b]));
+  // symptoms
+  const S=st.split('\n').filter(l=>/^\|/.test(l)&&!/^\|[-| ]+\|$/.test(l)&&!/^\| symptom/.test(l)).map(l=>l.split('|').slice(1,-1).map(x=>x.trim()));
+  const cls=s=>s.startsWith('fixed')?'fixed':s.startsWith('mitigated')?'mitigated':s.startsWith('regressed')?'regressed':'open';
+  const cnt={};S.forEach(r=>cnt[cls(r[3])]=(cnt[cls(r[3])]||0)+1);
+  const col={fixed:'--ok',mitigated:'--warn',regressed:'--bad',open:'--line'};
+  let h='<div class="bar">'+['fixed','mitigated','regressed','open'].filter(k=>cnt[k]).map(k=>`<div style="flex:${cnt[k]};background:var(${col[k]})" title="${k}: ${cnt[k]}"></div>`).join('')+'</div><div class="mut">'+Object.entries(cnt).map(([k,v])=>v+' '+k).join(', ')+' of '+S.length+'</div>';
+  h+='<table><tr><th>symptom<th>status<th>changed in<th>first seen</tr>'+S.sort((a,b)=>['regressed','open','mitigated','fixed'].indexOf(cls(a[3]))-['regressed','open','mitigated','fixed'].indexOf(cls(b[3]))).map(r=>`<tr><td>${esc(r[0])} <span class="tag">${esc(r[1])}</span><td class="s-${cls(r[3])}">${esc(r[3])}<td>${esc(r[4])}<td>${esc(r[2])}</tr>`).join('')+'</table>';
+  $('sym').innerHTML=h;
+  // charts
+  const groups={};R.forEach(r=>{(groups[r.scenario]=groups[r.scenario]||{});(groups[r.scenario][r.metric]=groups[r.scenario][r.metric]||[]).push(r)});
+  const rowTip=(r,b,metric)=>`${r.exe} (${b.date||''})  ${r.entry}\nmean ${fmt(+r.mean)} ${UNIT[metric]||''}  range ${fmt(+r.min)}..${fmt(+r.max)}  runs n=${r.n}\nchange vs ${b.parent||'-'}: ${(b.changed||'?').slice(0,160)}\nknobs: ${r.knobs||'(defaults)'}\n${r.tool}`;
+  function chart(sc,metric,rows){
+    const cur=rows.some(r=>CUR.has(r.exe));
+    // series: one line of per-build pooled means (n-weighted) with min..max band; every run row is a small dot beside it
+    const xs=order.filter(e=>rows.some(r=>r.exe===e)&&(!HIDE||CUR.has(e)));
+    const pool=[];xs.forEach(e=>{const rs=rows.filter(r=>r.exe===e);let w=0,sum=0,mn=Infinity,mx=-Infinity,n=0;
+      rs.forEach(r=>{const k=Math.max(1,+r.n||1);w+=k;sum+=k*+r.mean;mn=Math.min(mn,+r.min);mx=Math.max(mx,+r.max);n+=+r.n||1});
+      pool.push({exe:e,mean:sum/w,min:mn,max:mx,n,rows:rs})});
+    const all=[{label:'build mean (all runs of the build)',c:'var(--s1)',pts:pool}];
+    const W=420,H=230,m={l:54,r:12,t:10,b:58};
+    // x slots: old builds squeezed
+    const wt=e=>CUR.has(e)?1:.45;
+    const vis=xs; const tot=vis.reduce((a,e)=>a+wt(e),0);let acc=0;const xp={};
+    vis.forEach(e=>{xp[e]=m.l+8+(acc+wt(e)/2)/tot*(W-m.l-m.r-16);acc+=wt(e)});
+    let lo=Infinity,hi=-Infinity;all.forEach(s=>s.pts.forEach(p=>{lo=Math.min(lo,p.min);hi=Math.max(hi,p.max)}));
+    if(FPS.has(metric)){lo=Math.min(lo,60);hi=Math.max(hi,60)}
+    if(ZERO(metric)){lo=Math.min(lo,0);hi=Math.max(hi,0)}else if(lo>0&&lo<hi*.6||/_per_min|_min$|vram|live|fps|_ms/.test(metric)&&lo>0&&lo<hi*.5)lo=0;
+    if(lo===hi){lo-=1;hi+=1}
+    const tk=nice(lo,hi);lo=Math.min(lo,tk[0]);hi=Math.max(hi,tk[tk.length-1]);
+    const Y=v=>H-m.b-(v-lo)/(hi-lo)*(H-m.t-m.b);
+    let s=`<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(sc+' '+metric)}">`;
+    tk.forEach(v=>s+=`<line x1="${m.l}" x2="${W-m.r}" y1="${Y(v)}" y2="${Y(v)}" stroke="var(--grid)"/><text x="${m.l-6}" y="${Y(v)+4}" text-anchor="end" font-size="12" fill="var(--mut)">${fmt(v)}</text>`);
+    s+=`<line x1="${m.l}" x2="${W-m.r}" y1="${Y(lo)}" y2="${Y(lo)}" stroke="var(--line)"/>`;
+    if(ZERO(metric))s+=`<line x1="${m.l}" x2="${W-m.r}" y1="${Y(0)}" y2="${Y(0)}" stroke="var(--mut)" stroke-dasharray="4 3"/>`;
+    if(FPS.has(metric))s+=`<line x1="${m.l}" x2="${W-m.r}" y1="${Y(60)}" y2="${Y(60)}" stroke="var(--ref)" stroke-dasharray="5 3" stroke-width="1.2"/><text x="${W-m.r}" y="${Y(60)-4}" text-anchor="end" font-size="10" fill="var(--ref)" stroke="var(--card)" stroke-width="3" paint-order="stroke">60 fps target</text>`;
+    s+=`<text transform="translate(11 ${(m.t+H-m.b)/2}) rotate(-90)" text-anchor="middle" font-size="11" fill="var(--mut)">${esc(UNIT[metric]||metric)}</text>`;
+    vis.forEach(e=>{const c=CUR.has(e);s+=`<g class="${c?'':'old'}"><text x="${xp[e]}" y="${H-m.b+12}" text-anchor="end" font-size="${c?11:9}" font-weight="${c?600:400}" fill="${c?'var(--fg)':'var(--mut)'}" opacity="${c?1:.7}" transform="rotate(-45 ${xp[e]} ${H-m.b+12})">${esc(e)}</text></g>`});
+    const se=all[0],lined=se.pts.length>1;
+    if(lined){const up=se.pts.map(p=>`${xp[p.exe]},${Y(p.max)}`),dn=se.pts.slice().reverse().map(p=>`${xp[p.exe]},${Y(p.min)}`);
+      s+=`<polygon points="${up.concat(dn).join(' ')}" fill="${se.c}" opacity=".14"/>`;
+      s+=`<polyline points="${se.pts.map(p=>xp[p.exe]+','+Y(p.mean)).join(' ')}" fill="none" stroke="${se.c}" stroke-width="2" stroke-linejoin="round"/>`}
+    se.pts.forEach(p=>{const x=xp[p.exe],c=CUR.has(p.exe),b=bi[p.exe]||{},multi=p.rows.length>1;
+      // individual runs, jittered sideways
+      if(multi)p.rows.forEach((r,i)=>{const dx=(i-(p.rows.length-1)/2)*(c?7:4);
+        s+=`<g class="${c?'':'old'}" opacity="${c?1:.45}"><title>${esc(rowTip(r,b,metric))}</title><line x1="${x+dx}" x2="${x+dx}" y1="${Y(+r.min)}" y2="${Y(+r.max)}" stroke="var(--s2)" stroke-width="1.5" opacity=".8"/><circle cx="${x+dx}" cy="${Y(+r.mean)}" r="3" fill="${+r.n>1?'var(--s2)':'var(--card)'}" stroke="var(--s2)" stroke-width="1.5"/><circle cx="${x+dx}" cy="${Y(+r.mean)}" r="10" fill="transparent"/></g>`});
+      const one=p.rows[0];
+      s+=`<g class="${c?'':'old'}" opacity="${c?1:.55}"><title>${esc(multi?`${p.exe} (${b.date||''})  mean of ${p.rows.length} entries: ${fmt(p.mean)} ${UNIT[metric]||''}, range ${fmt(p.min)}..${fmt(p.max)}, runs n=${p.n}\nchange vs ${b.parent||'-'}: ${(b.changed||'?').slice(0,160)}\n${p.rows.map(r=>r.entry).join(', ')}`:rowTip(one,b,metric))}</title>`+
+        (multi?'':`<line x1="${x}" x2="${x}" y1="${Y(p.min)}" y2="${Y(p.max)}" stroke="${se.c}" stroke-width="1.5" opacity=".7"/>`)+
+        `<circle cx="${x}" cy="${Y(p.mean)}" r="${c?5.5:4}" fill="${p.n>1?se.c:'var(--card)'}" stroke="${p.n>1?'var(--card)':se.c}" stroke-width="2"/><circle cx="${x}" cy="${Y(p.mean)}" r="14" fill="transparent"/></g>`});
+    s+='</svg>';
+    const anyMulti=pool.some(p=>p.rows.length>1);
+    const leg=`<div class="leg"><span style="color:var(--s1)"><i></i><span>mean per build, band = min..max</span></span>${anyMulti?'<span style="color:var(--s2)"><i></i><span>individual entries / knob arms</span></span>':''}<span>hollow = 1 run</span></div>`;
+    return `<div class="card"><b>${esc(UNIT[metric]||metric)}</b>${UNIT[metric]&&UNIT[metric]!==metric?` <span class="sub">${esc(metric)}</span>`:''}${leg}${s}</div>`}
+  function sect(id,pred){let h='';
+    Object.keys(groups).sort().forEach(sc=>{const ms=Object.keys(groups[sc]).filter(m=>pred(groups[sc][m]));if(!ms.length)return;
+      h+=`<h3>${esc(sc)}</h3><div class="grid">`+ms.sort().map(m=>chart(sc,m,groups[sc][m])).join('')+'</div>'});
+    $(id).innerHTML=h||'<p class="mut">none</p>'}
+  const draw=()=>{sect('cur',rows=>rows.some(r=>CUR.has(r.exe)));sect('old',rows=>!rows.some(r=>CUR.has(r.exe)))};draw();
+  $('hideold').onchange=e=>{HIDE=e.target.checked;draw()};
+}).catch(e=>document.body.insertAdjacentHTML('beforeend','<p>load failed: '+e+'</p>'));
+</script></body></html>
