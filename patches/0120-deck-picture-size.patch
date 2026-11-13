@@ -1,0 +1,160 @@
+From 80b04471b22b385ea41cda4fbf38a57a45c46326 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Fri, 13 Nov 2026 13:40:11 -0500
+Subject: [PATCH 1/2] NX2NAVI_GAME_RES_MIN / NX2NAVI_GAME_RES_MAX: limits of
+ the picture height; with a minimum, game_res = window takes the 16:9 picture
+ that fits a narrower screen
+
+---
+ runtime/cfg.c        |  2 +-
+ runtime/widescreen.c | 19 +++++++++++++++++--
+ 2 files changed, 18 insertions(+), 3 deletions(-)
+
+diff --git a/runtime/cfg.c b/runtime/cfg.c
+index 78919a0..7f8b691 100644
+--- a/runtime/cfg.c
++++ b/runtime/cfg.c
+@@ -46,7 +46,7 @@ static const char *const known[] = {
+     "DESC_TEMPLATE", "DEVICE_PROFILE", "DMABUF", "DMABUF_MB", "DISCORD_APP_ID", "DISCORD_IMAGE", "DISCORD_RPC", "DLAA", "DLAA_CAM_KEEP", "DLAA_CUT", "DLSS_IDLE_FREE", "DLAA_EDGE_FILL", "DLAA_AT_UPSCALER", "FFX_DEBUG", "FFX_KEYS", "FSR3_SHARPEN", "DLAA_JITTER", "DLAA_MV", "DLAA_MASKDEBUG", "DLAA_MVDEBUG", "DLAA_OBJMV", "DLAA_SURVEY", "DLAA_TARGET_KEEP", "DLAA_TIMES", "DLSS", "DLSS_CHAR_MASK", "DLSS_PRESET", "DLSS_REACTIVE", "DUMP", "DUMP_BUF", "DUMP_DIR",
+     "DUMP_LOG", "DUMP_RAW", "DUMP_SHADERS", "DUMP_FILE", "DS3", "LOG_CS_BINDS", "LOG_TEX_FLAGS", "LOG_MESH", "MESH", "POOL", "NATIVE_TENSOR", "LOG_RCOND", "LOG_RT_SIZES", "DUMP_WHITE", "DUMP_AFTER", "DUMP_MOVIE", "SUBMIT_FINISH", "ACQUIRE_WAIT", "CRASH_FILTER_GUARD", "CS_FALLBACK", "EXEFS", "FEEDBACK", "FIX_C0", "FIX_ZERO", "FLIGHT", "FLIGHT_AT", "FLIGHT_DIR", "FLIGHT_FRAMES", "GPU_TIMELINE",
+     "FFX_PIPE_CACHE", "FLIGHT_SPIKE_MS", "FLIGHT_THUMBS", "FLIGHT_EVERY", "FLUSH_SPAN", "FLUSH_UPLOAD", "FOG_CULL", "FOLIAGE_SHADOW_CULL", "FOLIAGE_SHADOW_VRS", "FOV", "FOV_PATCH", "FG_HUDLESS_SHOW", "FG_MULT", "FPS60", "FPS_LIMIT", "FRAMEGEN", "FRAMEGEN_MULTIPLIER", "FREEZE_IDLE", "FREEZE_ASYNC", "FREEZE_BUDGET_US", "FREE_CORES",
+-    "FULLSCREEN", "FXAA", "GAME_ASPECT", "GAME_RES", "GPA", "GPA_EMPTY", "GPA_TWIN", "GPA_TWIN_MAX_KB", "MIRROR_CAPTURE_KB", "WB_SKIP_MB", "GPL", "GPL_DRAW_BUILD", "GPL_FEEDBACK", "PIPE_AHEAD", "PIPE_FAST_WORKERS", "PIPE_FRAME_WAIT_MS", "PIPE_LINK_DRAW_MS", "PIPE_SKIP_STEADY", "PROG_LEAD", "GPU", "GPU_INDEX", "GPU_PASSES", "GPU_NAME", "HDR",
++    "FULLSCREEN", "FXAA", "GAME_ASPECT", "GAME_RES", "GAME_RES_MIN", "GAME_RES_MAX", "GPA", "GPA_EMPTY", "GPA_TWIN", "GPA_TWIN_MAX_KB", "MIRROR_CAPTURE_KB", "WB_SKIP_MB", "GPL", "GPL_DRAW_BUILD", "GPL_FEEDBACK", "PIPE_AHEAD", "PIPE_FAST_WORKERS", "PIPE_FRAME_WAIT_MS", "PIPE_LINK_DRAW_MS", "PIPE_SKIP_STEADY", "PROG_LEAD", "GPU", "GPU_INDEX", "GPU_PASSES", "GPU_NAME", "HDR",
+     "HDR_GAME_NITS", "HDR_LIVE", "HEAP_LAZY", "HDR_PEAK_NITS", "HDR_UI_NITS",
+     // retired: the HDR look's settings of earlier versions, now fixed (vk_hdr.c, shaders/hdr_tonemap.frag); read by
+     // nothing, listed so that a file which still sets them logs no unknown key
+diff --git a/runtime/widescreen.c b/runtime/widescreen.c
+index 48f3d7e..d418217 100644
+--- a/runtime/widescreen.c
++++ b/runtime/widescreen.c
+@@ -59,16 +59,31 @@ static double wanted_ratio(void) {
+ // fullscreen, never below the game's 1440). 1080 is the one height below the game's own: a lighter picture for slower
+ // GPUs, whose scene the game sizes against that picture itself, as the comment at scale_k says.
+ #define PICTURE_MIN_H 1080
++// NX2NAVI_GAME_RES_MIN (unset: the limits above): the lowest picture height, 360 or more, for a fixed height and for
++// "window" alike, so a 1280x800 screen can take a 1280x720 picture; with it, "window" on a screen narrower than 16:9
++// takes the height of the 16:9 picture that fits the screen's width (the picture is never narrower than 16:9).
++// NX2NAVI_GAME_RES_MAX (unset: 4320): the highest picture height; a taller setting is clamped and logged once. The
++// Steam Deck profile sets it (cfg.c DECK): the picture's targets live in memory the GPU shares with the game there.
+ static unsigned picture_height(void) {
+     const char *s = cfg_value("NX2NAVI_GAME_RES");
+-    int w = 0, h = GAME_H, min = PICTURE_MIN_H;
++    const char *lo = cfg_get("NX2NAVI_GAME_RES_MIN"), *hi = cfg_get("NX2NAVI_GAME_RES_MAX");
++    int w = 0, h = GAME_H, min = PICTURE_MIN_H, max = 4320;
++    int own_min = lo && *lo && atoi(lo) >= 360;
+     if (!strcmp(s, "window")) {
+         if (!screen_size(&w, &h)) h = GAME_H;
++        else if (own_min && w * 9 < h * 16) h = w * 9 / 16;
+         min = GAME_H;
+     } else {
+         h = atoi(s);
+     }
+-    return h < min ? (unsigned)min : h > 4320 ? 4320 : (unsigned)h;
++    if (own_min) min = atoi(lo);
++    if (hi && *hi && atoi(hi) >= min) max = atoi(hi) > 4320 ? 4320 : atoi(hi);
++    if (h > max) {
++        static int said;
++        if (!said++) rt_log("widescreen: game_res %s asks for a %d-line picture; clamped to %d (NX2NAVI_GAME_RES_MAX)", s, h, max);
++        h = max;
++    }
++    return h < min ? (unsigned)min : (unsigned)h;
+ }
+ 
+ 
+-- 
+2.56.0
+
+
+From 3cfe91a297e41b0be27603a39099d27bfde4a249 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Fri, 13 Nov 2026 14:02:02 -0500
+Subject: [PATCH 2/2] Deck picture: game_res = window falls back to the window
+ setting when the monitor is unknown; Resolution row offers 720 and 900 with a
+ minimum of 720 or less; Steam Deck profile: picture follows the screen, 1080
+ at most, low texture detail
+
+---
+ runtime/cfg.c        |  5 ++++-
+ runtime/ui/menu.cpp  | 17 +++++++++++------
+ runtime/widescreen.c |  8 ++++++--
+ 3 files changed, 21 insertions(+), 9 deletions(-)
+
+diff --git a/runtime/cfg.c b/runtime/cfg.c
+index 7f8b691..c613218 100644
+--- a/runtime/cfg.c
++++ b/runtime/cfg.c
+@@ -201,7 +201,7 @@ static const CfgMeta metas[] = {
+     {"DLSS_CHAR_MASK", "65", "0|35|65|100", LIVE}, {"FXAA", "1", "0|1", LIVE},
+     {"AA", "game", "game|off|fxaa|smaa|taa", LIVE},   // vk_aa.c: what runs in place of the game's SMAA
+     {"GAME_ASPECT", "16:9", "16:9|window|21:9|32:9", RESTART},   // widescreen.c
+-    {"GAME_RES", "1440", "1080|1440|1800|2160|2880|window", RESTART},   // widescreen.c: the picture's height
++    {"GAME_RES", "1440", "720|900|1080|1440|1800|2160|2880|window", RESTART},   // widescreen.c: the picture's height
+     {"ASPECT", "fit", "fit|stretch", LIVE}, {"FOV", "100", "70..140", LIVE},
+     {"ANISO", "16", "game|2|4|8|16", LIVE},   // vk_texture.c sampler_features, vk_sampler_aniso_live; 16: the game asks 1x or 2x
+     {"TEXTURE_DETAIL", "auto", "auto|full|reduced|low", RESTART},   // vk_texture.c "texture detail", read at the first texture
+@@ -543,6 +543,9 @@ int cfg_load(const char *path) {
+ static const struct { const char *key, *value; } DECK[] = {
+     {"FULLSCREEN", "1"}, {"WINDOW_SIZE", "1280x800"}, {"OUTPUT_RES", "1280x800"}, {"RENDER_SCALE", "game"},
+     {"VK_PRESENT", "fifo"}, {"FPS_LIMIT", "40"}, {"CORES", "4"}, {"ASTC_BC", "1"}, {"SPIN_HANDOFF_US", "30"},
++    // ours (0120): the picture follows the 1280x800 screen (1280x720, the 16:9 that fits) and stays at 1080 lines or less,
++    // and textures at low detail: the picture's targets and the textures share 16 GB with the game (ARCHITECTURE "Steam Deck")
++    {"GAME_RES", "window"}, {"GAME_RES_MIN", "720"}, {"GAME_RES_MAX", "1080"}, {"TEXTURE_DETAIL", "low"},
+ };
+ static int profile = -1;   // 0 none, 1 Steam Deck
+ 
+diff --git a/runtime/ui/menu.cpp b/runtime/ui/menu.cpp
+index ee0be0b..a931484 100644
+--- a/runtime/ui/menu.cpp
++++ b/runtime/ui/menu.cpp
+@@ -1218,18 +1218,23 @@ static void row_framegen(void) {
+ // within the monitor, and the picture after a restart. Native draws at the window's size and leaves the window as it is.
+ // As two rows of their own, a window of one size took a picture of another and scaled it for nothing.
+ static void row_resolution(void) {
+-    static const int heights[] = {1080, 1440, 1800, 2160, 2880};
+-    static const int wide169[] = {1920, 2560, 3200, 3840, 5120}, wide219[] = {2560, 3440, 4300, 5120, 6880},
+-                     wide329[] = {3840, 5120, 6400, 7680, 10240};
+-    enum { N = sizeof heights / sizeof *heights };
++    // with NX2NAVI_GAME_RES_MIN at 720 or less (widescreen.c picture_height) the row starts at 720 and 900
++    static const int all_h[] = {720, 900, 1080, 1440, 1800, 2160, 2880};
++    static const int all169[] = {1280, 1600, 1920, 2560, 3200, 3840, 5120}, all219[] = {1712, 2136, 2560, 3440, 4300, 5120, 6880},
++                     all329[] = {2560, 3200, 3840, 5120, 6400, 7680, 10240};
++    const char *lo = cfg_get("NX2NAVI_GAME_RES_MIN");
++    int skip = lo && *lo && atoi(lo) >= 360 && atoi(lo) <= 720 ? 0 : 2;
++    const int *heights = all_h + skip, *wide169 = all169 + skip, *wide219 = all219 + skip, *wide329 = all329 + skip;
++    enum { NMAX = sizeof all_h / sizeof *all_h };
++    const int N = NMAX - skip;
+     const char *aspect = cfg_value("NX2NAVI_GAME_ASPECT");
+     int mw = 0, mh = 0, ww = 0, wh = 0;
+     int have_mon = gfx_window_monitor_size(&mw, &mh) && mw > 0 && mh > 0;
+     int have_win = sscanf(cfg_value("NX2NAVI_WINDOW_SIZE"), "%dx%d", &ww, &wh) == 2 && ww > 0 && wh > 0;
+     // the window's shape where the picture follows it: the monitor's in fullscreen, else the window's own
+     double shape = cfg_bool("NX2NAVI_FULLSCREEN") && have_mon ? (double)mw / mh : have_win ? (double)ww / wh : 16.0 / 9.0;
+-    static char sizes[N][24], names[N + 1][48];
+-    const char *pn[N + 1];
++    static char sizes[NMAX][24], names[NMAX + 1][48];
++    const char *pn[NMAX + 1];
+     for (int i = 0; i < N; i++) {
+         int w = !strcmp(aspect, "21:9") ? wide219[i] : !strcmp(aspect, "32:9") ? wide329[i] :
+                 !strcmp(aspect, "window") ? ((int)(heights[i] * shape + 0.5) & ~1) : wide169[i];
+diff --git a/runtime/widescreen.c b/runtime/widescreen.c
+index d418217..bae3e6d 100644
+--- a/runtime/widescreen.c
++++ b/runtime/widescreen.c
+@@ -70,8 +70,12 @@ static unsigned picture_height(void) {
+     int w = 0, h = GAME_H, min = PICTURE_MIN_H, max = 4320;
+     int own_min = lo && *lo && atoi(lo) >= 360;
+     if (!strcmp(s, "window")) {
+-        if (!screen_size(&w, &h)) h = GAME_H;
+-        else if (own_min && w * 9 < h * 16) h = w * 9 / 16;
++        if (!screen_size(&w, &h)) {   // the monitor is not known yet (gamescope's X display): with a minimum, the window setting
++            h = GAME_H;
++            if (own_min) gfx_cfg_window_size(&w, &h);
++            if (h <= 0) h = GAME_H;
++        }
++        if (own_min && w > 0 && w * 9 < h * 16) h = w * 9 / 16;
+         min = GAME_H;
+     } else {
+         h = atoi(s);
+-- 
+2.56.0
+

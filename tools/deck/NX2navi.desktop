@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=NX2navi
+Exec=/home/deck/nx2navi/play.sh
+Path=/home/deck/nx2navi
+Terminal=false
+Categories=Game;

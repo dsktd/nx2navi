@@ -713,3 +713,55 @@ without saves or hand-made recipes. The state travels as a **recipe v2** file (v
 - `.lab/rp.sh <exe> <tag>` replays `input-20261112-222948.txt` (its `profile-<ts>` bundle is picked automatically) with the play knobs, LAB_NODUMP, FRAME 13600; `.lab/rp-cmp.py <log>` (whole-run window means, % under 60/50), `.lab/rp-ts.py <cal log> <lab log> [step]` (side by side by world time). The replay IS the scenario: same scenes at the same world seconds, same draw load (binding checks/window 33.5k vs 32.0k), the Zora River load window matches (846 vs 843 files, 266 vs 266 textures).
 - Same exe texchurn, per 60-frame window: Cal 64.3 fps (76% of windows under 60, 26% under 50), replay 10.0 ms, GPU 10.7 ms; lab 87.9 fps (2% under 60, 0 under 50), replay 5.5 ms, GPU 8.0 ms. play50 lab 92.7. Standing windows (0 files, 0 uploads, Zora Domain t=25-55 s) show the same gap (Cal 53 fps, rep 10-11, gpu 10-13; lab 80-90, rep 4-6, gpu 7-8.5): it is not streaming, it is the host. Unpinned (0-31) = pinned (87.8 vs 87.9). Eight nice-19 CPU hogs on cores 0-7 take the lab to 74.4 fps (replay 6.7, 10% under 60): CPU contention costs, but does not reach his replay 10 ms or GPU 10.7 ms.
 - Lab differences left untested: lab display is headless sway 1920x1080 (no HDR10 surface: `hdr: the display offers no HDR10 format`, SDR decode at the present; Cal's swapchain is HDR10 format 64 on Niri at 240 Hz, game window lost focus at 22:32), the GPU is shared with the desktop compositor, his shader cache prewarmed 19.5k shaders (lab 3.3k). His GPU time is +2.7 ms for the same draws (replay parts 12.85 vs 9.83 ms in a standing window).
+
+### Steam Deck OLED (2026-11-13, #123; tools/deck/, Deck log ~deck/nx2navi/SYSTEM-CHANGES.md)
+All figures: entry as named, exe=nx2navi.play50 commit=15d14ce xlate=xlate-play33/e8d52df68016, Mesa 26.2.6 RADV VANGOGH
+(the Nix closure's, not SteamOS's 26.1.99), SteamOS 3.9.5 kernel 7.2.7-valve2, measured on the Deck itself.
+- **Deploy without Nix on the Deck.** `/nix` exists on SteamOS and belongs to deck: the 348 store paths of
+  `nix-store -qR` over the nixVulkanIntel wrapper and the `ldd` paths of the exe and `nx2navi_xlate` (2.8 GB) are copied
+  into `/nix/store` as they are. The exe has no rpath: `tools/deck/libs.sh` sets `LD_LIBRARY_PATH` from those paths
+  **without glibc** (glibc in it breaks the host's `setsid`; the loader path in the ELF is absolute). The exe's baked
+  ExeFS path is the build tree's (`extracted-rebase`): set `NX2NAVI_EXEFS` / `NX2NAVI_ROMFS`. play50 is `-march=x86-64-v3`
+  (build-linux.py default), which Zen 2 runs. Under Steam, `unset LD_PRELOAD LD_LIBRARY_PATH` first (Steam's runtime).
+- **Processes started over ssh die when the session closes** (logind): start runs as transient user units
+  (`tools/deck/bg.sh`, `systemd-run --user`). The runtime's play run writes `<pipeline cache>-play.bin`.
+- **The device profile acts** (`cfg.c` DECK, DMI product Galileo): fullscreen 1280x800, fifo, fps_limit 40, CORES 4,
+  ASTC as BC; `NX2NAVI_DEVICE_PROFILE=desktop` turns it off. `output_res` / `render_scale` do nothing for 1.1.1 ("no
+  output and scene patch sets"); the picture is `game_res` (widescreen.c: 1080 is the smallest, never narrower than 16:9,
+  so the Deck shows 1280x720 with bars) and the scene is `NX2NAVI_SCENE_SHARE` of it (res_fixed, after 120 presents).
+  With no settings the game draws 2560x1440 with a 1920x1080 scene and FSR shrinks it to 1280x720.
+- **Memory is the first wall, not speed.** Everything the GPU sees is system RAM (14.8 GiB) and counts against amdgpu's
+  cap: 1 GiB VRAM + GTT = `ttm.pages_limit` (8 GiB stock, Valve's `ttm.pages_min=2097152`). Past it the kernel logs
+  `amdgpu: Not enough memory for command submission`, the game ends with "GPU device was lost", and once (two launches
+  in a row under that pressure, 12:26) the kernel WARNed in `amdgpu_bo_gpu_offset` from Xwayland's submission and the
+  Deck locked up. What the game needs after a save load: guest pools 5.0 GiB as shadow copies (udmabuf limit 64 MB:
+  dma-bufs refused, `vk_memory.c` needs `size_limit_mb` >= 1024), or 5.4-7.0 GiB as dma-buf spans with
+  `NX2NAVI_DMABUF_MB=8` (7.2+ GiB with the default 64: a span covers the aligned range around its pools), plus
+  textures and targets 2.9 GiB at texture detail low. Shadow copies also cost the 5 GiB a second time in RAM
+  (MemAvailable 485 MiB in a field load); host-pointer imports (`NX2NAVI_DMABUF=0 NX2NAVI_SHADOW=0`) fit but run 6.8 fps.
+  With the limit at 12 GiB the automatic texture detail turns to full (budget 8781 MiB) and memory runs out again:
+  force `NX2NAVI_TEXTURE_DETAIL=low`. Working set (entry f4, field): 11.9 GiB GPU-visible, MemAvailable 411 MiB.
+- **System switches on the Deck** (`tools/deck/sys.sh`, root): udmabuf `size_limit_mb` 4096 (runtime value, kept by
+  /etc/tmpfiles.d/nx2navi.conf) and `ttm.pages_limit=3145728` (12 GiB; GRUB_CMDLINE_LINUX_DEFAULT + update-grub, reboot).
+  `vm.unprivileged_userfaultfd=0` is fine: the write watch opens its userfaultfd with UFFD_USER_MODE_ONLY (0 untracked).
+- **The desktop's full pipeline list must not be prewarmed in the game process**: without the pipeline library
+  (`RADV_DEBUG=nogpl`) the boot builds every recorded pipeline and keeps it: 18,568 whole pipelines took 16 min and
+  7.0 GiB private. Upstream's `tools/pipeline_list.py merge` folds recorded lists and `--prepare-pipelines` builds a
+  `seed-pipeline-keys.bin` once into the caches (also held until the process ends).
+  The merged list of every desktop folder (18 folders, 24,379 pipelines, 4,312 compute variants) is
+  `NX2navi/build/lists/pipeline-list-merged.bin` (game-derived: never in a repository).
+- **Game speed does not follow the frame rate** on this build: patch set `ostep` is on ("the game steps by the clock",
+  `frame_rate.c`: 5-frame average of the display interval, longest step 1/15 s), so 30 fps runs at the right speed and
+  only frames over 66.7 ms slow the game. The target on the Deck is therefore stable 30 (Cal, 2026-11-13).
+- **GPU time is mostly not fill** (single runs, play50, field mid standing): scene 1280x720 29.2 ms a frame, scene
+  768x432 22.9 ms: about 19 ms does not depend on the scene's size. `NX2NAVI_GPU_PASSES=1` (entry gp): 921 passes and
+  dispatches a frame; passes at scene size 13.0 ms (one geometry pass 4.9 ms with 0.38M fragments, vs e341f905 fs
+  6ee84266), compute 4.9 ms (froxel cs dbe3ccba 1.8, 67ebcf9b 0.9), gaps between passes 3.7 ms (barriers 1.1, target
+  clears 1.0), picture-size passes 0.25 ms.
+- **`texture_detail = auto` picks full on the Deck once the GPU limit is 12 GiB** and the game runs out of memory
+  (entry d1: 13.9 fps, MemAvailable 257 MiB). The profile default (0120) is low; an ini line overrides it.
+- **Cells must pin user-facing settings by environment**: the menu writes nx2navi.ini while a visible run is on
+  screen, and the next run reads it. `gfx_window_monitor_size` is unknown at start under gamescope (deck1 fell back
+  to 1440 -> clamped 1080); 0120 uses `window_size` then.
+- **First frame rate (ONE run, indicative):** Hyrule Field mid standing, picture 1080, scene 1280x720, uncapped:
+  19.4 fps, GPU 29.2 ms and replay 20.2 ms a frame (entry f4, system gtt 12 / udmabuf 4096 / epp balance_performance).

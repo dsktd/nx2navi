@@ -1,0 +1,4 @@
+#!/bin/sh
+# dk '<script>': run a bash script on the Deck as user deck (login tally, sudo -u deck; password from the file, never shown)
+P=$HOME/.config/gh/ssh/steamdeck-tally.pass
+{ cat $P; echo; printf '%s\n' "export HOME=/home/deck XDG_RUNTIME_DIR=/run/user/1000; cd /home/deck" "$1"; } | nix shell nixpkgs#openssh -c ssh -i $HOME/.config/gh/ssh/claude-steamdeck -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=10 -o UserKnownHostsFile=$HOME/claude/steamdeck-known_hosts tally@steamdeckoled.local "sudo -S -p '' -u ${DKUSER:-deck} bash -s"

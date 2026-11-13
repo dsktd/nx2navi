@@ -1,0 +1,6 @@
+#!/bin/sh
+# put <local file> <remote path>: write a small file on the Deck as deck, keeping the mode
+m=$(stat -c %a "$1"); $(dirname "$0")/dk "base64 -d > '$2' <<'B64'
+$(base64 "$1")
+B64
+chmod $m '$2'"

@@ -1,0 +1,3 @@
+#!/bin/sh
+# rk: the same as root
+DKUSER=root exec $(dirname "$0")/dk "$@"
