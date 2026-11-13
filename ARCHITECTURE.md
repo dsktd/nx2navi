@@ -170,6 +170,9 @@ GPU-visible NVN memory pools map onto Vulkan memory in one of two modes:
 
 On Linux, shadow storage is on (play log 16; `runtime/vk_memory.c:921-933`). Each CPU-visible pool gets its own host-visible buffer, kept in step both ways:
 
+Upstream PR #730 (9772002, not merged; our branch `dmabuf` = play48 + it, exe play49) replaces the shadow copies with dma-buf imports of a memfd-backed guest memory through `/dev/udmabuf` (`runtime/platform/linux.c`, `runtime/vk_memory.c` "dma-buf imports"; knobs `NX2NAVI_DMABUF`, `NX2NAVI_DMABUF_MB`). It falls back to shadow storage when `/dev/udmabuf` is missing or not read-write (log `mem: dma-buf imports off`). Host kernel has `CONFIG_UDMABUF=y`, `size_limit_mb` 2147483647; the lab container has no `/dev/udmabuf` (2026-11-12), so lab runs of play49 are still shadow storage.
+
+
 - **CPU to shadow:** before each submit, the written pages are copied into the shadow.
 - **GPU to guest:** after the fence, GPU writes are copied back, page by page, only where the bytes changed (our patches 0001, 0008, 0025).
 
