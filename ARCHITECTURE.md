@@ -31,6 +31,9 @@ shaders in romfs/exefs --prepare_shaders.py + nx2navi_xlate--> shader-cache/, pi
   - `build-linux.py` runs the kit's lift and glue writer, then compiles with Linux flags through Ninja and ccache (`~/claude/nx2navi/README.md`, "How the build works").
   - It also compiles `runtime-linux/frames.c`. This fixes two Linux platform gaps: setjmp/longjmp through lifted frames, and fiber stack alignment. Upstream since 2026-11 has both natively; `build-linux.py` drops frames.c for such a checkout (section 10, upstream rebase).
   - The window is SDL/Wayland, not Win32.
+  - A fresh worktree as `--src` lacks the gitignored generated headers: `runtime/*_spv.h` (tools/build_shaders.py),
+    `runtime/smaa_area_tex.h`, `runtime/smaa_search_tex.h` and `runtime/ui/roboto_ttf.h`; copy them from a built worktree
+    (rebase5, 2026-11-13: vk_aa.c failed on `smaa_area_tex.h`).
   - The glue is the same `modules.c` (`tools/make_game.py:386-388`): game version 111, a 9809 MiB application pool, NVN API 231.40.
 
 ## 3. Guest/host boundary
