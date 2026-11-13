@@ -1,0 +1,42 @@
+#!/bin/bash
+# stream-cell <exe> <tag> <reps> [KEY=VAL...]: streaming cell (2026-11-13). Cal's real-play drops (play-20261112-222948, async on)
+# are windows where the game reads hundreds of files and makes hundreds of textures; standing and scripted pans in one area make
+# none. This cell forces it: tools/scenarios/stream-zora.dbg boots at Zora's River and chains the game's own live warps
+# (NX2NAVI_DBG_TEST) Domain -> Fountain -> Hyrule Field (Zora River side) -> River -> Domain -> Fountain, GAP (900) ticks apart,
+# the right stick held throughout (camera turns), shader and pipeline caches warm (parity copies), texture pool cold per area.
+# Windows (default): chain 1200..2600 (the area loads: file reads), spin 2600..FRAME 5800 (Hyrule Field, camera turning: textures
+# uploaded/re-uploaded; the later warps of the chain do not fire after the Field one, so the spin is one standing-turn window): mean fps,
+# files read, textures uploaded/re-uploaded per 60 frames (tools/stream-sum). Old text: window LO..FRAME: mean fps, files read and textures made per 60 frames, and the same over the windows
+# that read >=300 files (tools/stream-sum). Cal's play knobs (async replay as his shell had it) + the arm's KEY=VAL last.
+# Ends at a present (LAB_NODUMP=1: no dump armed, so replay workers/early tail stay on). Moving-camera loads: indicative.
+# Stops (exit 9) when Cal's play log is < 3 min old. Out: .lab/stream-<tag>-<i>/run.log, a line per run in .lab/stream-<tag>.txt.
+R=$HOME/claude/nx2navi; P=$R/.lab/parity; B=$R/NX2navi/build/v111
+[ $# -ge 3 ] || { sed -n 2,11p "$0"; exit 2; }
+exe=$1 tag=$2 reps=$3; shift 3
+grep -q "^$exe	" $R/builds.tsv 2>/dev/null || { echo "no builds.tsv row for $exe"; exit 8; }
+$R/tools/store-build verify $exe || [ $? = 2 ] || exit 8
+frame=${FRAME:-5800} lo=${LO:-1200} mid=${MID:-2600}
+. $R/tools/cell-lib.sh
+SCENARIO_RECIPES=1 cell_scenario ${STREAM_SCENARIO:-stream-zora}
+[ -n "$w" ] || { echo "stream-cell: no scenario"; exit 2; }
+rec=$R/.lab/stream-rec.txt
+{ grep -v LSTICK $P/load-west.txt; echo "${PAN_FROM:-1500} RSTICK ${PAN_X:-32767} 0 $((frame - ${PAN_FROM:-1500}))"; } > $rec
+for i in $(seq 1 $reps); do
+  log=$(ls -t $B/logs/play-*.log | head -1)
+  [ $(( $(date +%s) - $(stat -c %Y $log) )) -lt 180 ] && { echo "CAL PLAYING"; exit 9; }
+  name=stream-$tag-$i
+  l0=$(cell_wait); cache=$(cell_cache $P/scR $P/pcR.bin)
+  echo "$name start load $(cut -d' ' -f1-3 /proc/loadavg)" >&2
+  (cd $R && LAB_NODUMP=1 LAB_EXE=nx2navi.$exe LAB_TIMEOUT=${LAB_TIMEOUT:-900} LAB_PROFILE_SRC=$LAB_PROFILE_SRC \
+    taskset -c ${LAB_CPUS:-$(taskset -cp $$ | cut -d: -f2 | tr -d " ")} tools/lab-run --warp "$w" $rec $frame $name \
+    NX2NAVI_ALIAS_EXTRA_MIB=512 NX2NAVI_ASYNC_GATE=1 NX2NAVI_ASYNC_HOLD=25a4c7f00:100 NX2NAVI_GPU_WAIT=0 \
+    NX2NAVI_MARK_CHORD=off NX2NAVI_NVIDIA=0 NX2NAVI_PIPE_SKIP=any NX2NAVI_POOL_IDLE_MS=8 NX2NAVI_REPLAY_ASYNC=1 \
+    NX2NAVI_SHADOW_BULK_WRITE=1 NX2NAVI_SHADOW_PRESYNC=1 NX2NAVI_SHADOW_TOUCH_LOCK=1 NX2NAVI_STALL_MS=100 \
+    NX2NAVI_TEX_DESC_STRICT=1 NX2NAVI_TEX_RELEASED_MB=3072 NX2NAVI_VK_RECORDER=1 NX2NAVI_TRACE=perf,present \
+    NX2NAVI_DBG_TEST="$rdbg" NX2NAVI_RUN_NAME=$name NX2NAVI_XLATE=$(cell_xlate $exe) NX2NAVI_SHADER_CACHE=$P/scR \
+    NX2NAVI_PIPELINE_CACHE=$P/pcR.bin "$@" > $R/.lab/$name.out 2>&1)
+  [ -f $R/.lab/$name/run.log ] || { echo "$name: no run.log: $(tail -1 $R/.lab/$name.out | cut -c1-120)"; continue; }
+  cell_note $name $cache "$rhash" $l0
+  echo "$name chain $(python3 -I $R/tools/stream-sum $R/.lab/$name/run.log $lo $mid | cut -d'|' -f1)"
+  echo "$name spin $(python3 -I $R/tools/stream-sum $R/.lab/$name/run.log $mid $frame | cut -d'|' -f1)"
+done | tee -a $R/.lab/stream-$tag.txt

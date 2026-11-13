@@ -1,0 +1,29 @@
+#!/usr/bin/env python3
+# stream-sum <run.log> [lo hi]: per perf window (60 frames) fps, game file reads (count), textures made (CPU-written + other),
+# re-uploaded, from the perf lines; with lo hi a mean over the windows ending in lo+60..hi (cell windows), else a table of
+# the windows with >=300 files (Cal's streaming drops: grotto camera turn 800-900 files, ~820 made, 49.7 fps).
+import re, sys
+s = open(sys.argv[1], errors="replace").read()
+W = {}
+def put(f, k, v): W.setdefault(int(f), {})[k] = v
+for m in re.finditer(r"perf: frame (\d+): interval avg ([\d.]+) ms.*?textures uploaded (\d+) re-uploaded (\d+)", s):
+    put(m[1], "fps", 1000 / float(m[2])); put(m[1], "up", int(m[3])); put(m[1], "reup", int(m[4]))
+for m in re.finditer(r"perf: frame (\d+): work in the window.*?file reads ([\d.]+) ms \((\d+),", s):
+    put(m[1], "files", int(m[3]))
+for m in re.finditer(r"perf: frame (\d+): (CPU-written|other) textures made (\d+)", s):
+    put(m[1], "made", W.get(int(m[1]), {}).get("made", 0) + int(m[3]))
+rows = sorted((f, w) for f, w in W.items() if "fps" in w)
+def line(f, w): return f"f{f} fps {w['fps']:.1f} files {w.get('files', 0)} made {w.get('made', 0)} up {w['up']} reup {w['reup']}"
+if len(sys.argv) > 3:
+    lo, hi = int(sys.argv[2]), int(sys.argv[3])
+    r = [w for f, w in rows if lo + 60 <= f <= hi]
+    n = len(r) or 1
+    sr = [w for w in r if w.get('files', 0) >= 300]
+    m = lambda k: sum(w.get(k, 0) for w in r) / n
+    print(f"windows {len(r)} fps {m('fps'):.1f} files/60 {m('files'):.0f} made/60 {m('made'):.0f} up/60 {m('up'):.0f} reup/60 {m('reup'):.0f}"
+          f" streaming(files>=300) {sum(1 for w in r if w.get('files', 0) >= 300)}"
+          f" | streaming windows: fps {sum(w['fps'] for w in sr) / (len(sr) or 1):.1f} files/60 {sum(w.get('files', 0) for w in sr) / (len(sr) or 1):.0f}"
+          f" made/60 {sum(w.get('made', 0) for w in sr) / (len(sr) or 1):.0f} | frames>25ms-windows(avg interval>25) {sum(1 for w in r if w['fps'] < 40)}")
+else:
+    for f, w in rows:
+        if w.get("files", 0) >= 300 and f > 300: print(line(f, w))

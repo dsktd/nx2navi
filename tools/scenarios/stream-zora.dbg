@@ -1,0 +1,15 @@
+# recipe v1
+# stream-zora: a teleport chain through Zora's River, Domain, Fountain and Hyrule Field's Zora River side, the areas of Cal's
+# session play-20261112-222948 (async on, 74% of windows under 60 fps; area loads there read 600-1500 files and made 200-1100
+# textures per 60 frames at 36-44 fps). Every teleport is the game's own change of area: its loader streams the area from
+# disk and the texture pool is cold for it; between loads the camera turns (tools/stream-cell holds the right stick).
+# tools/stream-cell boots it (save edit: Zora's River entrance) and tools/stream-sum reads files, textures made and fps per
+# 60 frames. Not a standing recipe: the loads ARE the measurement (the chain of 6 loads, 900 ticks apart).
+# base: .lab/scenarios/base-profile
+# warp: scene=ZoraRiver_Adult entrance=ZoraRiver_Entrance age=adult
+600:warp ZoraDomain_Adult ZoraDomain_FromZoraRiver
+1500:warp ZoraFountain_Adult ZoraFountain_FromZoraDomain
+2400:warp HyruleField_Adult HyruleField_FrontOfZoraRiver
+3300:warp ZoraRiver_Adult ZoraRiver_FromZoraDomain
+4200:warp ZoraDomain_Adult ZoraDomain_FromZoraRiver
+5100:warp ZoraFountain_Adult ZoraFountain_FromZoraDomain
