@@ -624,7 +624,7 @@ beyond 60 fps, and upstream's held-picture line; `--table` gives mean and min..m
 ## Switch 2 reference library (tools/ref)
 
 Short public-footage segments per area, to ask "does our picture look like the real one here". Frames, ORB features and
-comparisons live in `~/claude/nx2navi-ref/` (`REF_DIR`; PRIVATE, never committed: footage is Nintendo's). Git holds only
+comparisons live in `~/claude/nx2navi/refs/` (`REF_DIR`; PRIVATE, never committed: footage is Nintendo's). Git holds only
 `tools/ref` (wrapper: one `nix shell` with python+opencv+numpy+ffmpeg+yt-dlp), `tools/ref.py`, `tools/ref-areas.json`
 (area names, aliases, scene ids, search queries), `tools/ref-index.json` (URL + start second per segment) and
 `tools/ref-seed.txt`. Commands (`tools/ref` with no arguments prints them):

@@ -17,3 +17,4 @@ flatpak/*.flatpak
 REPORT-*.md
 tools/__pycache__/
 .lab-cache/
+refs/

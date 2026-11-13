@@ -14,7 +14,7 @@ Run it through `tools/ref` (the wrapper supplies python+opencv+ffmpeg+yt-dlp via
   ref seed <file>                    one `area url t=.. [len=..]` per line (# comments): run `add` for each
   ref sync                           re-fetch every segment of tools/ref-index.json that is missing locally
 
-Data (frames, features, comparisons) lives in $REF_DIR (default ~/claude/nx2navi-ref) and is PRIVATE: never committed.
+Data (frames, features, comparisons) lives in $REF_DIR (default ~/claude/nx2navi/refs) and is PRIVATE: never committed.
 Git holds only this tool, tools/ref-areas.json (names, scene ids, search queries) and tools/ref-index.json (URL + t).
 Gallery for `compare` output: $REF_GALLERY (default ~/claude/nx2navi/.lab/gallery).
 """
@@ -25,7 +25,7 @@ import cv2
 import numpy as np
 
 HERE = Path(__file__).resolve().parent
-REF_DIR = Path(os.environ.get('REF_DIR', Path.home() / 'claude/nx2navi-ref'))
+REF_DIR = Path(os.environ.get('REF_DIR', Path.home() / 'claude/nx2navi/refs'))
 GALLERY = Path(os.environ.get('REF_GALLERY', Path.home() / 'claude/nx2navi/.lab/gallery'))
 AREAS_JSON = HERE / 'ref-areas.json'
 INDEX_JSON = Path(os.environ.get('REF_INDEX', HERE / 'ref-index.json'))
