@@ -1,0 +1,275 @@
+From 44398f8f43e0aad6f141f24cde7839ba37cfd72b Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Thu, 12 Nov 2026 21:16:04 -0500
+Subject: [PATCH] NX2NAVI_ASYNC_HOLD: CPU writes to listed ranges reach the
+ VRAM mirror in submission order under async replay
+
+Ocarina zeroes its sky-SH block on the CPU right after submitting a frame's first submission, for the second one's
+sky pass to sum into; the first submission bakes every actor's light probe from that block. The async replay records
+it up to a frame later and the mirror took the zero at its first access, so actors lost their sky light (black at
+night where the moon does not reach them). The submit call now copies the listed ranges, the replay writes the words
+that changed since the previous submission into the mirror in the first part's prologue, and mirror_sync leaves the
+ranges out. Default empty: off.
+---
+ runtime/vk.h        |   7 ++
+ runtime/vk_memory.c | 155 ++++++++++++++++++++++++++++++++++++++++++--
+ runtime/vk_usnap.c  |   5 ++
+ 3 files changed, 163 insertions(+), 4 deletions(-)
+
+diff --git a/runtime/vk.h b/runtime/vk.h
+index 727d3bb..6fd3aaa 100644
+--- a/runtime/vk.h
++++ b/runtime/vk.h
+@@ -345,6 +345,13 @@ void vk_usnap_begin(const uint64_t *handles, int n, uint64_t fence);
+ // NX2NAVI_REPLAY_ASYNC: the submitting thread takes the copy before it queues the submission; vk_usnap_begin on the
+ // replay thread then uses it.
+ void vk_usnap_take(const uint64_t *handles, int n);
++// NX2NAVI_ASYNC_HOLD (vk_memory.c): ranges whose CPU writes reach the VRAM mirror in submission order under async
++// replay. vk_mem_hold_bytes: their total size, 0 when off; vk_mem_hold_take copies them at the submit call;
++// vk_mem_hold_begin, the replay at the submission's start, queues the words that changed for its first prologue.
++int vk_mem_hold_n(void);
++uint64_t vk_mem_hold_bytes(void);
++int vk_mem_hold_take(uint8_t *dst);   // 0: a range is not in a pool
++void vk_mem_hold_begin(const uint8_t *snap);
+ void vk_usnap_end(uint64_t fence);
+ int vk_usnap_find(uint64_t addr, uint64_t n, uint64_t align, VkDescriptorBufferInfo *out);
+ const uint8_t *vk_usnap_map(void);   // a host copy of the current arena, at the offsets vk_usnap_find gives
+diff --git a/runtime/vk_memory.c b/runtime/vk_memory.c
+index 8421b42..da81cb7 100644
+--- a/runtime/vk_memory.c
++++ b/runtime/vk_memory.c
+@@ -2886,6 +2886,145 @@ static void range_add(MRange **a, int *n, int *cap, PoolRec *r, uint64_t off, ui
+     (*a)[(*n)++] = (MRange){r, off, size};
+ }
+ 
++// NX2NAVI_ASYNC_HOLD=<addr>:<size>[,...] (hex; at most HOLD_MAX ranges of at most HOLD_BYTES in all; default empty =
++// off). With NX2NAVI_REPLAY_ASYNC the replay records a submission up to a frame after the game's submit call, and a VRAM
++// mirror takes the CPU's writes at the submission's first access (mirror_sync): the GPU then sees what the game wrote
++// after the submit. Ocarina zeroes its sky-SH block (0x25a4c7f00, 0x100 bytes) on the CPU after it submits a frame's
++// first submission, for the second one's sky pass to sum into; the first one bakes every actor's light probe from that
++// block (cs a783a757), and under async replay it read the zero: actors lost their sky light, black at night where
++// the moon does not reach them. For the listed ranges the mirror takes the CPU's writes in submission order instead:
++// the submit call copies them (vk_usnap_take -> vk_mem_hold_take), the replay compares that copy with the previous
++// submission's when it starts the submission (vk_usnap_begin -> vk_mem_hold_begin), and the words that changed go into
++// the mirror in the prologue of its first part (hold_record), before the write-back merge's base copies. mirror_sync
++// leaves the ranges out. Only with async replay; a range whose pool has no mirror is left as before.
++#define HOLD_MAX 4
++#define HOLD_BYTES 4096u
++static struct { uint64_t lo, hi; } hold[HOLD_MAX];
++static int nhold = -1;                 // -1: not read yet
++static uint64_t hold_total;
++typedef struct { PoolRec *r; uint64_t off; uint32_t size, at; } HoldUpd;
++static HoldUpd hq[HOLD_BYTES / 4];     // replay: words for the next prologue (runs of changed words)
++static uint8_t hq_data[HOLD_BYTES];
++static int nhq;
++static uint8_t hold_prev[HOLD_BYTES];  // replay: the previous submission's copy
++static int hold_prev_ok;
++static uint64_t hold_subs, hold_words, hold_nomirror;
++
++// The ranges, read once (the submitting thread asks first, at its first submit call); in address order.
++int vk_mem_hold_n(void) {
++    static PlatMutex lock = PLAT_MUTEX_INIT;
++    int got = __atomic_load_n(&nhold, __ATOMIC_ACQUIRE);
++    if (got >= 0) return got;
++    plat_mutex_lock(&lock);
++    if (nhold < 0) {
++        int n = 0;
++        const char *v = cfg_get("NX2NAVI_ASYNC_HOLD");
++        while (v && *v && n < HOLD_MAX) {
++            char *e;
++            uint64_t a = strtoull(v, &e, 16), sz = *e == ':' ? strtoull(e + 1, &e, 16) : 0;
++            if (sz && !(a & 3) && !(sz & 3) && hold_total + sz <= HOLD_BYTES && (!n || a >= hold[n - 1].hi))
++                hold[n++] = (typeof(hold[0])){a, a + sz}, hold_total += sz;
++            else
++                rt_log("mem: NX2NAVI_ASYNC_HOLD: '%s' left out (want <addr>:<size>, hex, 4-aligned, in address order, "
++                       "%u bytes in all)", v, HOLD_BYTES);
++            v = strchr(e, ',');
++            if (v) v++;
++        }
++        if (n && !gfx_replay_async()) {
++            rt_log("mem: NX2NAVI_ASYNC_HOLD is set but the replay is not asynchronous: off");
++            n = 0;
++        }
++        for (int i = 0; i < n; i++)
++            rt_log("mem: NX2NAVI_ASYNC_HOLD: CPU writes to %#llx+%#llx reach the VRAM mirror in submission order",
++                   (unsigned long long)hold[i].lo, (unsigned long long)(hold[i].hi - hold[i].lo));
++        __atomic_store_n(&nhold, n, __ATOMIC_RELEASE);
++    }
++    plat_mutex_unlock(&lock);
++    return nhold;
++}
++
++uint64_t vk_mem_hold_bytes(void) { return vk_mem_hold_n() ? hold_total : 0; }
++
++// The submitting thread, at the submit call: the ranges as the game left them, into dst (vk_mem_hold_bytes). 0: one
++// of them is not in a pool (yet): nothing to compare with.
++int vk_mem_hold_take(uint8_t *dst) {
++    for (int i = 0; i < nhold; i++) {
++        VkMemSpan sp;
++        if (!vk_mem_resolve(hold[i].lo, hold[i].hi - hold[i].lo, &sp) || !sp.pool) return 0;
++        memcpy(dst, (const void *)(uintptr_t)hold[i].lo, hold[i].hi - hold[i].lo);
++        dst += hold[i].hi - hold[i].lo;
++    }
++    return 1;
++}
++
++// Replay, at a submission's start: snap is its submit call's copy, NULL when none was taken (then the next one has
++// nothing to compare with). The words that changed since the previous copy are queued for the next prologue.
++void vk_mem_hold_begin(const uint8_t *snap) {
++    if (vk_mem_hold_n() <= 0) return;
++    if (!snap) {
++        hold_prev_ok = 0;
++        return;
++    }
++    if (hold_prev_ok) {
++        uint64_t at = 0;
++        for (int i = 0; i < nhold; i++) {
++            uint64_t n = hold[i].hi - hold[i].lo;
++            VkMemSpan sp;
++            PoolRec *r = vk_mem_lookup(hold[i].lo, n, &sp) ? sp.pool : NULL;
++            if (!r || r->mstate != MS_ON) {
++                hold_nomirror++;
++                at += n;
++                continue;
++            }
++            for (uint64_t w = 0; w < n; w += 4) {
++                if (!memcmp(snap + at + w, hold_prev + at + w, 4)) continue;
++                uint64_t off = hold[i].lo + w - r->import_lo;
++                HoldUpd *u = nhq ? &hq[nhq - 1] : NULL;
++                if (u && u->r == r && u->off + u->size == off && u->at + u->size == at + w) u->size += 4;
++                else if (nhq < (int)(sizeof hq / sizeof *hq)) hq[nhq++] = (HoldUpd){r, off, 4, (uint32_t)(at + w)};
++                else continue;
++                memcpy(hq_data + at + w, snap + at + w, 4);
++                hold_words++;
++            }
++            at += n;
++        }
++    }
++    static int told;
++    if (nhq && told < 4) {   // a sign of life in a log: the first submissions that brought words in
++        told++;
++        rt_log("mem: NX2NAVI_ASYNC_HOLD: submission %llu brings %d run(s) the CPU changed into the mirror, the first %u "
++               "bytes at %#llx", (unsigned long long)hold_subs, nhq, hq[0].size,
++               (unsigned long long)(hq[0].r->import_lo + hq[0].off));
++    }
++    memcpy(hold_prev, snap, hold_total);
++    hold_prev_ok = 1;
++    if (++hold_subs % 36000 == 0)
++        rt_log("mem: NX2NAVI_ASYNC_HOLD: %llu submissions, %llu words the CPU changed went in in submission order, %llu "
++               "submissions found a range without a mirror", (unsigned long long)hold_subs,
++               (unsigned long long)hold_words, (unsigned long long)hold_nomirror);
++}
++
++// Prologue: the queued words into the mirrors.
++static int hold_record(VkCommandBuffer cb) {
++    int n = 0;
++    for (int i = 0; i < nhq; i++)
++        if (hq[i].r->mstate == MS_ON && hq[i].r->mbuf)
++            vkCmdUpdateBuffer(cb, hq[i].r->mbuf, hq[i].off, hq[i].size, hq_data + hq[i].at), n++;
++    nhq = 0;
++    return n;
++}
++
++// mirror_sync's copy of the pool's [off, off + size) without the held ranges.
++static void pend_add(PoolRec *r, uint64_t off, uint64_t size) {
++    uint64_t a = r->import_lo + off, b = a + size;
++    for (int i = 0; i < nhold && a < b; i++) {
++        if (hold[i].hi <= a || hold[i].lo >= b) continue;
++        if (hold[i].lo > a) range_add(&pend, &npend, &cpend, r, a - r->import_lo, hold[i].lo - a);
++        a = hold[i].hi;
++    }
++    if (a < b) range_add(&pend, &npend, &cpend, r, a - r->import_lo, b - a);
++}
++
+ static int range_cmp(const void *x, const void *y) {
+     const MRange *a = x, *b = y;
+     if (a->r != b->r) return (uintptr_t)a->r < (uintptr_t)b->r ? -1 : 1;
+@@ -3242,7 +3381,7 @@ static void mirror_sync(PoolRec *r) {
+         if (!ch) continue;
+         for (uint64_t x = a; x < b; x += 1ull << GEN_PAGE_SHIFT)
+             if (ch[(x >> GEN_PAGE_SHIFT) & (GEN_PER_CHUNK - 1)] > since) {
+-                range_add(&pend, &npend, &cpend, r, x - lo, 1ull << GEN_PAGE_SHIFT), mrep.page_bytes += 1ull << GEN_PAGE_SHIFT;
++                pend_add(r, x - lo, 1ull << GEN_PAGE_SHIFT), mrep.page_bytes += 1ull << GEN_PAGE_SHIFT;
+                 r->st_pages += 1ull << GEN_PAGE_SHIFT, r->hot_bytes += 1ull << GEN_PAGE_SHIFT, r->hot_up += 1ull << GEN_PAGE_SHIFT;
+             }
+     }
+@@ -3266,7 +3405,7 @@ static void mirror_sync(PoolRec *r) {
+                 mrep.flush_skipped += b - a;
+                 continue;
+             }
+-            range_add(&pend, &npend, &cpend, r, a - lo, b - a);
++            pend_add(r, a - lo, b - a);
+             mrep.flush_n++, mrep.flush_bytes += b - a, r->st_flush += b - a;
+             if ((rt_trace & RT_TRACE_PERF) && b - a >= 16u << 20)
+                 rt_log("mem: mirror frame %llu: flush range %.1f MiB at +%.1f MiB of a %.1f MiB pool (%d ranges from %llu "
+@@ -4393,7 +4532,7 @@ void vk_mem_mirror_begin(void) {
+     slow_mem_call("mirror begin (its queries and freezes)", 0, ww_bytes - b0, q, qpc() - t0);
+ }
+ 
+-int vk_mem_mirror_pending(void) { return npend || snl_copied < nsnl; }
++int vk_mem_mirror_pending(void) { return npend || snl_copied < nsnl || nhq; }
+ 
+ // NX2NAVI_MIRROR_CAPTURE_KB: the pages the CPU wrote since a VRAM mirror's last sync are copied out of guest memory by
+ // the CPU when the part that needs them is handed to the queue, up to this many KiB a part, into a host buffer the
+@@ -4517,12 +4656,20 @@ static void mirror_capture(VkCommandBuffer cb) {
+ }
+ 
+ void vk_mem_mirror_prologue(VkCommandBuffer cb) {
+-    if (!npend && snl_copied == nsnl) return;
++    if (!npend && snl_copied == nsnl && !nhq) return;
+     mbarrier(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
+              VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT);
+     mirror_capture(cb);
+     if (npend) vk_mem_note_live();   // left to the GPU-time copy: the GPU reads guest memory late
+     copy_ranges(cb, pend, npend, 1, &mrep.upload_bytes, &mrep.upload_copies);
++    if (nhq) {   // NX2NAVI_ASYNC_HOLD: after the uploads (the first one of a mirror covers the ranges), before the
++                 // merge's base copies; an update buffer command is a clear, not a copy, for the barriers
++        if (npend) mbarrier(cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_CLEAR_BIT,
++                            VK_ACCESS_2_TRANSFER_WRITE_BIT);
++        if (hold_record(cb))
++            mbarrier(cb, VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
++                     VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
++    }
+     if (snl_copied < nsnl) {   // the snapshots read what the uploads above wrote
+         if (npend) mbarrier(cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
+                             VK_ACCESS_2_TRANSFER_READ_BIT);
+diff --git a/runtime/vk_usnap.c b/runtime/vk_usnap.c
+index 9507f05..521d45b 100644
+--- a/runtime/vk_usnap.c
++++ b/runtime/vk_usnap.c
+@@ -79,6 +79,7 @@ static PlatMutex gather_lock = PLAT_MUTEX_INIT;
+ typedef struct Taken {
+     struct Taken *next;
+     MotionOwnerSnapshot *owners;
++    uint8_t *held;                        // NX2NAVI_ASYNC_HOLD: its ranges at the submit call (vk_mem_hold_take)
+     Arena *arena;
+     Reg *reg;
+     int nreg, n;
+@@ -361,6 +362,8 @@ void vk_usnap_take(const uint64_t *handles, int n) {
+     Taken *t = calloc(1, sizeof *t);
+     if (!t) rt_fatal("vk_usnap: out of memory");
+     t->n = n, t->first = handles[0];
++    uint64_t hb = vk_mem_hold_bytes();
++    if (hb && (t->held = malloc(hb)) && !vk_mem_hold_take(t->held)) free(t->held), t->held = NULL;
+     if (motion_owner_enabled()) {
+         t->owners = malloc(sizeof *t->owners);
+         if (t->owners) motion_owner_capture(t->owners);
+@@ -401,6 +404,7 @@ void vk_usnap_take(const uint64_t *handles, int n) {
+ static void taken_free(Taken *t) {
+     if (t->arena) arena_done(t->arena);
+     free(t->owners);
++    free(t->held);
+     free(t->reg);
+     free(t);
+ }
+@@ -418,6 +422,7 @@ static int adopt(const uint64_t *handles, int n) {
+     if (t) tq_head = t->next;
+     if (!tq_head) tq_tail = NULL;
+     plat_mutex_unlock(&tq_lock);
++    vk_mem_hold_begin(t ? t->held : NULL);
+     if (!t) return 0;
+     U.refused += t->refused;
+     if (t->arena) {
+-- 
+2.56.0
+

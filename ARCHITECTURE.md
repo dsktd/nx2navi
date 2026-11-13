@@ -185,6 +185,40 @@ Two lifetime mechanisms keep graphics objects alive just long enough:
 - **Texture pins.** Recordings name immutable host copies of each texture initialisation. A copy is freed some submits after nothing reads it (`runtime/nvn_api_cmd.c:234-248`; play log: "6625 live, 6605 waiting").
 - **Released textures.** See "Texture cache" below.
 
+**Actor ambient and the sky-SH block (2026-11-12, play49 nx2navi.play49 f12f898, xlate-play33 e8d52df6; dumps f117977
+f145806 f151860 f157171 f161901, shots 117512/138103; SYMPTOMS "Actors black at night").** How actors are lit, from
+the rock fs `e99e29b92bdf88e6` (spirv-cross of `dump/f3781/sh_e99e29b92bdf88e6.spv`, cache keys 3386cff8/87c3b25c/855fbdc5):
+
+- Fragment storage buffers are pointers in c0: s1 = c0+0x510, s2 = c0+0x520, s3 = c0+0x530, s0 = c0+0x540, matching
+  the bound list 0..3 of the draw. s1 = 0x25ea76000 (cluster light lists, indexed by froxel from c3[148..151]), s2 =
+  0x25fe26040 (light records, 96 B, the point lights: Navi), s3 = the sky-SH block 0x25a4c7f00, s0 = 0x27ef0d000
+  (0xafc80 = 5000 per-object SH records of 144 B; record 0 stays zero).
+- Ambient = hemisphere term (c6[73]/c6[74] by normal.y) + record `c4[14].x` of s0 (L0..L2, read at `_155`) x AO
+  mask (tex 32318 .z/.w, pass 0201) x moon shadow, plus the env cube 751 term; the fog branch (`_434`, depth range
+  from the 4x4 rgba32f tex 876) scales it. Direct lights are summed separately (`_590..594`), which is why Navi still
+  lights a black rock.
+- `c4[14].x` comes from an inline uniform update in the command stream, so a dump's `ubo=` shows the memory value (0),
+  not the one the draw used (1407 for the rock, read by a hot-reload diagnostic). Do not trust dumped c4 for per-draw
+  indices.
+- The records are baked each frame by cs `a783a7570d45881f` (pass 0015, 8x128 threads, first submission) from the
+  probe data (0x1af9d5000 via the pointer table 0x1af9b6540) and the sky-SH block words 12-27 (0x25a4c7f30..f6c). The
+  game zeroes that block on the CPU each frame (writer `nx2navi.play49+0x22a64b9`, watch.req); cs `23e49873be2e1db2`
+  (pass 0097, 1x1x1 from the sky texture 742, second submission) fills it. GPU snapshots (`buf=0x25a4c7ec0:0x140`):
+  words 12-27 are 0 from frame start through pass 0015 and become non-zero only at 0097. So the bake never sees a sky
+  term in our replay; the rock's record held L0 ~0.05 at night and the ambient fell to the hemisphere fallback.
+- Cause, confirmed by Cal (2026-11-12, play49 with `NX2NAVI_REPLAY_ASYNC=0`, log play-20261112-204822: rocks and Link
+  stay lit at night): async replay timing. The game zeroes the block right after it submits the frame's first
+  submission (the sync replay records that submission inside the submit call, before the zero); the async replay
+  records it up to a frame later, and the VRAM mirror takes the CPU's writes at the submission's first access to the
+  pool (`vk_memory.c` `mirror_sync`), so the bake read the zero meant for the second submission's sky pass. Upstream
+  0533b30 turned async replay off because it "can show a dark or flickering frame now and then".
+- Fix 0114 `NX2NAVI_ASYNC_HOLD=<addr>:<size>[,...]` (default empty = off; async replay only; Ocarina:
+  `25a4c7f00:100`): for the listed ranges the mirror takes the CPU's writes in submission order. `vk_usnap_take` copies
+  them at the submit call (`vk_mem_hold_take`), `vk_usnap_begin` (adopt) hands the copy to `vk_mem_hold_begin`, which
+  queues the words that changed since the previous submission's copy; `vk_mem_mirror_prologue` writes them into the
+  mirror (`hold_record`, vkCmdUpdateBuffer) after the uploads and before the write-back merge's base copies, and
+  `mirror_sync` leaves the ranges out (`pend_add`). A range whose pool has no mirror is left as before.
+
 ### Texture cache (`runtime/vk_texture.c`)
 
 Bindless slots (`TexSlot`, 16 kinds x 32768) hold the game's NVN descriptors. An entry (`Tex`) is a Vulkan image keyed by descriptor (`TexKey`: address + format/size/target...), found by key (`by_key`) or by storage address (`by_addr`, chained by `next_at`).
