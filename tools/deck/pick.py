@@ -16,6 +16,7 @@ CHOICES = [
     ("upstream", "NX2navi upstream v0.10.1"),
 ]
 LAST = os.path.expanduser("~/nx2navi/pick.last")
+AUTO = os.path.expanduser("~/nx2navi/pick.auto")
 
 INIT_VIDEO, INIT_GAMEPAD = 0x20, 0x2000
 EV_QUIT, EV_KEY_DOWN, EV_PAD_DOWN, EV_PAD_ADDED = 0x100, 0x300, 0x651, 0x653  # 0x650 is axis motion
@@ -52,7 +53,7 @@ def load_sdl():
 def draw(sdl, ren, sel):
     w, h = C.c_int(), C.c_int()
     sdl.SDL_GetRenderOutputSize(ren, C.byref(w), C.byref(h))
-    scale = max(1, h.value // 200)  # the debug font is 8x8: about 25 lines a screen
+    scale = max(1, min(h.value // 200, w.value // (8 * 46)))  # the debug font is 8x8: 25 lines, the longest line fits
     sdl.SDL_SetRenderScale(ren, scale, scale)
     sdl.SDL_SetRenderDrawColor(ren, 12, 14, 20, 255)
     sdl.SDL_RenderClear(ren)
@@ -104,6 +105,14 @@ def main():
     ev = (C.c_uint8 * 128)()
     pick = None
     dirty, running, rounds = True, True, 0
+    # Test hook: ~/nx2navi/pick.auto holding a row number (1-based) is read once, deleted, and picks that row after
+    # about 2 s on screen, as if A were pressed there (lets a test start every entry through the real Steam launch).
+    auto = None
+    try:
+        auto = int(open(AUTO).read().strip()) - 1
+        os.unlink(AUTO)
+    except (OSError, ValueError):
+        pass
     # Poll, never block: the Deck's own pad sends thousands of axis and sensor events a second, so every event is
     # drained each round, unknown ones ignored, and the screen drawn once a round only after a change (a draw per
     # event made the queue grow behind vsync: the menu froze after a few presses).
@@ -121,6 +130,8 @@ def main():
             elif act == 1 and pick is None:
                 pick = keys[sel]
         rounds += 1
+        if auto is not None and rounds == 120 and 0 <= auto < len(keys):
+            sel, pick = auto, keys[auto]
         if dirty or rounds % 30 == 0:  # and twice a second, for a compositor that dropped a frame
             draw(sdl, ren, sel)
             dirty = False

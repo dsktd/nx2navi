@@ -824,7 +824,8 @@ All figures: entry as named, exe=nx2navi.play50 commit=15d14ce xlate=xlate-play3
 - **One Steam entry with a build picker (2026-11-14).** "NX2navi" (3816935193, Exe play.sh) runs `tools/deck/pick.py`
   first when Steam starts it (`SteamGameId` set, no cell.env): SDL3 from SteamOS through ctypes, SDL_RenderDebugText,
   slim2 / slim2 + NX2NAVI_STUTTER_MAP=1 / deck5 fallback (NX2NAVI_PLAY_ENV=play.env.deck5) / upstream; last pick in
-  pick.last. `NX2NAVI_PICK=<key> NX2NAVI_PICK_DRY=1` prints what a pick runs; `tools/deck/pick_test.py` feeds event structs.
+  pick.last; ~/nx2navi/pick.auto (row number, read once) picks a row after 2 s for tests through Steam.
+  `NX2NAVI_PICK=<key> NX2NAVI_PICK_DRY=1` prints what a pick runs; `tools/deck/pick_test.py` feeds event structs.
   The Deck's own pad sends thousands of axis/sensor events a second: a redraw per event froze the menu behind vsync;
   drain all events, draw once a round. Never test with uinput pads on the Deck: Steam adopts them as controllers (it
   wrote preferences_/configset_<vid-pid> files for them and showed them in Cal's session).
