@@ -767,6 +767,16 @@ All figures: entry as named, exe=nx2navi.play50 commit=15d14ce xlate=xlate-play3
 - **System switches on the Deck** (`tools/deck/sys.sh`, root): udmabuf `size_limit_mb` 4096 (runtime value, kept by
   /etc/tmpfiles.d/nx2navi.conf) and `ttm.pages_limit=3145728` (12 GiB; GRUB_CMDLINE_LINUX_DEFAULT + update-grub, reboot).
   `vm.unprivileged_userfaultfd=0` is fine: the write watch opens its userfaultfd with UFFD_USER_MODE_ONLY (0 untracked).
+- **Two Steam entries (2026-11-14).** "NX2navi (upstream)" (appid 2404835100) = clean upstream exe up101 (5ae55db,
+  `ocarina` b540e1be234d) in `~deck/nx2navi/upstream` via `tools/deck/play-upstream.sh` (no NX2NAVI_ settings; upstream's
+  example ini = defaults; profile copy). Built on the desktop with upstream's `tools/make_game.py --rebuild` in the flake
+  shell (same Nix glibc interpreter as ours, so it runs through `libs.sh`). Do not pass `--romfs build/extracted/v111/romfs`:
+  that folder is an earlier make_game output (romfs.bin + index.json) and gets packed again as a 2-file image; put the
+  real romfs/ into the out folder and use `--rebuild`. "NX2navi" (3816935193) = play.sh + play.env (deck5).
+  Upstream 0.10.1 reaches the title but **cannot load a save on the Deck**: with Cal's ini the GPU device is lost during
+  the load (3580 of 3664 MiB budget, 64 MiB dma-buf spans), with its defaults (device profile picks texture detail full
+  at the 12 GiB limit) MemAvailable falls under 100 MiB. Upstream has no memory clamp for the Deck. `tools/deck/ab-up.sh`
+  runs either entry at field-mid-standing (upstream needs `scn-stand-up.txt`: its boot is slower than scn-stand.txt).
 - **The desktop's full pipeline list must not be prewarmed in the game process**: without the pipeline library
   (`RADV_DEBUG=nogpl`) the boot builds every recorded pipeline and keeps it: 18,568 whole pipelines took 16 min and
   7.0 GiB private. Upstream's `tools/pipeline_list.py merge` folds recorded lists and `--prepare-pipelines` builds a
