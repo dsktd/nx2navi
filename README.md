@@ -916,6 +916,7 @@ for a build, 30 GB for an import.
   720 and 900 when the minimum is 720 or less (`ui/menu.cpp`), and the Steam Deck device profile (`cfg.c` DECK) gets
   `game_res = window`, `game_res_min = 720`, `game_res_max = 1080`, `texture_detail = low`. Verified on the Deck: boots
   and presents 1280x720 with a 960x540 scene; fps and memory A/B against 1080: see ARCHITECTURE "Steam Deck".
+- `0123-drop-dead-and-covered-patches.patch` (9 revert commits d2d2e64..701e7ce, `build` fast-forwarded 2026-11-14, old tip tag `archive/pre-slim`; exe `slim2`): reverts 0037 per-heap VRAM line (covered by upstream's memory report), 0020 OQ_FORCE/LOG_OQ (upstream oq_hold logs), 0098 POOL_LOAD_FIT, 0035 TRACE=nvn, 0071 find/poke.req, 0080 MENU_LIVE, 0047 AO_TRACE, 0022 TRACE=counters, 0118 SSBO_SNAPSHOT (all default off, findings recorded). -664 lines. Checked: capture A/B x3 interleaved, desktop play51 vs slim2 field-mid 39.8 -> 43.7 fps, f2663 34.8 -> 35.6; Deck deck5 vs slim2 field-mid 18.5 vs 18.6 fps, MemAvailable min 329-507 vs 486-590 MiB, no FATAL. Setting them now logs a harmless unknown key (runs/play50.sh, runs/ssnap.sh and tools/counter-sample still name them for their old exes).
 
 ## Steam Deck (2026-11-13, #123)
 

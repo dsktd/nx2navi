@@ -1,0 +1,1516 @@
+From 32feafcb08c0ea065fe724e8d06c0a127c070874 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Sat, 14 Nov 2026 10:22:34 -0500
+Subject: [PATCH 1/9] Revert "boot: find.req searches all mapped guest memory
+ for a string (UTF-8/UTF-16LE) on a detached thread into
+ logs/find-<present>.txt; poke.req writes bytes at a guest address only into
+ read-write pages that start with the expect= bytes, keep=1 writes them again
+ each present until clear (NX2NAVI_WATCH_REQ=1)"
+
+This reverts commit 235522a53ac05aa772a9765667acbb41bb8d3f65.
+---
+ runtime/boot.c | 245 +------------------------------------------------
+ 1 file changed, 2 insertions(+), 243 deletions(-)
+
+diff --git a/runtime/boot.c b/runtime/boot.c
+index 7a91704..26d58c4 100644
+--- a/runtime/boot.c
++++ b/runtime/boot.c
+@@ -10,7 +10,6 @@
+ //   nvnBootstrapLoader     main+0x346bf8c (+0xebcdec, +0xe7eb2c, +0xbe0360) in the graphics bring-up; logs the run
+ //                          statistics, exits 0
+ // With --seconds S the run continues past that call; rt_frame_presented ends it once the world clock passed S.
+-#include <ctype.h>
+ #include <stdio.h>
+ #ifndef _WIN32
+ #include <unistd.h>   // symlink (state_latest)
+@@ -449,264 +448,24 @@ static void peek_log(uint64_t n) {
+     }
+ }
+ 
+-// find.req and poke.req (with NX2NAVI_WATCH_REQ=1, debug): search and patch guest memory live, for strings the
+-// game shows (the player name). find.req holds the text (UTF-8), optionally after "enc=utf8 ", "enc=utf16 " or
+-// "enc=both " (the default: UTF-8 and UTF-16LE). A detached thread walks every guest region mem_query reports as
+-// mapped and accessible, reads only committed readable pages, one MiB at a time under mem_read_hold (so the game
+-// may not unmap a chunk while it is read, and waits at most that chunk), and writes every hit (at most 4096) with
+-// its region and 64 bytes around it as hex and text to logs/find-<present>.txt. One search at a time.
+-// poke.req holds lines `addr=0x<a> utf16="<s>"|utf8="<s>"|hex=<bytes> expect=<hex>|expect="<s>" [z=1] [keep=1]`:
+-// expect is required (a quoted one in the value's encoding, any length) and the bytes at addr must start with it; z=1 appends a NUL
+-// (two bytes for utf16). Only read-write committed guest pages are written (frozen ones are thawed first; module
+-// code and read-only data are refused). keep=1 writes the value again every present it differs, until a poke.req
+-// holding "clear". Each poke logs its bytes before and after.
+-enum { FIND_MAX = 4096, FIND_PAT = 256, FIND_CHUNK = 1 << 20, POKE_MAX = 512, KEEP_N = 8 };
+-typedef struct { uint8_t p[2][FIND_PAT]; int n[2]; uint64_t present; } FindJob;
+-static int find_busy;
+-
+-static int utf8_to_16(const char *s, size_t n, uint8_t *out, int cap) {
+-    int m = 0;
+-    for (size_t i = 0; i < n;) {
+-        uint32_t c = (uint8_t)s[i], k = c < 0x80 ? 0 : c < 0xe0 ? 1 : c < 0xf0 ? 2 : 3;
+-        c &= k ? 0x3f >> k : 0x7f;
+-        for (i++; k && i < n; k--, i++) c = c << 6 | ((uint8_t)s[i] & 0x3f);
+-        uint16_t u[2] = {(uint16_t)c};
+-        int w = 1;
+-        if (c >= 0x10000) c -= 0x10000, u[0] = (uint16_t)(0xd800 | c >> 10), u[1] = (uint16_t)(0xdc00 | (c & 0x3ff)), w = 2;
+-        for (int j = 0; j < w; j++) {
+-            if (m + 2 > cap) return -1;
+-            out[m++] = (uint8_t)u[j], out[m++] = (uint8_t)(u[j] >> 8);
+-        }
+-    }
+-    return m;
+-}
+-
+-static void find_hit(FILE *f, int *hits, uint64_t a, int enc, const RtMemoryInfo *r, uint64_t lo, uint64_t hi) {
+-    if (++*hits > FIND_MAX) return;
+-    uint64_t s = a - 16 < lo || a < 16 ? lo : a - 16, e = s + 64 > hi ? hi : s + 64;
+-    fprintf(f, "%#llx %s region %#llx+%#llx state %#x perm %u at %#llx:", (unsigned long long)a, enc ? "utf16" : "utf8",
+-            (unsigned long long)r->base, (unsigned long long)r->size, r->state, r->perm, (unsigned long long)s);
+-    for (uint64_t x = s; x < e; x++) fprintf(f, " %02x", *(const uint8_t *)(uintptr_t)x);
+-    fputs("  |", f);
+-    for (uint64_t x = s; x < e; x++) {
+-        uint8_t c = *(const uint8_t *)(uintptr_t)x;
+-        fputc(c >= 0x20 && c < 0x7f ? c : '.', f);
+-    }
+-    fputs("|\n", f);
+-}
+-
+-static void find_main(void *arg) {
+-    FindJob *j = arg;
+-    uint64_t t0 = plat_now_ns(), bytes = 0, chunks = 0, hold_max = 0;
+-    char name[64];
+-    snprintf(name, sizeof name, "logs/find-%05llu.txt", (unsigned long long)j->present);
+-    FILE *f = fopen(name, "w");
+-    int hits = 0, pmax = j->n[0] > j->n[1] ? j->n[0] : j->n[1];
+-    if (f) {
+-        for (uint64_t a = 0; a < RT_ADDRESS_LIMIT;) {
+-            RtMemoryInfo r;
+-            mem_query(a, &r);
+-            if (!r.size || r.base + r.size <= a) break;
+-            a = r.base + r.size;
+-            if (r.state == 0 || r.state == 0x10 || !(r.perm & 1)) continue;   // free, inaccessible, no read access
+-            for (uint64_t p = r.base, end; p < r.base + r.size; p = end) {
+-                int st = plat_mem_state(p, r.base + r.size, &end);
+-                if (st != PLAT_PROT_READ && st != PLAT_PROT_RW) continue;
+-                for (uint64_t c = p; c < end; c += FIND_CHUNK) {
+-                    uint64_t ce = c + FIND_CHUNK + (uint64_t)pmax - 1 < end ? c + FIND_CHUNK + (uint64_t)pmax - 1 : end;
+-                    uint64_t h0 = plat_now_ns();
+-                    if (!mem_read_hold(c, ce - c)) continue;
+-                    const uint8_t *b = (const uint8_t *)(uintptr_t)c;
+-                    uint64_t lim = ce - c, starts = lim < FIND_CHUNK ? lim : FIND_CHUNK;
+-                    for (int e = 0; e < 2; e++) {
+-                        int n = j->n[e];
+-                        if (!n) continue;
+-                        for (uint64_t i = 0; i < starts && i + (uint64_t)n <= lim; i++) {
+-                            const uint8_t *q = memchr(b + i, j->p[e][0], starts - i);
+-                            if (!q) break;
+-                            i = (uint64_t)(q - b);
+-                            if (i + (uint64_t)n <= lim && !memcmp(q, j->p[e], (size_t)n)) find_hit(f, &hits, c + i, e, &r, c, ce);
+-                        }
+-                    }
+-                    mem_read_release();
+-                    uint64_t h = plat_now_ns() - h0;
+-                    if (h > hold_max) hold_max = h;
+-                    bytes += starts, chunks++;
+-                }
+-            }
+-        }
+-        if (hits > FIND_MAX) fprintf(f, "%d more hits not listed\n", hits - FIND_MAX);
+-        fclose(f);
+-    }
+-    rt_log("find: %d hits in %llu MiB of guest memory (%llu chunks, longest hold %.2f ms) in %.1f ms to %s (find.req, "
+-           "present %llu)", hits, (unsigned long long)(bytes >> 20), (unsigned long long)chunks, hold_max / 1e6,
+-           (plat_now_ns() - t0) / 1e6, f ? name : "(cannot write)", (unsigned long long)j->present);
+-    free(j);
+-    __atomic_store_n(&find_busy, 0, __ATOMIC_RELEASE);
+-}
+-
+-static void find_request(char *t, uint64_t present) {
+-    size_t n = strlen(t);
+-    while (n && (t[n - 1] == '\n' || t[n - 1] == '\r')) t[--n] = 0;
+-    int enc = 3;
+-    if (!strncmp(t, "enc=utf8 ", 9)) enc = 1, t += 9;
+-    else if (!strncmp(t, "enc=utf16 ", 10)) enc = 2, t += 10;
+-    else if (!strncmp(t, "enc=both ", 9)) t += 9;
+-    n = strlen(t);
+-    if (!n || n > FIND_PAT / 2) {
+-        rt_log("find: the text must hold 1 to %d bytes: ignored (find.req)", FIND_PAT / 2);
+-        return;
+-    }
+-    if (__atomic_exchange_n(&find_busy, 1, __ATOMIC_ACQ_REL)) {
+-        rt_log("find: a search still runs: ignored (find.req)");
+-        return;
+-    }
+-    FindJob *j = calloc(1, sizeof *j);
+-    if (!j) {
+-        __atomic_store_n(&find_busy, 0, __ATOMIC_RELEASE);
+-        return;
+-    }
+-    j->present = present;
+-    if (enc & 1) memcpy(j->p[0], t, n), j->n[0] = (int)n;
+-    if (enc & 2) j->n[1] = utf8_to_16(t, n, j->p[1], FIND_PAT);
+-    if (j->n[1] < 0) j->n[1] = 0;
+-    rt_log("find: searching guest memory for '%s' (%s%s, present %llu, find.req)", t, enc & 1 ? "utf8 " : "",
+-           enc & 2 ? "utf16" : "", (unsigned long long)present);
+-    if (!plat_thread_spawn(find_main, j, "find", 0)) find_main(j);
+-}
+-
+-typedef struct { uint64_t a; int n, applied; uint8_t v[POKE_MAX]; } Keep;
+-static Keep keeps[KEEP_N];
+-
+-static int hex_bytes(const char *s, uint8_t *out, int cap) {
+-    int m = 0;
+-    for (;;) {
+-        while (*s == ' ' || *s == ',') s++;
+-        if (!isxdigit((unsigned char)s[0]) || !isxdigit((unsigned char)s[1])) return m;
+-        if (m == cap) return -1;
+-        char h[3] = {s[0], s[1], 0};
+-        out[m++] = (uint8_t)strtoul(h, NULL, 16), s += 2;
+-    }
+-}
+-
+-// The bytes of a value: "..." quoted text (utf16: UTF-16LE) or hex pairs; -1 malformed or too long.
+-static int poke_value(const char *s, int utf16, uint8_t *out, int cap) {
+-    if (*s != '"') return hex_bytes(s, out, cap);
+-    const char *e = strchr(s + 1, '"');
+-    if (!e) return -1;
+-    if (utf16) return utf8_to_16(s + 1, (size_t)(e - s - 1), out, cap);
+-    if (e - s - 1 > cap) return -1;
+-    memcpy(out, s + 1, (size_t)(e - s - 1));
+-    return (int)(e - s - 1);
+-}
+-
+-static void hex_line(char *out, size_t cap, const uint8_t *b, int n) {
+-    size_t m = 0;
+-    out[0] = 0;
+-    for (int i = 0; i < n && m + 4 < cap; i++) m += (size_t)snprintf(out + m, cap - m, "%02x", b[i]);
+-}
+-
+-// Writes v at a when every page is committed read-write (thawing frozen ones) and, with expect, the en bytes at a
+-// equal it (en may differ from n): 1 written, 0 refused (why logged unless quiet), 2 unchanged (already the value).
+-static int poke_write(uint64_t a, const uint8_t *v, int n, const uint8_t *expect, int en, int quiet) {
+-    uint64_t span = (uint64_t)(expect && en > n ? en : n);
+-    if (!mem_readable(a, span)) return quiet ? 0 : (rt_log("poke: %#llx+%llu is not mapped guest memory: refused", (unsigned long long)a, (unsigned long long)span), 0);
+-    mem_thaw(a, (uint64_t)n);
+-    if (!mem_read_hold(a, span)) return 0;
+-    int ok = 1;
+-    for (uint64_t p = a & ~0xfffull, end; p < a + (uint64_t)n; p = end)
+-        if (plat_mem_state(p, a + (uint64_t)n, &end) != PLAT_PROT_RW) ok = 0;
+-    uint8_t *g = (uint8_t *)(uintptr_t)a;
+-    int r = !ok ? 0 : !memcmp(g, v, (size_t)n) ? 2 : expect && memcmp(g, expect, (size_t)en) ? -1 : 1;
+-    char before[POKE_MAX * 2 + 1], after[POKE_MAX * 2 + 1];
+-    if (!quiet) hex_line(before, sizeof before, g, n);
+-    if (r == 1) memcpy(g, v, (size_t)n);
+-    if (!quiet) hex_line(after, sizeof after, g, n);
+-    mem_read_release();
+-    if (!quiet) {
+-        if (!ok) rt_log("poke: %#llx+%d is not read-write (code, read-only data or a traced page): refused", (unsigned long long)a, n);
+-        else if (r < 0) rt_log("poke: %#llx holds %s, not the expected bytes: refused", (unsigned long long)a, before);
+-        else rt_log("poke: %#llx before %s after %s%s", (unsigned long long)a, before, after, r == 2 ? " (already)" : "");
+-    }
+-    return r < 0 ? 0 : r;
+-}
+-
+-static void poke_line(char *l, uint64_t present) {
+-    char *at = strstr(l, "addr="), *u16 = strstr(l, "utf16="), *u8 = strstr(l, "utf8="), *hx = strstr(l, "hex="),
+-         *ex = strstr(l, "expect=");
+-    int keep = strstr(l, "keep=1") != NULL, z = strstr(l, "z=1") != NULL;
+-    static uint8_t v[POKE_MAX], e[POKE_MAX];
+-    int n = u16 ? poke_value(u16 + 6, 1, v, POKE_MAX - 2) : u8 ? poke_value(u8 + 5, 0, v, POKE_MAX - 2)
+-                : hx ? hex_bytes(hx + 4, v, POKE_MAX - 2) : -1;
+-    int en = ex ? poke_value(ex + 7, u16 != NULL, e, POKE_MAX) : -1;
+-    if (!at || n <= 0 || en <= 0) {
+-        rt_log("poke: '%s' needs addr=, one of utf16= utf8= hex= and expect=: ignored (poke.req)", l);
+-        return;
+-    }
+-    if (z) { v[n++] = 0; if (u16) v[n++] = 0; }
+-    uint64_t a = strtoull(at + 5, NULL, 16);
+-    rt_log("poke: %#llx+%d%s (poke.req, present %llu)", (unsigned long long)a, n, keep ? " keep" : "", (unsigned long long)present);
+-    if (!poke_write(a, v, n, e, en, 0) || !keep) return;
+-    for (int i = 0; i < KEEP_N; i++)
+-        if (!keeps[i].n || keeps[i].a == a) {
+-            keeps[i] = (Keep){a, n, 0}, memcpy(keeps[i].v, v, (size_t)n);
+-            return;
+-        }
+-    rt_log("poke: all %d keep slots are taken: %#llx is written once only", KEEP_N, (unsigned long long)a);
+-}
+-
+-static void poke_request(char *t, uint64_t present) {
+-    if (!strncmp(t, "clear", 5)) {
+-        for (int i = 0; i < KEEP_N; i++)
+-            if (keeps[i].n) rt_log("poke: keep %#llx cleared after %d writes again", (unsigned long long)keeps[i].a, keeps[i].applied);
+-        memset(keeps, 0, sizeof keeps);
+-        return;
+-    }
+-    for (char *l = strtok(t, "\n"); l; l = strtok(NULL, "\n")) poke_line(l, present);
+-}
+-
+-static void keep_apply(void) {
+-    for (int i = 0; i < KEEP_N; i++) {
+-        Keep *k = &keeps[i];
+-        if (k->n && poke_write(k->a, k->v, k->n, NULL, 0, 1) == 1 && !k->applied++)
+-            rt_log("poke: the game rewrote %#llx: keep writes it again", (unsigned long long)k->a);
+-    }
+-}
+-
+ static void watch_req_poll(uint64_t n) {
+     static int init;
+-    static char wreq[PLAT_PATH_MAX], preq[PLAT_PATH_MAX], breq[PLAT_PATH_MAX], kreq[PLAT_PATH_MAX], freq[PLAT_PATH_MAX],
+-        oreq[PLAT_PATH_MAX];
++    static char wreq[PLAT_PATH_MAX], preq[PLAT_PATH_MAX], breq[PLAT_PATH_MAX], kreq[PLAT_PATH_MAX];
+     if (!init) {
+         init = 1;
+         const char *v = cfg_get("NX2NAVI_WATCH_REQ");
+         if (!v || atoi(v) != 1 || !gfx_shader_beside_cache("watch.req", wreq, sizeof wreq) ||
+             !gfx_shader_beside_cache("peek.req", preq, sizeof preq) || !gfx_shader_beside_cache("buf.req", breq, sizeof breq) ||
+-            !gfx_shader_beside_cache("pick.req", kreq, sizeof kreq) || !gfx_shader_beside_cache("find.req", freq, sizeof freq) ||
+-            !gfx_shader_beside_cache("poke.req", oreq, sizeof oreq))
++            !gfx_shader_beside_cache("pick.req", kreq, sizeof kreq))
+             wreq[0] = 0;
+         else
+             rt_log("watch-req: polling %s, %s and %s (NX2NAVI_WATCH_REQ)", wreq, preq, breq);
+     }
+     if (!wreq[0]) return;
+     peek_log(n);
+-    keep_apply();
+     if (n % 4) return;
+     uint64_t sz;
+     uint8_t *b;
+-    for (int r = 0; r < 2; r++) {
+-        const char *path = r ? oreq : freq;
+-        if (!plat_file_exists(path) || !(b = plat_file_read(path, &sz))) continue;
+-        plat_file_delete(path);
+-        char *t = malloc(sz + 1);
+-        if (t) {
+-            memcpy(t, b, sz), t[sz] = 0;
+-            if (r) poke_request(t, n);
+-            else find_request(t, n);
+-            free(t);
+-        }
+-        free(b);
+-    }
+     if (plat_file_exists(wreq) && (b = plat_file_read(wreq, &sz))) {
+         plat_file_delete(wreq);
+         char t[128];
+-- 
+2.56.0
+
+
+From dc7d8366ed519d9b87e83b7a79d56bde070726c8 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Sat, 14 Nov 2026 10:22:34 -0500
+Subject: [PATCH 2/9] Revert "NX2NAVI_TRACE=nvn: each guest thread's time per
+ host function and SVC, guest code as the rest, every 600 presents (#132)"
+
+This reverts commit e9f331b05dab8e88dae50e87beeb099a4d37790a.
+---
+ runtime/host.h   |   8 +--
+ runtime/hostfn.c | 171 +----------------------------------------------
+ runtime/kernel.c |   2 -
+ runtime/main.c   |   4 +-
+ runtime/svc.c    |  11 ---
+ 5 files changed, 5 insertions(+), 191 deletions(-)
+
+diff --git a/runtime/host.h b/runtime/host.h
+index fc898a4..f9176ac 100644
+--- a/runtime/host.h
++++ b/runtime/host.h
+@@ -31,9 +31,8 @@ const char *rt_log_path(void);                  // the log file, NULL when this
+ void rt_log_sync(void);                         // writes the queued log lines now; later lines are written as they are made
+ enum { RT_TRACE_SVC = 1, RT_TRACE_HOSTCALL = 2, RT_TRACE_IPC = 4, RT_TRACE_FS = 8, RT_TRACE_GFX = 16, RT_TRACE_PERF = 32,
+        RT_TRACE_SCHED = 64, RT_TRACE_AUDIO = 128, RT_TRACE_PRESENT = 256,
+-       RT_TRACE_COUNTERS = 1024,   // counters: a present/clock line per 60 presents and every voice start (#128 lab)
+-       RT_TRACE_NVN = 2048 };   // nvn: each guest thread's time per host function and SVC, every 600 presents (hostfn.c, #132)
+-extern unsigned rt_trace;                       // from NX2NAVI_TRACE=svc,host,ipc,fs,gfx,perf,sched,audio,present,counters,nvn (or all)
++       RT_TRACE_COUNTERS = 1024 };   // counters: a present/clock line per 60 presents and every voice start (#128 lab)
++extern unsigned rt_trace;                       // from NX2NAVI_TRACE=svc,host,ipc,fs,gfx,perf,sched,audio,present,counters (or all)
+ // prof_win.c: NX2NAVI_PROFILE=<path> sampling profiler; NX2NAVI_TRACE=perf frame timing (waits of the render thread)
+ // PERF_TEX: texture uploads on the render thread (deswizzle, decode, staging), PERF_ASTC included
+ enum { PERF_PACE, PERF_FENCE, PERF_DRAIN, PERF_PIPE, PERF_XLATE, PERF_TEX, PERF_ASTC, PERF_N };
+@@ -180,8 +179,6 @@ const char *hostfn_name(uint64_t addr);                    // name registered at
+ void hostfn_seal(void);                                    // build the dispatch table (rt_dispatch_init over every
+                                                            // linked module); idempotent; registration ends here
+ uint64_t hostfn_calls(void);                               // host-function calls so far, all threads
+-uint64_t hostfn_acct_begin(int i, uint64_t *save);         // NX2NAVI_TRACE=nvn: a timed call starts; hostfn_acct_end(slot or
+-void hostfn_acct_end(int i, uint64_t t0, uint64_t save);   // -1 - svc, begin's result, save) books it for the thread
+ void hostfn_report(void);                                  // call count per host function to stderr, busiest first
+ int hostfn_table_size(int observers);                      // linked HOST_OVERRIDE (0) / HOST_OBSERVER (1) entries
+ const char *hostfn_table_name(int observers, int i);       // symbol of linked entry i, NULL past the end
+@@ -340,7 +337,6 @@ void kern_signal_system_event(uint64_t ev);                // any thread
+ void kern_clear_system_event(uint64_t ev);                 // any thread; a bound, live event only
+ int kern_svc(Cpu *c, uint32_t imm);                        // thread/sync SVCs; 1 if handled
+ uint64_t kern_now_ns(void);
+-uint32_t kern_cur_handle(void);                            // the calling guest thread's handle, 0 on a host thread
+ extern uint64_t rt_guest_start_ns;   // kern_now_ns when the guest started (boot.c), 0 before
+ typedef struct { uint64_t svcs, threads, host_calls; } RtStats;
+ RtStats rt_stats(void);                                    // host_calls: hostfn_calls()
+diff --git a/runtime/hostfn.c b/runtime/hostfn.c
+index c649e3b..d5ba2b2 100644
+--- a/runtime/hostfn.c
++++ b/runtime/hostfn.c
+@@ -10,7 +10,6 @@
+ #include <string.h>
+ 
+ #include "host.h"
+-#include "platform/platform.h"
+ 
+ #define MAX_HOSTFN 4096   // dispatch.c holds HOST_CAP / 2 host functions
+ #define MAX_ADDED 64
+@@ -38,7 +37,6 @@ typedef struct {
+     uint64_t original;   // observers: the guest definition rt_original calls
+     uint64_t calls;
+     int blocking;        // runs with the virtual core given up (hostfn_blocking)
+-    int fiber;           // switches fibers: not timed (NX2NAVI_TRACE=nvn)
+ } Slot;
+ static Slot slots[MAX_HOSTFN];
+ static int nslots;
+@@ -96,8 +94,7 @@ uint64_t hostfn_register(const char *name, GuestFn fn) {
+     if (nslots == MAX_HOSTFN) rt_fatal("hostfn_register: more than %d host functions", MAX_HOSTFN);
+     uint64_t a = slot_addr(nslots);
+     if (a >= RT_RET_HOST) rt_fatal("hostfn_register: host-function window full");
+-    slots[nslots] = (Slot){.name = name, .fn = fn, .blocking = !strncmp(name, "_ZN2nn2fs", 9),
+-                           .fiber = strstr(name, "Fiber") != NULL};
++    slots[nslots] = (Slot){.name = name, .fn = fn, .blocking = !strncmp(name, "_ZN2nn2fs", 9)};
+     rt_register_host(a, hostfn_entry);
+     nslots++;
+     return a;
+@@ -151,176 +148,10 @@ __attribute__((noinline)) static void hostfn_blocking(Cpu *c, GuestFn fn) {
+     kern_core_back(&away);
+ }
+ 
+-// ---- NX2NAVI_TRACE=nvn (#132): where the guest threads' frame goes, without a sampler
+-// Every host function call and SVC is timed (rdtsc) into a table of its thread, exclusive of the host calls and SVCs
+-// made inside it. Every 600 presents the presenting thread logs, for itself and the busiest other threads, per frame:
+-// the time in host functions, in SVCs (the waits: 0x34 WaitForAddress, 0x18 WaitSynchronization, 0x1a/0x1c locks and
+-// condition variables, 0xb sleep) and the rest, which is lifted guest code (plus waits for a virtual core outside a
+-// call: NX2NAVI_TRACE=sched has those), and the entries that took the most time: 15 for the thread with the most guest
+-// code, 6 for the others. The blocking calls (present and its pacing, queue and sync waits, pool map and
+-// flush, nn::fs) are entries like any other. The thread handles are those of the sched trace. Fiber switches are not
+-// timed: the call returns when the fiber is resumed, possibly on another thread. Off, the cost is one branch per call.
+-#define ACCT_SVC 256
+-#define ACCT_N (MAX_HOSTFN + ACCT_SVC)
+-#define ACCT_THREADS 256
+-#define ACCT_DEPTH 16
+-typedef struct { uint64_t calls, ticks; } Acct;
+-typedef struct {
+-    Acct a[ACCT_N], prev[ACCT_N];   // since the start; as of the last report (the reporting thread's)
+-    uint64_t child;                 // ticks of the timed calls inside the one running
+-    // the running calls, innermost last: start, entry, and the ticks of it a report already booked (a wait that runs
+-    // through a report: the thread's root is often a host function that never returns, so the innermost one counts)
+-    struct { uint64_t t0, credit; int i; } open[ACCT_DEPTH];
+-    int32_t depth;
+-    uint64_t presents;
+-    uint32_t handle;
+-} AcctThread;
+-static _Thread_local AcctThread *acct_t;
+-static AcctThread *acct_all[ACCT_THREADS];
+-static int32_t acct_n;
+-static uint64_t acct_tsc, acct_ns;   // the last report
+-
+-__attribute__((noinline)) static AcctThread *acct_thread(void) {   // noinline: read again after a call
+-    AcctThread *t = acct_t;
+-    if (!t) {
+-        if (!(t = acct_t = calloc(1, sizeof *t))) rt_fatal("hostfn: out of memory (NX2NAVI_TRACE=nvn)");
+-        t->handle = kern_cur_handle();
+-        int i = __atomic_fetch_add(&acct_n, 1, __ATOMIC_RELAXED);
+-        if (i < ACCT_THREADS) __atomic_store_n(&acct_all[i], t, __ATOMIC_RELEASE);
+-    }
+-    return t;
+-}
+-
+-// i: a host function slot, or -1 - n for SVC n.
+-uint64_t hostfn_acct_begin(int i, uint64_t *save) {
+-    AcctThread *t = acct_thread();
+-    *save = t->child, t->child = 0;
+-    uint64_t now = __builtin_ia32_rdtsc();
+-    int d = t->depth;
+-    if (d < ACCT_DEPTH) t->open[d].t0 = now, t->open[d].credit = 0, t->open[d].i = i < 0 ? MAX_HOSTFN + (-1 - i) : i;
+-    __atomic_store_n(&t->depth, d + 1, __ATOMIC_RELEASE);
+-    return now;
+-}
+-
+-void hostfn_acct_end(int i, uint64_t t0, uint64_t save) {
+-    AcctThread *t = acct_thread();
+-    uint64_t dt = __builtin_ia32_rdtsc() - t0, own = dt > t->child ? dt - t->child : 0;
+-    int d = t->depth - 1;
+-    __atomic_store_n(&t->depth, d, __ATOMIC_RELEASE);
+-    if (d < ACCT_DEPTH) {   // what a report booked while it ran
+-        uint64_t c = __atomic_load_n(&t->open[d].credit, __ATOMIC_RELAXED);
+-        own = own > c ? own - c : 0;
+-    }
+-    Acct *a = &t->a[i < 0 ? MAX_HOSTFN + (-1 - i) : i];
+-    a->calls++, a->ticks += own;
+-    t->child = save + dt;
+-}
+-
+-static int acct_by_ticks(const void *x, const void *y) {
+-    uint64_t a = *(const uint64_t *)x, b = *(const uint64_t *)y;   // {ticks, index}
+-    return a < b ? 1 : -(a > b);
+-}
+-
+-static void acct_report(AcctThread *self) {
+-    static PlatMutex lock = PLAT_MUTEX_INIT;
+-    static uint64_t order[ACCT_N][2], busy[ACCT_THREADS][2];
+-    static Acct d[ACCT_N];
+-    plat_mutex_lock(&lock);
+-    uint64_t now = __builtin_ia32_rdtsc(), ns = plat_now_ns();
+-    if (!acct_tsc) {   // the first window has no start: only the snapshots
+-        int n = __atomic_load_n(&acct_n, __ATOMIC_RELAXED);
+-        for (int i = 0; i < n && i < ACCT_THREADS; i++)
+-            if (acct_all[i]) memcpy(acct_all[i]->prev, acct_all[i]->a, sizeof acct_all[i]->a);
+-        acct_tsc = now, acct_ns = ns;
+-        plat_mutex_unlock(&lock);
+-        return;
+-    }
+-    uint64_t span = now - acct_tsc;
+-    double k = (double)(ns - acct_ns) / (double)span / 600e6;   // ticks -> ms per frame
+-    int n = __atomic_load_n(&acct_n, __ATOMIC_RELAXED), nb = 0;
+-    if (n > ACCT_THREADS) n = ACCT_THREADS;
+-    for (int i = 0; i < n; i++) {   // threads by their guest code time
+-        AcctThread *t = __atomic_load_n(&acct_all[i], __ATOMIC_ACQUIRE);
+-        if (!t) continue;
+-        // a call still running (a wait, mostly): its time in this window is booked now and taken off when it ends
+-        int dp = __atomic_load_n(&t->depth, __ATOMIC_ACQUIRE);
+-        if (dp > 0 && dp <= ACCT_DEPTH && t != self) {
+-            uint64_t o = t->open[dp - 1].t0, part = now - (o > acct_tsc ? o : acct_tsc);
+-            if (o && o < now) {
+-                t->prev[t->open[dp - 1].i].ticks -= part;
+-                __atomic_fetch_add(&t->open[dp - 1].credit, part, __ATOMIC_RELAXED);
+-            }
+-        }
+-        uint64_t in = 0;
+-        for (int j = 0; j < ACCT_N; j++) in += t->a[j].ticks - t->prev[j].ticks;
+-        busy[nb][0] = in < span ? span - in : 0, busy[nb][1] = (uint64_t)i, nb++;
+-    }
+-    qsort(busy, (size_t)nb, sizeof *busy, acct_by_ticks);
+-    rt_log("nvn: presents %llu-%llu, %.2f ms per frame; presenting thread %#x; per thread and frame: guest code, host "
+-           "functions, SVCs (waits), and the entries with the most time",
+-           (unsigned long long)self->presents - 599, (unsigned long long)self->presents, span * k, self->handle);
+-    for (int b = 0, shown = 0; b < nb; b++) {
+-        AcctThread *t = acct_all[busy[b][1]];
+-        if (shown >= 6 && t != self) {
+-            memcpy(t->prev, t->a, sizeof t->a);
+-            continue;
+-        }
+-        uint64_t in[2] = {0}, calls = 0;
+-        int m = 0;
+-        for (int i = 0; i < ACCT_N; i++) {
+-            d[i] = (Acct){t->a[i].calls - t->prev[i].calls, t->a[i].ticks - t->prev[i].ticks};
+-            t->prev[i].calls += d[i].calls, t->prev[i].ticks += d[i].ticks;
+-            in[i >= MAX_HOSTFN] += d[i].ticks, calls += d[i].calls;
+-            if (d[i].ticks) order[m][0] = d[i].ticks, order[m][1] = (uint64_t)i, m++;
+-        }
+-        qsort(order, (size_t)m, sizeof *order, acct_by_ticks);
+-        uint64_t all = in[0] + in[1];
+-        rt_log("nvn: thread %#x%s: guest code %.2f ms, host functions %.2f ms, SVCs %.2f ms, %.0f calls", t->handle,
+-               t == self ? " (presents)" : "", (all < span ? span - all : 0) * k, in[0] * k, in[1] * k, calls / 600.0);
+-        for (int j = 0; j < m && j < (shown ? 6 : 15); j++) {
+-            int i = (int)order[j][1];
+-            char svc[16];
+-            snprintf(svc, sizeof svc, "svc %#x", i - MAX_HOSTFN);
+-            rt_log("nvn:   %-56s %8.3f ms %9.1f calls %9.0f ns each", i < MAX_HOSTFN ? slots[i].name : svc,
+-                   order[j][0] * k, d[i].calls / 600.0, d[i].calls ? order[j][0] * k * 600e6 / (double)d[i].calls : 0.0);
+-        }
+-        shown++;
+-    }
+-    acct_tsc = __builtin_ia32_rdtsc(), acct_ns = plat_now_ns();
+-    plat_mutex_unlock(&lock);
+-}
+-
+-__attribute__((noinline)) static void hostfn_timed(Cpu *c, Slot *s, int i) {
+-    static int i_present = -1;
+-    if (i_present < 0) {
+-        int f = MAX_HOSTFN;
+-        for (int k = 0; k < nslots; k++)
+-            if (!strcmp(slots[k].name, "nvn:nvnQueuePresentTexture")) f = k;
+-        i_present = f;
+-    }
+-    int fiber = s->fiber;
+-    uint64_t save = 0, t0 = 0;
+-    if (!fiber) t0 = hostfn_acct_begin(i, &save);
+-    if (s->blocking) hostfn_blocking(c, s->fn);
+-    else if (kern_host_track && c->thread) hostfn_tracked(c, s->fn);
+-    else s->fn(c);
+-    if (fiber) return;
+-    hostfn_acct_end(i, t0, save);
+-    if (i == i_present) {
+-        AcctThread *t = acct_thread();
+-        if (++t->presents % 600 == 0) acct_report(t);
+-    }
+-}
+-
+ static void hostfn_entry(Cpu *c) {
+     uint64_t i = (c->pc - RT_HOSTFN_BASE) >> 4;
+     if (__builtin_expect((c->pc & 15) || i >= (uint64_t)nslots, 0)) bad_entry(c);
+     Slot *s = &slots[i];
+-    if (__builtin_expect(rt_trace & RT_TRACE_NVN, 0)) {
+-        __atomic_fetch_add(&s->calls, 1, __ATOMIC_RELAXED);
+-        hostfn_timed(c, s, (int)i);
+-        return;
+-    }
+     uint64_t n = __atomic_fetch_add(&s->calls, 1, __ATOMIC_RELAXED);
+     if (__builtin_expect(!n && (rt_trace & RT_TRACE_HOSTCALL), 0)) {
+         char lr[96];
+diff --git a/runtime/kernel.c b/runtime/kernel.c
+index aa85d6d..8e62718 100644
+--- a/runtime/kernel.c
++++ b/runtime/kernel.c
+@@ -1004,8 +1004,6 @@ static void wait_watch(void *arg) {
+     rt_log("kernel: %d long waits logged: no more", lines);
+ }
+ 
+-uint32_t kern_cur_handle(void) { return tcur ? tcur->handle : 0; }
+-
+ int kern_core_away(void) {
+     RtThread *t = tcur;
+     if (!t || t->cur_core < 0) return 0;
+diff --git a/runtime/main.c b/runtime/main.c
+index 3180369..14f757b 100644
+--- a/runtime/main.c
++++ b/runtime/main.c
+@@ -204,13 +204,13 @@ static void parse_trace(void) {
+     static const struct { const char *name; unsigned bit; } names[] = {
+         {"svc", RT_TRACE_SVC}, {"host", RT_TRACE_HOSTCALL}, {"ipc", RT_TRACE_IPC}, {"fs", RT_TRACE_FS},
+         {"gfx", RT_TRACE_GFX}, {"perf", RT_TRACE_PERF}, {"sched", RT_TRACE_SCHED}, {"audio", RT_TRACE_AUDIO},
+-        {"present", RT_TRACE_PRESENT}, {"counters", RT_TRACE_COUNTERS}, {"nvn", RT_TRACE_NVN}, {"all", ~0u}};
++        {"present", RT_TRACE_PRESENT}, {"counters", RT_TRACE_COUNTERS}, {"all", ~0u}};
+     for (const char *p = e; *p;) {
+         size_t n = strcspn(p, ",");
+         int known = 0;
+         for (unsigned i = 0; i < sizeof names / sizeof *names; i++)
+             if (strlen(names[i].name) == n && !strncmp(p, names[i].name, n)) rt_trace |= names[i].bit, known = 1;
+-        if (!known && n) rt_log("NX2NAVI_TRACE: unknown item '%.*s' (svc, host, ipc, fs, gfx, perf, sched, audio, present, counters, nvn, all)", (int)n, p);
++        if (!known && n) rt_log("NX2NAVI_TRACE: unknown item '%.*s' (svc, host, ipc, fs, gfx, perf, sched, audio, present, counters, all)", (int)n, p);
+         p += n + (p[n] == ',');
+     }
+ }
+diff --git a/runtime/svc.c b/runtime/svc.c
+index 8fdc84e..cd29ecd 100644
+--- a/runtime/svc.c
++++ b/runtime/svc.c
+@@ -135,19 +135,8 @@ static void get_info(Cpu *c, uint64_t pc) {
+ }
+ 
+ static void svc_body(Cpu *c, uint32_t imm, uint64_t pc);
+-static void rt_svc_(Cpu *c, uint32_t imm, uint64_t pc);
+ 
+ void rt_svc(Cpu *c, uint32_t imm, uint64_t pc) {
+-    if (__builtin_expect(rt_trace & RT_TRACE_NVN, 0)) {   // the SVC's time in the thread's table (hostfn.c)
+-        uint64_t save, t0 = hostfn_acct_begin(-1 - (int)(imm & 0xff), &save);
+-        rt_svc_(c, imm, pc);
+-        hostfn_acct_end(-1 - (int)(imm & 0xff), t0, save);
+-        return;
+-    }
+-    rt_svc_(c, imm, pc);
+-}
+-
+-static void rt_svc_(Cpu *c, uint32_t imm, uint64_t pc) {
+     kern_checkpoint();
+     if (__builtin_expect(!kern_host_track || !c->thread, 1)) {
+         svc_body(c, imm, pc);
+-- 
+2.56.0
+
+
+From 4c746172f209cd0d7df04edfb0d8f8c62e33a5ab Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Sat, 14 Nov 2026 10:23:09 -0500
+Subject: [PATCH 3/9] Revert "vk_exec_xfer: NX2NAVI_OQ_FORCE forces every
+ samples-passed report, NX2NAVI_LOG_OQ logs them"
+
+This reverts commit 7bb4d093f51954ea956115419d3cfb4fd02deb4c.
+---
+ runtime/cfg.c          | 2 +-
+ runtime/vk_exec_xfer.c | 9 +--------
+ 2 files changed, 2 insertions(+), 9 deletions(-)
+
+diff --git a/runtime/cfg.c b/runtime/cfg.c
+index 6060fa7..286b112 100644
+--- a/runtime/cfg.c
++++ b/runtime/cfg.c
+@@ -97,7 +97,7 @@ static const char *const known[] = {
+     // retired: the settings of the co-op through Steam that the main branch held for a while after 0.9.2 and no
+     // release shipped; listed like the ones above, for the file of someone who built from it then and turned it on
+     "COOP_STEAM", "COOP_SHARE", "COOP_NAMES", "COOP_CHAT",
+-    "DUMP_REQ", "UNJITTER", "MARK_CHORD", "MARK_HOLD_MS", "MARK_RING", "LOG_OQ", "OQ_FORCE", "MOTION_PAD", "AO", "AO_TRACE", "MARK_BURST", "MOTION_SOCK", "TEX_DESC_STRICT", "MENU_LIVE", "TLD_CLAMP",   // private (build branch)
++    "DUMP_REQ", "UNJITTER", "MARK_CHORD", "MARK_HOLD_MS", "MARK_RING", "MOTION_PAD", "AO", "AO_TRACE", "MARK_BURST", "MOTION_SOCK", "TEX_DESC_STRICT", "MENU_LIVE", "TLD_CLAMP",   // private (build branch)
+ };
+ 
+ // The nx2navi.ini section a key cfg_set may write goes to when the file lacks it (nx2navi.ini.example's sections).
+diff --git a/runtime/vk_exec_xfer.c b/runtime/vk_exec_xfer.c
+index 092e505..e9ff053 100644
+--- a/runtime/vk_exec_xfer.c
++++ b/runtime/vk_exec_xfer.c
+@@ -694,20 +694,13 @@ static void oq_cb(void *arg) {
+                    OQB.calls ? (double)OQB.slots / (double)OQB.calls : 0.0);
+         OQB.calls = OQB.slots = OQB.segs = 0;
+     }
+-    // Debugging the CPU-side culls (#138): NX2NAVI_OQ_FORCE=<n> makes every samples-passed report write n instead of the
+-    // count (0 keeps the count); NX2NAVI_LOG_OQ=1 logs each report (address, queries, sum, running count).
+-    static long long force = -1; static int logit = -1;
+-    if (force < 0) { const char *e = cfg_get("NX2NAVI_OQ_FORCE"); force = e && *e ? strtoll(e, NULL, 0) : 0; logit = rt_knob("LOG_OQ", "0"); }
+     if (s->reset) oq_count = 0;
+     else {
+         oq_count += sum;
+         if (s->lost && !oq_count) oq_count = 1;
+-        uint64_t out = force ? (uint64_t)force : oq_count;
+-        if (logit) rt_log("vk: oq report %#llx: %u queries, sum %llu, count %llu%s%s", (unsigned long long)s->addr, s->n,
+-                          (unsigned long long)sum, (unsigned long long)oq_count, s->lost ? ", lost" : "", force ? ", forced" : "");
+         if (s->addr) {
+             if (vk_sync_effect_late()) __atomic_fetch_add(&late_counts, 1, __ATOMIC_RELAXED);
+-            report_write(s->addr, s->seq, force ? out : oq_report_count(s, oq_count), 0);
++            report_write(s->addr, s->seq, oq_report_count(s, oq_count), 0);
+         }
+     }
+     free(s->q), free(s);
+-- 
+2.56.0
+
+
+From c2f7123527738cfa6bf135780ec11eefbd8ef04b Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Sat, 14 Nov 2026 10:23:09 -0500
+Subject: [PATCH 4/9] Revert "vk_exec_draw: NX2NAVI_POOL_LOAD_FIT=1 (0: fixed
+ step) sizes a loading refresh's creation count to the time the frame has left
+ of NX2NAVI_POOL_LOAD_MS at the measured cost per entry, so a longer
+ POOL_LOAD_MS makes an area load in fewer held frames; Market made 4,869
+ textures over 17 frames with one present 2.55 s late"
+
+This reverts commit a465b5868ffe17d973d975259d28c509f4344ed5.
+---
+ runtime/cfg.c          |  6 +++---
+ runtime/vk.h           |  1 -
+ runtime/vk_exec_draw.c | 33 ++-------------------------------
+ runtime/vk_texture.c   |  1 -
+ 4 files changed, 5 insertions(+), 36 deletions(-)
+
+diff --git a/runtime/cfg.c b/runtime/cfg.c
+index 286b112..edab4b3 100644
+--- a/runtime/cfg.c
++++ b/runtime/cfg.c
+@@ -84,7 +84,7 @@ static const char *const known[] = {
+     "BIND_REUSE", "DYN_DELTA", "STG_ARENA", "SUBMIT_BATCH", "SUBMIT_THREAD", "ASTC_GPU_DESWIZZLE", "ASTC_SCRATCH_KEEP", "ASTC_ARENA", "ASTC_BC1",
+     "TEXUP_LOG_MS", "DYN_RES", "DYN_RES_TARGET", "DYN_RES_STEP", "TEXTURE_DETAIL", "VRAM_USE",   // vram_use: the removed Video memory use row, read by nothing
+     "RECORDER_CORE", "RECORDER_PRIO", "REPLAY_TIME", "LOCK_TIME", "POOL_CREATE_BUDGET", "POOL_CREATE_MS", "POOL_FINI_IDLE", "POOL_LOAD_BACKLOG", "POOL_LOAD_MS",
+-    "POOL_LOAD_STEP", "POOL_LOAD_FIT", "POOL_IDLE_MS", "SHADOW_RECYCLE_MB", "SHADOW_TOUCH_LOCK",   // private (build branch)
++    "POOL_LOAD_STEP", "POOL_IDLE_MS", "SHADOW_RECYCLE_MB", "SHADOW_TOUCH_LOCK",   // private (build branch)
+     "VMA_BLOCK_MB", "SYNC_WAKE_ALL", "LOG_ASYNC", "DEVICE_LOST_AT", "STAGING_FAIL_AT", "VRAM_BALLAST_MB",
+     "MEM_BUDGET_TEST_VRAM_MB", "MEM_BUDGET_TEST_RAM_MB",
+     "TEX_COMPACT", "TEX_COMPACT_MIN_MB", "TEX_COMPACT_FRAME_MB",   // texture compaction (vk_texture.c); no menu row
+@@ -152,7 +152,7 @@ static const struct { const char *key, *section; } sections[] = {
+     {"DYN_DELTA", "performance"}, {"STG_ARENA", "performance"}, {"SUBMIT_BATCH", "performance"}, {"SUBMIT_THREAD", "performance"},
+     {"BUILD_FREE_MB", "performance"}, {"BUILD_RESERVE_MB", "performance"}, {"MEM_NEED_MB", "diagnostics"},
+     {"ASTC_GPU_DESWIZZLE", "performance"}, {"ASTC_SCRATCH_KEEP", "performance"}, {"ASTC_ARENA", "performance"}, {"ASTC_BC1", "performance"}, {"POOL_CREATE_BUDGET", "performance"},
+-    {"POOL_CREATE_MS", "performance"}, {"POOL_FINI_IDLE", "performance"}, {"FREEZE_BUDGET_US", "performance"}, {"POOL_LOAD_BACKLOG", "performance"}, {"POOL_LOAD_MS", "performance"}, {"POOL_LOAD_STEP", "performance"}, {"POOL_LOAD_FIT", "performance"}, {"POOL_IDLE_MS", "performance"}, {"SHADOW_RECYCLE_MB", "performance"},
++    {"POOL_CREATE_MS", "performance"}, {"POOL_FINI_IDLE", "performance"}, {"FREEZE_BUDGET_US", "performance"}, {"POOL_LOAD_BACKLOG", "performance"}, {"POOL_LOAD_MS", "performance"}, {"POOL_LOAD_STEP", "performance"}, {"performance"}, {"POOL_IDLE_MS", "performance"}, {"SHADOW_RECYCLE_MB", "performance"},
+     {"TIMER_1MS", "performance"}, {"PIPE_WAIT", "performance"}, {"PIPE_SKIP", "performance"}, {"ONESHOT_BUDGET", "performance"},
+     {"PIPE_FRAME_WAIT_MS", "performance"}, {"PIPE_SKIP_STEADY", "performance"}, {"DRAW_WRITERS_WAIT", "performance"},
+     {"CACHE_DIE", "performance"}, {"ONE_PER_CORE", "performance"},
+@@ -316,7 +316,7 @@ static const CfgMeta metas[] = {
+     {"DYN_RES", "0", "0|1", LIVE}, {"DYN_RES_TARGET", "16.7", "1..100", LIVE}, {"DYN_RES_STEP", "45", "8..600", LIVE},
+     // the recording thread: a core of its own (auto: with 12 or more logical processors) and the highest priority
+     // (vk_exec.c rec_claim)
+-    {"RECORDER_CORE", "0", "auto|0|1", RESTART}, {"RECORDER_PRIO", "1", "0|1", RESTART}, {"REPLAY_TIME", "0", "0|1", RESTART}, {"LOCK_TIME", "0", "0|1", RESTART}, {"POOL_CREATE_BUDGET", "16", "1..4096", RESTART}, {"POOL_CREATE_MS", "6", "0..100", RESTART}, {"POOL_FINI_IDLE", "0", "0|1", RESTART}, {"FREEZE_BUDGET_US", "1000", "0..100000", RESTART}, {"POOL_LOAD_BACKLOG", "512", "0..65536", RESTART}, {"POOL_LOAD_MS", "50", "1..1000", RESTART}, {"POOL_LOAD_STEP", "128", "0..65536", RESTART}, {"POOL_LOAD_FIT", "0", "0|1", RESTART}, {"POOL_IDLE_MS", "0", "0..50", RESTART}, {"SHADOW_RECYCLE_MB", "1024", "0..16384", RESTART},
++    {"RECORDER_CORE", "0", "auto|0|1", RESTART}, {"RECORDER_PRIO", "1", "0|1", RESTART}, {"REPLAY_TIME", "0", "0|1", RESTART}, {"LOCK_TIME", "0", "0|1", RESTART}, {"POOL_CREATE_BUDGET", "16", "1..4096", RESTART}, {"POOL_CREATE_MS", "6", "0..100", RESTART}, {"POOL_FINI_IDLE", "0", "0|1", RESTART}, {"FREEZE_BUDGET_US", "1000", "0..100000", RESTART}, {"POOL_LOAD_BACKLOG", "512", "0..65536", RESTART}, {"POOL_LOAD_MS", "50", "1..1000", RESTART}, {"POOL_LOAD_STEP", "128", "0..65536", RESTART}, {"0", "0|1", RESTART}, {"POOL_IDLE_MS", "0", "0..50", RESTART}, {"SHADOW_RECYCLE_MB", "1024", "0..16384", RESTART},
+     // held submissions handed to the queue together (vk_sync.c, submit batching)
+     {"SUBMIT_BATCH", "4", "1..16", RESTART},
+ #ifdef _WIN32
+diff --git a/runtime/vk.h b/runtime/vk.h
+index c7686df..94a3935 100644
+--- a/runtime/vk.h
++++ b/runtime/vk.h
+@@ -713,7 +713,6 @@ uint32_t vk_texture_slot_why_locked(int id, uint64_t *addr, uint32_t *format, ui
+ // screen whose texture is not made is made by that lookup beside the creation budget (vk_texture.c slot_resolve).
+ void vk_texture_pool_shown_locked(int shown);
+ uint64_t vk_texture_pool_make_ns_take(void);         // ns the pool's lookups spent making and first uploading entries since the last call
+-int vk_texture_create_budget_left_locked(void);    // what the budget above has left (0 with none)
+ int vk_texture_create_deferred_locked(void);        // a lookup since the last call left a creation to the budget             // one past the highest texture slot registered so far (or more)
+ int vk_sampler_slot_count_locked(void);
+ // Bindless pools (vk_exec_draw.c, "texture and sampler pools"): set 2 of every pipeline layout. Shaders that index
+diff --git a/runtime/vk_exec_draw.c b/runtime/vk_exec_draw.c
+index 91a58e1..17c644a 100644
+--- a/runtime/vk_exec_draw.c
++++ b/runtime/vk_exec_draw.c
+@@ -2283,20 +2283,6 @@ static int pool_load_backlog(void) {
+ // another of 300 ms, the game's main thread blocked in a host call on the replay all that time. With a step, each
+ // refresh makes that many and the later refreshes of the frame stop at NX2NAVI_POOL_LOAD_MS, so the load runs over
+ // frames (their presents still held) and the game keeps running.
+-// NX2NAVI_POOL_LOAD_FIT (default 0: the fixed step): while the pool is loading, a refresh's count is sized to the time
+-// the frame has left of NX2NAVI_POOL_LOAD_MS at the creation cost measured so far in this load (16 to 4,096), so a
+-// longer NX2NAVI_POOL_LOAD_MS makes the load in fewer frames without one refresh running far past it. With the fixed
+-// step of 128 and 50 ms, Market (play32, wt-rebase d9c9e0a, .lab/pr-p32-west) made 4,869 textures over 17 frames of
+-// 100-170 ms, the presents held throughout (vk_backend.c frame_hold): one present 2.55 s after the last, where play13
+-// (c7102bb) made the same load in 4 shown frames of 0.2-0.5 s. Each loading frame also carries the replay's other
+-// work, so fewer, fuller frames finish the load sooner.
+-static struct { uint64_t ns_per, frame_ns; } PL_FIT;   // creation cost per entry (running mean); this frame's sync time
+-static int pool_load_fit(void) {
+-    static int on = -1;
+-    if (on < 0) on = cfg_int("NX2NAVI_POOL_LOAD_FIT") > 0;
+-    return on;
+-}
+-
+ // NX2NAVI_POOL_IDLE_MS (default 0 = off; milliseconds a present, e.g. 8): the textures of newly registered slots are
+ // also made while no draw binds the pools. The refresh above runs when a draw binds them, and the draws of a title or
+ // load screen bind none. Ocarina initialises and registers an area's textures on its loader threads all through the
+@@ -2332,12 +2318,7 @@ static int pool_create_budget(void) {
+         if (n < 1) n = 1;
+         step = cfg_int("NX2NAVI_POOL_LOAD_STEP");
+     }
+-    if (!pool_loading) return n;
+-    if (step > 0 && pool_load_fit() && PL_FIT.ns_per && pool_create_ns() > PL_FIT.frame_ns) {
+-        uint64_t k = (pool_create_ns() - PL_FIT.frame_ns) / PL_FIT.ns_per;
+-        return k < 16 ? 16 : k > 4096 ? 4096 : (int)k;
+-    }
+-    return step > 0 ? step : 1 << 20;
++    return pool_loading ? (step > 0 ? step : 1 << 20) : n;
+ }
+ 
+ // The refresh runs before every draw that binds the pools, not once per submission, so the count above held for each
+@@ -3086,10 +3067,7 @@ static void pool_sync_entries(VkExec *ex) {
+     }
+     int retry = 0;   // slots whose texture the creation budget left: filled again by the next sync
+     if (fresh || gen != PL.gen || ep != PL.epoch || PL.retry) {
+-        PL_FIT.frame_ns = PL.frame_ns;
+-        int budget = spent ? 0 : pool_create_budget();
+-        uint64_t tb = kern_now_ns();
+-        vk_texture_create_budget_locked(budget);
++        vk_texture_create_budget_locked(spent ? 0 : pool_create_budget());
+         PL.n_frame_stops += (uint64_t)spent;
+         // Only a slot change since the last sync (no new kinds, no new submission): the slots that
+         // changed (vk_texture_dirty_slots_locked), not the whole table. With NX2NAVI_POOL_FAST (default on) a new
+@@ -3182,13 +3160,6 @@ static void pool_sync_entries(VkExec *ex) {
+             vk_texture_groups_unstamp_locked();   // the walk over every slot refilled members one by one
+         }
+         retry = (int)pool_nleft;   // every slot left, by this refresh or an earlier one not filled since
+-        if (pool_loading && budget > 0 && pool_load_fit()) {   // the cost of this refresh's creations, for the next
+-            int made = budget - vk_texture_create_budget_left_locked();
+-            if (made >= 8) {
+-                uint64_t per = (kern_now_ns() - tb) / (uint64_t)made;
+-                PL_FIT.ns_per = PL_FIT.ns_per ? (PL_FIT.ns_per * 3 + per) / 4 : per;
+-            }
+-        }
+         vk_texture_create_budget_locked(-1);
+     }
+     PL.retry = retry != 0;
+diff --git a/runtime/vk_texture.c b/runtime/vk_texture.c
+index ab32b6e..77c1b29 100644
+--- a/runtime/vk_texture.c
++++ b/runtime/vk_texture.c
+@@ -4895,7 +4895,6 @@ static int shown_take(const TexSlot *s) {
+ static uint64_t pool_make_ns;
+ uint64_t vk_texture_pool_make_ns_take(void) { return __atomic_exchange_n(&pool_make_ns, 0, __ATOMIC_RELAXED); }
+ static void pool_made(uint64_t t0) { __atomic_fetch_add(&pool_make_ns, kern_now_ns() - t0, __ATOMIC_RELAXED); }
+-int vk_texture_create_budget_left_locked(void) { return create_budget < 0 ? 0 : create_budget; }
+ int vk_texture_create_deferred_locked(void) { int d = create_deferred; create_deferred = 0; return d; }
+ 
+ // NX2NAVI_TEX_STALE_KEPT (default 1; 0: the stand-in, as before): a finalized slot of a CPU-written texture resolves to
+-- 
+2.56.0
+
+
+From 9d3213246dfcf0c543ccc279a3804f7eb00617d6 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Sat, 14 Nov 2026 10:23:09 -0500
+Subject: [PATCH 5/9] Revert "vk_memory: log VRAM per heap every 1800 frames:
+ driver usage and budget, VMA blocks and allocations, the kernel's fdinfo
+ vram/gtt/visible and the shadow total, beside the texture and mirror census
+ (#141, #132)"
+
+This reverts commit bf43c62d4dcd425d4b69a90eaae9593dddb6d053.
+---
+ runtime/vk_memory.c | 38 --------------------------------------
+ 1 file changed, 38 deletions(-)
+
+diff --git a/runtime/vk_memory.c b/runtime/vk_memory.c
+index 8a78d02..56b46e4 100644
+--- a/runtime/vk_memory.c
++++ b/runtime/vk_memory.c
+@@ -1043,7 +1043,6 @@ void vk_mem_census(uint64_t frame) {
+     if (dmabuf_on && frame % 60 == 0) span_gc(frame, 0);
+     static uint64_t window_start;
+     if ((rt_trace & RT_TRACE_PERF) && frame % 600 == 0) vram_log(frame), mirror_pool_log(frame);
+-    else if (!(rt_trace & RT_TRACE_PERF) && frame % 1800 == 0) vram_log(frame);   // what grows over a long session
+     if (frame && frame % ((rt_trace & RT_TRACE_PERF) ? 600 : HOLES_PERIOD) == 0) holes_log(frame), owner_log(frame);
+     if (vk_texture_compact_due()) compact_look();   // NX2NAVI_TEX_COMPACT: 0 at once with the setting off
+     if ((rt_trace & RT_TRACE_PERF) && frame % 60 == 0) outside_watch(frame), up_ts_log(frame), vk_gtl_log(frame, 60);
+@@ -5368,42 +5367,6 @@ void vk_mem_stage_log(const char *stage) {
+ // With NX2NAVI_TRACE=perf every 600 frames: what holds device-local memory, to see what grows over a long session.
+ // VMA's blocks and allocations on the device-local heaps, texture entries with their own memory, the VRAM mirrors and
+ // the objects waiting for their last submission to retire.
+-// The kernel's fdinfo figures for this process (resident memory by placement, what nvtop shows) beside the shadow
+-// total: the gap to the driver's and VMA's figures (heap_log) is memory held outside VMA (imports) or evicted from VRAM
+-// to GTT. drm-memory-<region>: KiB per open DRM file; fds of one client share a drm-client-id, counted once.
+-static void kernel_vram_log(uint64_t frame) {
+-#ifdef __linux__
+-    uint64_t kib[3] = {0}, ids[16];
+-    int nid = 0;
+-    char path[64], buf[256];
+-    for (int fd = 0; fd < 1024; fd++) {
+-        snprintf(path, sizeof path, "/proc/self/fdinfo/%d", fd);
+-        FILE *f = fopen(path, "r");
+-        if (!f) continue;
+-        uint64_t id = 0, v[3] = {0};
+-        int drm = 0;
+-        while (fgets(buf, sizeof buf, f)) {
+-            unsigned long long x;
+-            if (sscanf(buf, "drm-client-id: %llu", &x) == 1) id = x, drm = 1;
+-            else if (sscanf(buf, "drm-memory-vram: %llu", &x) == 1) v[0] = x;
+-            else if (sscanf(buf, "drm-memory-gtt: %llu", &x) == 1) v[1] = x;
+-            else if (sscanf(buf, "amd-memory-visible-vram: %llu", &x) == 1) v[2] = x;
+-        }
+-        fclose(f);
+-        int seen = 0;
+-        for (int i = 0; i < nid; i++) seen |= ids[i] == id;
+-        if (!drm || seen) continue;
+-        if (nid < 16) ids[nid++] = id;
+-        for (int i = 0; i < 3; i++) kib[i] += v[i];
+-    }
+-    if (nid)
+-        rt_log("mem: kernel frame %llu: vram %.0f gtt %.0f visible %.0f MiB; shadow %.0f MiB", (unsigned long long)frame,
+-               kib[0] / 1024.0, kib[1] / 1024.0, kib[2] / 1024.0, s_live_bytes / 1048576.0);
+-#else
+-    (void)frame;
+-#endif
+-}
+-
+ static void vram_log(uint64_t frame) {
+     VkCtx *c = vk_ctx();
+     if (!c) return;
+@@ -5427,7 +5390,6 @@ static void vram_log(uint64_t frame) {
+     pool_census_log(frame);
+     heap_log(c, frame, vb);
+     vram_use_log(c, frame, vb, &t);
+-    kernel_vram_log(frame);
+ }
+ 
+ // Device class: INTEGRATED -> uma; a discrete GPU with a DEVICE_LOCAL heap of 1 GiB or more beside a
+-- 
+2.56.0
+
+
+From cae3fdaa2793f201118e0af7b8c55c25a24ba511 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Sat, 14 Nov 2026 11:11:56 -0500
+Subject: [PATCH 6/9] Revert "menu: NX2NAVI_MENU_LIVE=1 (default 0) applies the
+ shadow range row in the running game (the cascade distances on the patch
+ page) and makes the menu's Save button the only write of nx2navi.ini (a note
+ shows unsaved changes); cfg_live tells the rows which settings still take
+ effect only after a restart"
+
+This reverts commit 64faad40463efa72603619eec6a6cd907e2af5fb.
+---
+ runtime/cfg.c              | 20 +++-----------------
+ runtime/cfg.h              |  3 ---
+ runtime/host.h             |  1 -
+ runtime/resolution.c       | 13 ++-----------
+ runtime/ui/menu.cpp        | 22 +++-------------------
+ runtime/ui/option_rows.cpp | 26 +++++++-------------------
+ runtime/ui/option_rows.h   |  6 +-----
+ runtime/ui_text.c          |  1 -
+ runtime/ui_text.h          |  1 -
+ 9 files changed, 16 insertions(+), 77 deletions(-)
+
+diff --git a/runtime/cfg.c b/runtime/cfg.c
+index edab4b3..1556d54 100644
+--- a/runtime/cfg.c
++++ b/runtime/cfg.c
+@@ -97,7 +97,7 @@ static const char *const known[] = {
+     // retired: the settings of the co-op through Steam that the main branch held for a while after 0.9.2 and no
+     // release shipped; listed like the ones above, for the file of someone who built from it then and turned it on
+     "COOP_STEAM", "COOP_SHARE", "COOP_NAMES", "COOP_CHAT",
+-    "DUMP_REQ", "UNJITTER", "MARK_CHORD", "MARK_HOLD_MS", "MARK_RING", "MOTION_PAD", "AO", "AO_TRACE", "MARK_BURST", "MOTION_SOCK", "TEX_DESC_STRICT", "MENU_LIVE", "TLD_CLAMP",   // private (build branch)
++    "DUMP_REQ", "UNJITTER", "MARK_CHORD", "MARK_HOLD_MS", "MARK_RING", "MOTION_PAD", "AO", "AO_TRACE", "MARK_BURST", "MOTION_SOCK", "TEX_DESC_STRICT", "TLD_CLAMP",   // private (build branch)
+ };
+ 
+ // The nx2navi.ini section a key cfg_set may write goes to when the file lacks it (nx2navi.ini.example's sections).
+@@ -138,7 +138,7 @@ static const struct { const char *key, *section; } sections[] = {
+     {"MOTION_PAD", "input"}, {"MOTION_SOCK", "input"},   // private (build branch)
+     {"PAD_LAYOUT", "input"}, {"PROMPTS", "input"}, {"STICK_DEADZONE", "input"}, {"LSTICK_DEADZONE", "input"}, {"RSTICK_DEADZONE", "input"},
+     {"STICK_SENS", "input"}, {"DEBUG_MENU", "input"},
+-    {"MENU_CURSOR", "input"}, {"MENU_LIVE", "input"}, {"MOUSE_MODE", "input"}, {"MOUSE_SENS", "input"}, {"WALK_KEY", "input"}, {"WALK_SCALE", "input"}, {"INPUT_RECORD", "input"},
++    {"MENU_CURSOR", "input"}, {"MOUSE_MODE", "input"}, {"MOUSE_SENS", "input"}, {"WALK_KEY", "input"}, {"WALK_SCALE", "input"}, {"INPUT_RECORD", "input"},
+     {"BIND_A", "input"}, {"BIND_B", "input"}, {"BIND_X", "input"}, {"BIND_Y", "input"}, {"BIND_LCLICK", "input"},
+     {"BIND_RCLICK", "input"}, {"BIND_L", "input"}, {"BIND_R", "input"}, {"BIND_ZL", "input"}, {"BIND_ZR", "input"},
+     {"BIND_PLUS", "input"}, {"BIND_MINUS", "input"}, {"BIND_LEFT", "input"}, {"BIND_UP", "input"},
+@@ -297,7 +297,6 @@ static const CfgMeta metas[] = {
+     {"MOUSE_SENS", "1", "0..10", LIVE}, {"MENU_CURSOR", "1", "0|1", LIVE},
+     {"WALK_KEY", "none", NULL, LIVE}, {"WALK_SCALE", "0.51", "0.2..0.9", LIVE},
+     {"MENU_LANG", "", "en|ru|pt-BR|zh-Hans", LIVE},
+-    {"MENU_LIVE", "0", "0|1", LIVE},   // cfg_live: rows that take effect at once, and the menu's Save button
+     {"AMIIBO_DIR", "", NULL, LIVE},
+     // Discord Rich Presence (discord_rpc.c): on by default (it only talks to a Discord client running on this PC, and
+     // does nothing without one); the Game tab of the settings menu and the launcher's Settings switch it. The application's id and art key default to discord_app.h's NX2NAVI_DISCORD_*_DEFAULT.
+@@ -834,19 +833,6 @@ const char *cfg_default(const char *key) {
+     return m ? m->def : NULL;
+ }
+ 
+-// NX2NAVI_MENU_LIVE=1: these read-at-start rows are applied in the running game too (ui/menu.cpp says how).
+-static const char *const LIVE_WITH_MENU_LIVE[] = {"SHADOW_RANGE"};
+-
+-int cfg_live(const char *key) {
+-    const CfgMeta *m = cfg_meta(key);
+-    if (!m) return 1;
+-    if (m->live) return 1;
+-    if (!cfg_bool("NX2NAVI_MENU_LIVE")) return 0;
+-    for (size_t i = 0; i < sizeof LIVE_WITH_MENU_LIVE / sizeof *LIVE_WITH_MENU_LIVE; i++)
+-        if (!strcmp(LIVE_WITH_MENU_LIVE[i], m->key)) return 1;
+-    return 0;
+-}
+-
+ const CfgMeta *cfg_meta_at(int i) { return i >= 0 && (size_t)i < sizeof metas / sizeof *metas ? &metas[i] : NULL; }
+ 
+ static const char *cfg_value_now(const char *name) {
+@@ -931,7 +917,7 @@ static void start_values(void) {
+ // line's --monitor and --audio-device arrive that way after the start values are taken (main.c).
+ static int pending_at(size_t i) {
+     char name[80];
+-    if (!at_start[i] || cfg_live(metas[i].key)) return 0;   // NX2NAVI_MENU_LIVE: applied already, nothing waits
++    if (!at_start[i]) return 0;
+     snprintf(name, sizeof name, PREFIX "%s", metas[i].key);
+     return !cfg_from_env(name) && strcmp(at_start[i], cfg_value(name)) != 0;
+ }
+diff --git a/runtime/cfg.h b/runtime/cfg.h
+index 05360dc..741d625 100644
+--- a/runtime/cfg.h
++++ b/runtime/cfg.h
+@@ -56,9 +56,6 @@ void cfg_each_active(void (*cb)(const char *key, const char *value, int from_env
+ typedef struct { const char *key, *def, *values; int live; } CfgMeta;
+ // The row of key (prefix and case ignored); NULL for a key the menu does not show.
+ const CfgMeta *cfg_meta(const char *key);
+-// The setting takes effect in the running game: its row is live, or NX2NAVI_MENU_LIVE=1 applies it there (cfg.c
+-// LIVE_WITH_MENU_LIVE). 1 for a key without a row.
+-int cfg_live(const char *key);
+ // The i-th row (0-based, table order); NULL past the last.
+ const CfgMeta *cfg_meta_at(int i);
+ // What key reads when the player has not set it: the device profile's value (the Steam Deck's), else the row's default;
+diff --git a/runtime/host.h b/runtime/host.h
+index f9176ac..57c27cf 100644
+--- a/runtime/host.h
++++ b/runtime/host.h
+@@ -384,7 +384,6 @@ uint64_t wide_heap_extra_kib(void);                        // the texture heap's
+ // game's own SetHeapSize is refused. A whole number of 2 MiB.
+ uint64_t mem_heap_extra_max_kib(void);
+ void res_init(void);                                       // after rt_patches_init: the patch page and the sets
+-void res_shadow_range_live(void);                           // NX2NAVI_SHADOW_RANGE again, in the running game
+ float res_dlss_lod_bias(void);                             // NX2NAVI_DLSS upscaling: texture LOD bias (<= 0)
+ int res_dlss_mode(const char *mode);                       // NX2NAVI_DLSS changed while running: new scene size
+ void dynres_frame(void);                                   // dynamic resolution: one presented frame (vk_backend.c)
+diff --git a/runtime/resolution.c b/runtime/resolution.c
+index 0df52a1..3d5350b 100644
+--- a/runtime/resolution.c
++++ b/runtime/resolution.c
+@@ -311,17 +311,10 @@ static uint64_t pack(unsigned w, unsigned h) { return (uint64_t)h << 32 | w; }
+ // NX2NAVI_SHADOW_RANGE (percent, 50 to 400; 100 = the game's): the sun's shadow cascades end at 20, 40, 80 and 160 m.
+ // Other values multiply those distances through the cascade patch set (recomp/patches-v143.txt), so the sharp first
+ // cascade reaches further and the visible steps between cascades move away from the player, at the cost of shadow
+-// texels per metre (NX2NAVI_SHADOW_SCALE pays that back). The patched code loads the distances from the page each time
+-// it runs, so res_shadow_range_live (the menu, with NX2NAVI_MENU_LIVE=1) takes a new value in the running game.
++// texels per metre (NX2NAVI_SHADOW_SCALE pays that back).
+ static void res_shadow_range(void) {
+     int pct = cfg_int("NX2NAVI_SHADOW_RANGE"), set = rt_patch_set("cascade");
+-    if (pct == 100) {
+-        if (set >= 0 && rt_patch_enabled(set)) {
+-            rt_patch_switch(set, 0);
+-            rt_log("resolution: shadow cascades at the game's 20, 40, 80 and 160 m");
+-        }
+-        return;
+-    }
++    if (pct == 100) return;
+     if (set < 0) {
+         rt_log("resolution: the generated C has no cascade patch set; shadow_range stays 100");
+         return;
+@@ -332,8 +325,6 @@ static void res_shadow_range(void) {
+     rt_log("resolution: shadow cascades end at %g, %g, %g and %g m", d[0], d[1], d[2], d[3]);
+ }
+ 
+-void res_shadow_range_live(void) { res_shadow_range(); }
+-
+ void res_init(void) {
+     res_shadow_range();
+     if (!res_adjustable()) {
+diff --git a/runtime/ui/menu.cpp b/runtime/ui/menu.cpp
+index 4ca6606..5743921 100644
+--- a/runtime/ui/menu.cpp
++++ b/runtime/ui/menu.cpp
+@@ -67,7 +67,6 @@ void vk_queue_lock(void);
+ void vk_queue_unlock(void);
+ void res_sizes(unsigned out[2], unsigned scene[2]);
+ int res_adjustable(void);
+-void res_shadow_range_live(void);
+ int wide_available(void);
+ int wide_scene_settable(void);
+ void wide_picture(unsigned *w, unsigned *h);
+@@ -775,9 +774,7 @@ static void row_shadow_scale(void) {
+ static void row_shadow_range(void) {
+     static const char *const vals[] = {"100", "150", "200", "300"};
+     static const char *const names[] = {"160 m (1x)", "240 m (1.5x)", "320 m (2x)", "480 m (3x)"};
+-    if (opt_choice_list("NX2NAVI_SHADOW_RANGE", UI_MENU_SHADOW_RANGE, vals, names, 4, UI_MENU_SHADOW_RANGE_DESC) &&
+-        cfg_bool("NX2NAVI_MENU_LIVE"))
+-        res_shadow_range_live();   // the cascade distances on the patch page, read by the game each frame
++    opt_choice_list("NX2NAVI_SHADOW_RANGE", UI_MENU_SHADOW_RANGE, vals, names, 4, UI_MENU_SHADOW_RANGE_DESC);
+ }
+ 
+ static void row_gpu(void) {
+@@ -1939,14 +1936,9 @@ static void layout_menu(uint32_t w, uint32_t h, float scale) {
+         menu_art_draw(ImGui::GetWindowDrawList(), MENU_ART_GUIDE_BAR, ImVec2(win_p.x + st.WindowPadding.x, sy),
+                       ImVec2(win_p.x + win_s.x - st.WindowPadding.x, sy + fh), IM_COL32(96, 70, 36, 170));
+     }
+-    // NX2NAVI_MENU_LIVE=1: changes hold in the running game at once; a Save button left of Continue writes nx2navi.ini
+-    bool save_btn = cfg_bool("NX2NAVI_MENU_LIVE") != 0;
+     if (!cfg_last_save_ok()) {   // stays until a save succeeds; the settings hold for the session
+         ImGui::SetCursorPosY(y + st.FramePadding.y);
+         ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.35f, 1), "%s", menu_text(UI_MENU_SAVE_FAILED));
+-    } else if (save_btn && opt_unsaved()) {
+-        ImGui::SetCursorPosY(y + st.FramePadding.y);
+-        ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", menu_text(UI_MENU_UNSAVED));
+     }
+     // Restart says how many settings wait for it (restart_pending); "###restart" keeps the button's id, and so the cursor
+     // on it, when the count changes
+@@ -1955,14 +1947,12 @@ static void layout_menu(uint32_t w, uint32_t h, float scale) {
+     if (pending) snprintf(shown, sizeof shown, menu_text(UI_MENU_RESTART_COUNT), pending);
+     else snprintf(shown, sizeof shown, "%s", menu_text(UI_MENU_RESTART_YES));
+     snprintf(restart, sizeof restart, "%s###restart", shown);
+-    const char *cont = menu_text(UI_MENU_CONTINUE), *quit = menu_text(UI_MENU_QUIT), *save = menu_text(UI_MENU_SAVE);
++    const char *cont = menu_text(UI_MENU_CONTINUE), *quit = menu_text(UI_MENU_QUIT);
+     float bw = fmaxf(fmaxf(ImGui::CalcTextSize(cont).x, ImGui::CalcTextSize(shown).x), ImGui::CalcTextSize(quit).x) + st.FramePadding.x * 4;
+-    if (save_btn) bw = fmaxf(bw, ImGui::CalcTextSize(save).x + st.FramePadding.x * 4);
+-    const int nb = save_btn ? 4 : 3;   // NX2NAVI_MENU_LIVE=1: a Save button left of Continue
+     // the save menu's brown buttons, with the game's cursor on the selected one (ui/menu_skin.cpp)
+     float gap = st.ItemSpacing.x + skin_cursor_reach(scale);
+     // right-aligned; in a window too narrow for all three, from the left edge
+-    const float buttons_x = fmaxf(st.WindowPadding.x, ImGui::GetWindowWidth() - st.WindowPadding.x - bw * nb - gap * (nb - 1));
++    const float buttons_x = fmaxf(st.WindowPadding.x, ImGui::GetWindowWidth() - st.WindowPadding.x - bw * 3 - gap * 2);
+     // Lines of nx2navi.ini that are no settings of this version do nothing (cfg.c cfg_unknown_keys). Said here, in the
+     // save status's place while saving works, so that a line added by hand is not taken for the cause of what the game
+     // does: a player took such a line for the fix of a crash. The list is cut to the room left of the buttons.
+@@ -1982,12 +1972,6 @@ static void layout_menu(uint32_t w, uint32_t h, float scale) {
+         }
+     }
+     ImGui::SetCursorPos(ImVec2(buttons_x, y));
+-    if (save_btn) {
+-        ImGui::BeginDisabled(!opt_unsaved());
+-        if (skin_widget_button(save, ImVec2(bw, 0), scale) && opt_save_now()) menu_sound_play(MENU_SOUND_CURSOR);
+-        ImGui::EndDisabled();
+-        ImGui::SameLine(0, gap);
+-    }
+     if (skin_widget_button(cont, ImVec2(bw, 0), scale)) set_open(0);
+     ImGui::SameLine(0, gap);
+     if (skin_widget_button(restart, ImVec2(bw, 0), scale)) g_confirm_quit = false, ImGui::OpenPopup("##confirm");
+diff --git a/runtime/ui/option_rows.cpp b/runtime/ui/option_rows.cpp
+index ebfbdae..748dfba 100644
+--- a/runtime/ui/option_rows.cpp
++++ b/runtime/ui/option_rows.cpp
+@@ -55,7 +55,7 @@ static void desc_set(Desc &d, const char *desc, const char *key, const CfgMeta *
+         snprintf(d.text + n, sizeof d.text - n, "\n\n%s", disabled);
+     else if (cfg_from_env(key))
+         snprintf(d.text + n, sizeof d.text - n, "\n\n%s %s", menu_text(UI_MENU_SET_BY_ENV), key);
+-    else if (m && !cfg_live(key))
++    else if (m && !m->live)
+         snprintf(d.text + n, sizeof d.text - n, "\n\n%s", menu_text(UI_MENU_AFTER_RESTART));
+ }
+ 
+@@ -354,7 +354,7 @@ static int row_text(const char *key, const char *label, const char *desc, const
+     dl->AddText(font, fs, ImVec2(p.x + pad, ty), off ? kGrey : SKIN_TEXT, label, NULL, 0, &clip);
+     const char *note = disabled                          ? disabled
+                      : off                               ? menu_text(UI_MENU_SET_BY_ENV)
+-                     : m && !cfg_live(key) && cfg_pending(key) ? menu_text(UI_MENU_AFTER_RESTART)
++                     : m && !m->live && cfg_pending(key) ? menu_text(UI_MENU_AFTER_RESTART)
+                                                          : NULL;
+     ImVec4 note_clip(p.x, p.y, note_right, p.y + h);
+     if (note)
+@@ -374,9 +374,8 @@ int opt_text_row(const char *id, const char *label, const char *value, const cha
+     return row_text(id, label, desc, v, movable);
+ }
+ 
+-// ---- writing a setting: at once in memory (live settings follow), to nx2navi.ini a moment later (opt_save_tick); with
+-// NX2NAVI_MENU_LIVE=1 only when the menu's Save button is pressed (opt_save_now)
+-static uint64_t g_save_at;   // plat_now_ns deadline of the pending write (MENU_LIVE: a change not yet saved); 0 none
++// ---- writing a setting: at once in memory (live settings follow), to nx2navi.ini a moment later (opt_save_tick)
++static uint64_t g_save_at;   // plat_now_ns deadline of the pending write; 0 none
+ static bool g_save_logged;
+ 
+ static void apply(const char *key, const char *value) {
+@@ -392,27 +391,16 @@ static void apply(const char *key, const char *value) {
+ 
+ void opt_save_soon(void) { g_save_at = plat_now_ns() + 400000000ull; }
+ 
+-static int save_now(void) {
++int opt_save_tick(int force) {
++    if (!g_save_at || (!force && plat_now_ns() < g_save_at)) return g_save_at != 0;
+     g_save_at = 0;
+-    int ok = cfg_save();
+-    if (!ok && !g_save_logged) {
++    if (!cfg_save() && !g_save_logged) {
+         g_save_logged = true;
+         rt_log("menu: could not write nx2navi.ini; the changed settings hold for this session");
+     }
+-    return ok;
+-}
+-
+-int opt_save_tick(int force) {
+-    if (cfg_bool("NX2NAVI_MENU_LIVE")) return g_save_at != 0;   // the Save button writes
+-    if (!g_save_at || (!force && plat_now_ns() < g_save_at)) return g_save_at != 0;
+-    save_now();
+     return 0;
+ }
+ 
+-int opt_unsaved(void) { return g_save_at != 0; }
+-
+-int opt_save_now(void) { return save_now(); }
+-
+ // ---- rows
+ 
+ // An on / off row is a stepper too: either arrow, A, left or right flips it.
+diff --git a/runtime/ui/option_rows.h b/runtime/ui/option_rows.h
+index 3bd4c88..d99bd1f 100644
+--- a/runtime/ui/option_rows.h
++++ b/runtime/ui/option_rows.h
+@@ -89,11 +89,7 @@ int opt_bind_row(const char *key, const char *label, UiTextId desc, const char *
+ 
+ // nx2navi.ini is written a moment after the last change (a held slider would rewrite it every frame) and when the menu
+ // closes. opt_save_tick: on every frame the menu lays out; force: write now if anything is pending. 1 while a write is
+-// pending. NX2NAVI_MENU_LIVE=1: neither, only opt_save_now writes.
++// pending.
+ int opt_save_tick(int force);
+-// A change not yet in nx2navi.ini; with NX2NAVI_MENU_LIVE=1 it waits for opt_save_now (the Save button).
+-int opt_unsaved(void);
+-// Writes nx2navi.ini now; 0 when it could not.
+-int opt_save_now(void);
+ // A change made outside a row (Reset, F10): nx2navi.ini is written as after a row's change.
+ void opt_save_soon(void);
+diff --git a/runtime/ui_text.c b/runtime/ui_text.c
+index 09e22cf..73068d6 100644
+--- a/runtime/ui_text.c
++++ b/runtime/ui_text.c
+@@ -47,7 +47,6 @@ static const char *const text_en[UI_TEXT_COUNT] = {
+     [UI_MENU_AFTER_RESTART] = "after restart", [UI_MENU_SET_BY_ENV] = "set by environment variable",
+     [UI_MENU_SAVE_FAILED] = "could not save settings",
+     [UI_MENU_INI_UNKNOWN] = "nx2navi.ini: not settings of this version, ignored: %s",
+-    [UI_MENU_SAVE] = "Save", [UI_MENU_UNSAVED] = "not saved yet: Save writes nx2navi.ini",
+     [UI_MENU_VERSION] = "NX2navi %s, game %s",
+ 
+     [UI_MENU_FULLSCREEN] = "Fullscreen", [UI_MENU_FULLSCREEN_DESC] = "Play in fullscreen. F11 switches it.",
+diff --git a/runtime/ui_text.h b/runtime/ui_text.h
+index a3e635d..7ed5493 100644
+--- a/runtime/ui_text.h
++++ b/runtime/ui_text.h
+@@ -23,7 +23,6 @@ typedef enum {
+     UI_MENU_SET_BY_ENV,       // note on a setting an environment variable fixes
+     UI_MENU_SAVE_FAILED,
+     UI_MENU_INI_UNKNOWN,      // "...: %s": the keys of nx2navi.ini that are no settings of this version (cfg_unknown_keys)
+-    UI_MENU_SAVE, UI_MENU_UNSAVED,   // NX2NAVI_MENU_LIVE=1: the bottom row's Save button, the note while a change waits for it
+     UI_MENU_VERSION,          // "NX2navi %s, game %s": the port version and the game update, beside the title
+ 
+     // Screen
+-- 
+2.56.0
+
+
+From 7be594745044a40ea93a3d115d2bd43bca086b91 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Sat, 14 Nov 2026 11:12:04 -0500
+Subject: [PATCH 7/9] Revert "vk_exec_draw: NX2NAVI_AO_TRACE=1 logs the ambient
+ occlusion chain per frame in replay order: depth pass, occlusion, blur, with
+ their images (diagnosis; the logging slows the replay) (#146)"
+
+This reverts commit 178e4ec113cd17c41d925cc39395ce09b9f3fdfd.
+---
+ runtime/cfg.c          |  2 +-
+ runtime/vk_exec_draw.c | 52 ------------------------------------------
+ 2 files changed, 1 insertion(+), 53 deletions(-)
+
+diff --git a/runtime/cfg.c b/runtime/cfg.c
+index 1556d54..f7ac481 100644
+--- a/runtime/cfg.c
++++ b/runtime/cfg.c
+@@ -97,7 +97,7 @@ static const char *const known[] = {
+     // retired: the settings of the co-op through Steam that the main branch held for a while after 0.9.2 and no
+     // release shipped; listed like the ones above, for the file of someone who built from it then and turned it on
+     "COOP_STEAM", "COOP_SHARE", "COOP_NAMES", "COOP_CHAT",
+-    "DUMP_REQ", "UNJITTER", "MARK_CHORD", "MARK_HOLD_MS", "MARK_RING", "MOTION_PAD", "AO", "AO_TRACE", "MARK_BURST", "MOTION_SOCK", "TEX_DESC_STRICT", "TLD_CLAMP",   // private (build branch)
++    "DUMP_REQ", "UNJITTER", "MARK_CHORD", "MARK_HOLD_MS", "MARK_RING", "MOTION_PAD", "AO", "MARK_BURST", "MOTION_SOCK", "TEX_DESC_STRICT", "TLD_CLAMP",   // private (build branch)
+ };
+ 
+ // The nx2navi.ini section a key cfg_set may write goes to when the file lacks it (nx2navi.ini.example's sections).
+diff --git a/runtime/vk_exec_draw.c b/runtime/vk_exec_draw.c
+index 17c644a..6433751 100644
+--- a/runtime/vk_exec_draw.c
++++ b/runtime/vk_exec_draw.c
+@@ -2535,56 +2535,6 @@ static void ao_clear(VkExec *ex) {
+     ex->recorded++;
+ }
+ 
+-// NX2NAVI_AO_TRACE=1 (diagnosis of the ambient occlusion flicker): one log line, in replay order, for each step of
+-// the ambient occlusion chain: the half-resolution depth pass, the occlusion compute, its last blur, and the lighting
+-// resolve that samples the result, each with the frame, the fence and the images it binds (storage address, VkImage).
+-// From the lines one reads which frame's depth the occlusion saw and whether the resolve sampled the image the blur
+-// of its own frame wrote.
+-static int ao_trace_on(void) {
+-    static int on = -1;
+-    if (on < 0) on = rt_knob("AO_TRACE", "0");
+-    return on;
+-}
+-
+-static int ao_img(char *o, size_t n, const char *name, uint64_t h) {
+-    view_t v;
+-    int hv = 0;
+-    const VkTexImage *t = h ? vk_texture_by_id(NVN_HANDLE_TEX(h), &v, &hv) : NULL;
+-    if (!t) return snprintf(o, n, " %s=none", name);
+-    return snprintf(o, n, " %s=%llx/%p/%ux%u/id%d", name, (unsigned long long)t->addr, (void *)t->image, t->width, t->height,
+-                    NVN_HANDLE_TEX(h));
+-}
+-
+-static void ao_trace(VkExec *ex, const GfxShader *sh, int draw) {
+-    static const struct { uint64_t h; const char *name; int8_t tex[3], img; } steps[] = {
+-        {0x1b66d31cf1ac4053ull, "depth", {-1, -1, -1}, -1},     // fs: full to half resolution depth
+-        {0x561cf523be84578bull, "occlusion", {0, -1, -1}, 0},   // cs: occlusion from the half resolution depth
+-        {0x59867f7d50e9a63bull, "occlusion", {0, -1, -1}, 0},   // the same with the rebase's translator
+-        {0x8b563e79bcdf41ecull, "blur", {0, -1, -1}, 0},        // cs: vertical blur (the last one writes the result)
+-        {0xc6f5578c8c701891ull, "mask", {0, -1, -1}, 0},        // cs: full resolution r8 from the depth buffer
+-        {0xc4fcb154221f0f5aull, "resolve", {5, 6, 1}, -1},      // fs: samples mask (5), occlusion (6), half depth (1)
+-    };
+-    uint64_t h = ao_hash(sh);
+-    for (size_t k = 0; k < sizeof steps / sizeof *steps; k++) {
+-        if (steps[k].h != h) continue;
+-        char line[400];
+-        int st = draw ? NVN_STAGE_FS : NVN_STAGE_CS;
+-        int o = snprintf(line, sizeof line, "ao: f%llu fence %llu %s", (unsigned long long)__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1,
+-                         (unsigned long long)ex->fence, steps[k].name);
+-        for (int i = 0; i < 3; i++)
+-            if (steps[k].tex[i] >= 0) {
+-                char nm[8];
+-                snprintf(nm, sizeof nm, "t%d", steps[k].tex[i]);
+-                o += ao_img(line + o, sizeof line - (size_t)o, nm, ex->tex[st][steps[k].tex[i]]);
+-            }
+-        if (steps[k].img >= 0) o += ao_img(line + o, sizeof line - (size_t)o, "out", ex->img[st][steps[k].img]);
+-        if (draw && ex->color[0].img)
+-            snprintf(line + o, sizeof line - (size_t)o, " rt=%llx/%p/%ux%u", (unsigned long long)ex->color[0].img->addr,
+-                     (void *)ex->color[0].image, ex->color[0].width, ex->color[0].height);
+-        rt_log("%s", line);
+-    }
+-}
+-
+ // NX2NAVI_SKIP_SHADERS=<hash>,...: draws and dispatches whose shader's SPIR-V has one of these FNV-1a hashes (the "vs"/"fs"/
+ // "cs" hashes of the frame dump's passes.txt) are skipped (diagnosis: which pass makes an effect).
+ static int shader_skipped(const GfxShader *sh) {
+@@ -4920,7 +4870,6 @@ static int prepare_draw_ex(VkExec *ex, int prim, int32_t count, int restart, int
+     if (!mesh) bind_vertex_buffers(ex);
+     if (vk_dump_armed && (!mesh || vk_dump_mesh)) vk_dump_draw(ex, &s, p, info, mesh && !fb);
+     if (__atomic_load_n(&vk_pick_armed, __ATOMIC_RELAXED)) vk_pick_note(&s, info);
+-    if (ao_trace_on() && fs) ao_trace(ex, fs, 1);
+     if (vk_hdr_track) vk_hdr_draw(ex, info);
+     if (vk_texture_deferred()) return 0;
+     vk_exec_oq_draw(ex);
+@@ -7588,7 +7537,6 @@ static void op_dispatch(VkExec *ex, const p_dispatch *d) {
+     ex->recorded++;
+     if (vk_dump_armed) vk_dump_dispatch(ex, cs, p, info, d);
+     if (__atomic_load_n(&vk_pick_armed, __ATOMIC_RELAXED)) vk_pick_pass_end();
+-    if (ao_trace_on()) ao_trace(ex, cs, 0);
+     if (!ao_on() && ao_occlusion(ao_hash(cs))) ao_clear(ex);
+ }
+ 
+-- 
+2.56.0
+
+
+From 22857f1d4104da4a2404c7c2dbfdcb0159efe34b Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Sat, 14 Nov 2026 11:12:17 -0500
+Subject: [PATCH 8/9] Revert "NX2NAVI_TRACE=counters: a present/clock line per
+ 60 presents and a line when a voice slot starts after a gap (#128 lab)"
+
+This reverts commit 2ed96f2fd0b6de0397f80a0c0707f806e3268c84.
+---
+ runtime/audio_mixer.c | 17 -----------------
+ runtime/host.h        |  5 ++---
+ runtime/main.c        |  4 ++--
+ runtime/perf.c        |  1 -
+ 4 files changed, 4 insertions(+), 23 deletions(-)
+
+diff --git a/runtime/audio_mixer.c b/runtime/audio_mixer.c
+index c107611..fab260c 100644
+--- a/runtime/audio_mixer.c
++++ b/runtime/audio_mixer.c
+@@ -36,7 +36,6 @@
+ #include "audren.h"
+ #include "host.h"
+ #include "rt_tracy.h"
+-#include "nvn_api.h"   // gfx_counters.frames for the voice start lines
+ #include "ipc.h"
+ 
+ #define MAX_FRAME 1024
+@@ -1127,21 +1126,6 @@ static void mix_circular_sink(AudioRenderer *r,int id) {
+ }
+ uint32_t audio_mixer_sink_written(AudioRenderer *r,int id) {Mixer *m=r->mixer;return m?m->sink_written[id]:0;}
+ 
+-// NX2NAVI_TRACE=counters (#128): one line when a voice slot is rendered after a gap (it was not rendered in the previous
+-// 5 ms frame), with the present count and the monotonic clock the counters line in perf.c logs. Render thread only.
+-static void voice_start_note(AudioRenderer *r, int i, const ServerVoice *v) {
+-    static uint64_t last[1024];   // voice slot -> elapsed_frames of its last render (+1, so 0 is never)
+-    if (i < 0 || i >= 1024) return;
+-    uint64_t now = r->elapsed_frames + 1, gap = now - last[i];
+-    last[i] = now;
+-    if (gap == 1) return;
+-    rt_log("counters: voice %d start: buf 0x%llx+%llu fmt %u %dch %u Hz mix %d present %llu t=%.3f audio-frame %llu", i,
+-           (unsigned long long)v->buffers[v->index].address, (unsigned long long)v->buffers[v->index].size, v->in.sample_format,
+-           (int)v->in.channel_count, (unsigned)v->in.sample_rate, (int)v->in.mix_id,
+-           (unsigned long long)__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED), kern_now_ns() / 1e9,
+-           (unsigned long long)r->elapsed_frames);
+-}
+-
+ static void mixer_render(AudioRenderer *r, int drop);
+ void audio_mixer_render(AudioRenderer *r, double seconds, int drop) {
+     (void)seconds;
+@@ -1187,7 +1171,6 @@ static void mixer_render(AudioRenderer *r, int drop) {
+             m->trace_seen[i] = m->trace_pass;
+             m->trace_buf[i] = wb->address;
+         }
+-        if (rt_trace & RT_TRACE_COUNTERS) voice_start_note(r, i, v);
+         voice_render(r, v, vs, frames);
+         for (int f = 0; f < 2; f++) if (v->in.biquads[f].enable) {
+             const AudrenBiquad *b = &v->in.biquads[f];
+diff --git a/runtime/host.h b/runtime/host.h
+index 57c27cf..1ea4229 100644
+--- a/runtime/host.h
++++ b/runtime/host.h
+@@ -30,9 +30,8 @@ void rt_build_note_file(const char *path);
+ const char *rt_log_path(void);                  // the log file, NULL when this run writes none
+ void rt_log_sync(void);                         // writes the queued log lines now; later lines are written as they are made
+ enum { RT_TRACE_SVC = 1, RT_TRACE_HOSTCALL = 2, RT_TRACE_IPC = 4, RT_TRACE_FS = 8, RT_TRACE_GFX = 16, RT_TRACE_PERF = 32,
+-       RT_TRACE_SCHED = 64, RT_TRACE_AUDIO = 128, RT_TRACE_PRESENT = 256,
+-       RT_TRACE_COUNTERS = 1024 };   // counters: a present/clock line per 60 presents and every voice start (#128 lab)
+-extern unsigned rt_trace;                       // from NX2NAVI_TRACE=svc,host,ipc,fs,gfx,perf,sched,audio,present,counters (or all)
++       RT_TRACE_SCHED = 64, RT_TRACE_AUDIO = 128, RT_TRACE_PRESENT = 256 };
++extern unsigned rt_trace;                       // from NX2NAVI_TRACE=svc,host,ipc,fs,gfx,perf,sched,audio,present (or all)
+ // prof_win.c: NX2NAVI_PROFILE=<path> sampling profiler; NX2NAVI_TRACE=perf frame timing (waits of the render thread)
+ // PERF_TEX: texture uploads on the render thread (deswizzle, decode, staging), PERF_ASTC included
+ enum { PERF_PACE, PERF_FENCE, PERF_DRAIN, PERF_PIPE, PERF_XLATE, PERF_TEX, PERF_ASTC, PERF_N };
+diff --git a/runtime/main.c b/runtime/main.c
+index 14f757b..dbc1cc8 100644
+--- a/runtime/main.c
++++ b/runtime/main.c
+@@ -204,13 +204,13 @@ static void parse_trace(void) {
+     static const struct { const char *name; unsigned bit; } names[] = {
+         {"svc", RT_TRACE_SVC}, {"host", RT_TRACE_HOSTCALL}, {"ipc", RT_TRACE_IPC}, {"fs", RT_TRACE_FS},
+         {"gfx", RT_TRACE_GFX}, {"perf", RT_TRACE_PERF}, {"sched", RT_TRACE_SCHED}, {"audio", RT_TRACE_AUDIO},
+-        {"present", RT_TRACE_PRESENT}, {"counters", RT_TRACE_COUNTERS}, {"all", ~0u}};
++        {"present", RT_TRACE_PRESENT}, {"all", ~0u}};
+     for (const char *p = e; *p;) {
+         size_t n = strcspn(p, ",");
+         int known = 0;
+         for (unsigned i = 0; i < sizeof names / sizeof *names; i++)
+             if (strlen(names[i].name) == n && !strncmp(p, names[i].name, n)) rt_trace |= names[i].bit, known = 1;
+-        if (!known && n) rt_log("NX2NAVI_TRACE: unknown item '%.*s' (svc, host, ipc, fs, gfx, perf, sched, audio, present, counters, all)", (int)n, p);
++        if (!known && n) rt_log("NX2NAVI_TRACE: unknown item '%.*s' (svc, host, ipc, fs, gfx, perf, sched, audio, present, all)", (int)n, p);
+         p += n + (p[n] == ',');
+     }
+ }
+diff --git a/runtime/perf.c b/runtime/perf.c
+index 804bdf9..c7ee9d1 100644
+--- a/runtime/perf.c
++++ b/runtime/perf.c
+@@ -826,7 +826,6 @@ void perf_present(uint64_t frame) {
+     prof_sampler_frame(frame, now, last ? d : 0);
+     RT_FRAME_MARK();
+     RT_TRACY_FRAME();
+-    if ((rt_trace & RT_TRACE_COUNTERS) && frame % 60 == 1) rt_log("counters: present %llu t=%.3f", (unsigned long long)frame, now / 1e9);   // t: CLOCK_MONOTONIC s, for tools/counter-sample
+     uint64_t rep = ft_frame(frame, now, d);   // d is 0 on the first present: it only starts the period
+     ab_b += rt_ab();
+     cpu_placement();
+-- 
+2.56.0
+
+
+From 701e7ce8490b3eda77b2c5afd8687286599cd3e0 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Sat, 14 Nov 2026 11:12:17 -0500
+Subject: [PATCH 9/9] Revert "NX2NAVI_SSBO_SNAPSHOT: storage buffers the game
+ binds are copied at the submit call, and read-only bindings use the copy"
+
+This reverts commit 047ca59ae069e5acdaaf791b88ffc0de3a951d89.
+---
+ runtime/vk.h           |  1 -
+ runtime/vk_exec_draw.c |  6 ------
+ runtime/vk_usnap.c     | 24 +-----------------------
+ 3 files changed, 1 insertion(+), 30 deletions(-)
+
+diff --git a/runtime/vk.h b/runtime/vk.h
+index 94a3935..18c5710 100644
+--- a/runtime/vk.h
++++ b/runtime/vk.h
+@@ -392,7 +392,6 @@ void vk_usnap_begin(const uint64_t *handles, int n, uint64_t fence);
+ // NX2NAVI_REPLAY_ASYNC: the submitting thread takes the copy before it queues the submission; vk_usnap_begin on the
+ // replay thread then uses it.
+ void vk_usnap_take(const uint64_t *handles, int n);
+-int vk_usnap_ssbo(void);   // NX2NAVI_SSBO_SNAPSHOT: bound storage buffers are copied too (vk_usnap.c)
+ // NX2NAVI_ASYNC_HOLD (vk_memory.c): ranges whose CPU writes reach the VRAM mirror in submission order under async
+ // replay. vk_mem_hold_bytes: their total size, 0 when off; vk_mem_hold_take copies them at the submit call;
+ // vk_mem_hold_begin, the replay at the submission's start, queues the words that changed for its first prologue.
+diff --git a/runtime/vk_exec_draw.c b/runtime/vk_exec_draw.c
+index 6433751..36949ef 100644
+--- a/runtime/vk_exec_draw.c
++++ b/runtime/vk_exec_draw.c
+@@ -1590,12 +1590,6 @@ static VkDescriptorBufferInfo ssbo_info(VkExec *ex, int st, const GfxShaderRes *
+     if (b) {
+         // vk_caps.c: shaders translated for sbuf_align address the buffer from its address rounded down to it.
+         uint64_t lead = vk_caps.sbuf_align ? b->addr & (vk_caps.sbuf_align - 1) : 0;
+-        // NX2NAVI_SSBO_SNAPSHOT: a binding the shader only reads takes the bytes as of the submit call (vk_usnap.c)
+-        if (!written && !r->ptr && b->size && vk_usnap_ssbo() &&
+-            vk_usnap_find(b->addr - lead, b->size + lead < max ? b->size + lead : max, align, &bi)) {
+-            count_use(ex->dc, VK_MCLS_SCRATCH, VK_MUSE_SSBO, bi.range);
+-            return bi;
+-        }
+         if (bind_range(ex, b->addr - lead, b->size ? b->size + lead : 0, align, max, ubo ? VK_MUSE_UBO : VK_MUSE_SSBO,
+                        written, &bi)) {
+             if (written && bi.buffer != VK_NULL_HANDLE) note_written(ex, b->addr - lead, bi.range);
+diff --git a/runtime/vk_usnap.c b/runtime/vk_usnap.c
+index a1bd18e..fb0341b 100644
+--- a/runtime/vk_usnap.c
++++ b/runtime/vk_usnap.c
+@@ -32,20 +32,6 @@
+ 
+ #define ALIGN 256u
+ #define MAX_RANGE (64u << 10)
+-// NX2NAVI_SSBO_SNAPSHOT=1 (default 0): storage buffers the game binds (nvnCommandBufferBindStorageBuffer, not the
+-// addresses shaders load from constants) are copied too, up to SSBO_RANGE from the bound address, and a binding that
+-// only reads one uses the copy (vk_exec_draw.c ssbo_info): with NX2NAVI_REPLAY_ASYNC the GPU otherwise reads what the
+-// game wrote there after the submit call (a Zora's lighting flickered in daylight, 2026-11-12; REPLAY_ASYNC=0 fixed it).
+-// The drop and in-flight rules are the uniform copies'.
+-#define SSBO_RANGE (256u << 10)
+-static int ssbo_mode = -1;
+-int vk_usnap_ssbo(void) {
+-    if (ssbo_mode < 0) {
+-        ssbo_mode = rt_knob("SSBO_SNAPSHOT", "0");
+-        if (RT_KNOB_ON(ssbo_mode)) rt_log("vk_usnap: storage buffers the game binds are copied at the submit call too (NX2NAVI_SSBO_SNAPSHOT)");
+-    }
+-    return RT_KNOB_ON(ssbo_mode);
+-}
+ #define ARENA_MIN (4u << 20)
+ #define CALL_DEPTH 16
+ 
+@@ -125,8 +111,7 @@ static Arena *arena_get(uint64_t need) {
+     a->size = need < ARENA_MIN ? ARENA_MIN : (need + (1u << 20) - 1) & ~(uint64_t)((1u << 20) - 1);
+     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = a->size,
+                              // transfer source: DLAA copies the camera block out (vk_dlaa.c mv_pass)
+-                             .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+-                                      VK_BUFFER_USAGE_TRANSFER_SRC_BIT};
++                             .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT};
+     // Device-local through the BAR when the device has it (the GPU reads constants on every draw), else host memory.
+     VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+                                   .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+@@ -200,13 +185,6 @@ static void collect(const op_hdr *h, int depth) {
+             continue;
+         }
+         if (h->op == OP_CALL && depth < CALL_DEPTH) collect(nvn_op_first(((const p_jump *)a)->target), depth + 1);
+-        if (h->op == OP_BIND_SSBO && vk_usnap_ssbo()) {   // NX2NAVI_SSBO_SNAPSHOT
+-            const p_bind_buf *b = a;
+-            if (b->addr && b->size) {
+-                if (U.ncol == U.ccol) U.col = grow(U.col, &U.ccol, sizeof *U.col);
+-                U.col[U.ncol++] = (Rng){b->addr & ~(uint64_t)(ALIGN - 1), b->addr + (b->size < SSBO_RANGE ? b->size : SSBO_RANGE)};
+-            }
+-        }
+         if (h->op == OP_BIND_UBO) {
+             const p_bind_buf *b = a;
+             if (b->addr && b->size) {
+-- 
+2.56.0
+
