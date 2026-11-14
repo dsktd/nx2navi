@@ -823,7 +823,11 @@ All figures: entry as named, exe=nx2navi.play50 commit=15d14ce xlate=xlate-play3
   runs either entry at field-mid-standing (upstream needs `scn-stand-up.txt`: its boot is slower than scn-stand.txt).
 - **One Steam entry with a build picker (2026-11-14).** "NX2navi" (3816935193, Exe play.sh) runs `tools/deck/pick.py`
   first when Steam starts it (`SteamGameId` set, no cell.env): SDL3 from SteamOS through ctypes, SDL_RenderDebugText,
-  deck5 / deck5 + NX2NAVI_STUTTER_MAP=1 / deck4 (NX2NAVI_PLAY_ENV=play.env.deck4) / upstream; last pick in pick.last.
+  slim2 / slim2 + NX2NAVI_STUTTER_MAP=1 / deck5 fallback (NX2NAVI_PLAY_ENV=play.env.deck5) / upstream; last pick in
+  pick.last. `NX2NAVI_PICK=<key> NX2NAVI_PICK_DRY=1` prints what a pick runs; `tools/deck/pick_test.py` feeds event structs.
+  The Deck's own pad sends thousands of axis/sensor events a second: a redraw per event froze the menu behind vsync;
+  drain all events, draw once a round. Never test with uinput pads on the Deck: Steam adopts them as controllers (it
+  wrote preferences_/configset_<vid-pid> files for them and showed them in Cal's session).
   SDL3 event codes: 0x650 is GAMEPAD_AXIS_MOTION, 0x651 BUTTON_DOWN (the first picker read axis events as B and quit).
   Steam Input layouts of non-Steam games are keyed by the lowercased name (config/nx2navi/, configset "nx2navi"), not appid.
   play.env (play51 equivalent): play51's resolved chain minus TEX_RELEASED_MB=3072 (Deck default ~512 by RAM).

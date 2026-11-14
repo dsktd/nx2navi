@@ -10,15 +10,16 @@ import os
 import sys
 
 CHOICES = [
-    ("deck5", "NX2navi deck5"),
-    ("stutter", "NX2navi deck5 + stutter map"),
-    ("deck4", "NX2navi deck4 (previous)"),
+    ("slim2", "NX2navi slim2"),
+    ("stutter", "NX2navi slim2 + stutter map"),
+    ("deck5", "NX2navi deck5 (fallback)"),
     ("upstream", "NX2navi upstream v0.10.1"),
 ]
 LAST = os.path.expanduser("~/nx2navi/pick.last")
 
 INIT_VIDEO, INIT_GAMEPAD = 0x20, 0x2000
 EV_QUIT, EV_KEY_DOWN, EV_PAD_DOWN, EV_PAD_ADDED = 0x100, 0x300, 0x651, 0x653  # 0x650 is axis motion
+EV_JOY_HAT, EV_JOY_ADDED, HAT_UP, HAT_DOWN = 0x602, 0x605, 0x01, 0x04
 PAD_A, PAD_B, PAD_UP, PAD_DOWN = 0, 1, 11, 12
 KEY_UP, KEY_DOWN, KEY_RETURN, KEY_ESCAPE = 0x40000052, 0x40000051, 0x0D, 0x1B
 
@@ -36,7 +37,14 @@ def load_sdl():
     sdl.SDL_RenderDebugText.argtypes = [C.c_void_p, C.c_float, C.c_float, C.c_char_p]
     sdl.SDL_OpenGamepad.restype = C.c_void_p
     sdl.SDL_OpenGamepad.argtypes = [C.c_uint32]
-    sdl.SDL_WaitEventTimeout.argtypes = [C.c_void_p, C.c_int32]
+    sdl.SDL_PollEvent.restype = C.c_bool
+    sdl.SDL_PollEvent.argtypes = [C.c_void_p]
+    sdl.SDL_IsGamepad.restype = C.c_bool
+    sdl.SDL_IsGamepad.argtypes = [C.c_uint32]
+    sdl.SDL_OpenJoystick.restype = C.c_void_p
+    sdl.SDL_OpenJoystick.argtypes = [C.c_uint32]
+    sdl.SDL_Delay.argtypes = [C.c_uint32]
+    sdl.SDL_Init.restype = C.c_bool
     sdl.SDL_GetRenderOutputSize.argtypes = [C.c_void_p, C.POINTER(C.c_int), C.POINTER(C.c_int)]
     return sdl
 
@@ -60,6 +68,28 @@ def draw(sdl, ren, sel):
     sdl.SDL_RenderPresent(ren)
 
 
+def handle(ev, is_gamepad):
+    """One SDL_Event (its bytes) -> (open "pad"|"joy"|None, device id, move -1/0/1, act -1 quit/0/1 start).
+    Every event type not named here is ignored (axis motion 0x650, sensors, touchpads, window events)."""
+    t = int.from_bytes(ev[0:4], "little")
+    which = int.from_bytes(ev[16:20], "little")
+    if t == EV_QUIT:
+        return None, which, 0, -1
+    if t == EV_PAD_ADDED:
+        return "pad", which, 0, 0
+    if t == EV_JOY_ADDED and not is_gamepad(which):
+        return "joy", which, 0, 0
+    if t == EV_PAD_DOWN:
+        b = ev[20]
+        return None, which, -1 if b == PAD_UP else 1 if b == PAD_DOWN else 0, 1 if b == PAD_A else -1 if b == PAD_B else 0
+    if t == EV_JOY_HAT and not is_gamepad(which):
+        return None, which, -1 if ev[21] & HAT_UP else 1 if ev[21] & HAT_DOWN else 0, 0
+    if t == EV_KEY_DOWN:
+        k = int.from_bytes(ev[28:32], "little")
+        return None, which, -1 if k == KEY_UP else 1 if k == KEY_DOWN else 0, 1 if k == KEY_RETURN else -1 if k == KEY_ESCAPE else 0
+    return None, which, 0, 0
+
+
 def main():
     keys = [k for k, _ in CHOICES]
     try:
@@ -73,29 +103,28 @@ def main():
     ren = sdl.SDL_CreateRenderer(win, None)
     ev = (C.c_uint8 * 128)()
     pick = None
-    while pick is None:
-        draw(sdl, ren, sel)
-        if not sdl.SDL_WaitEventTimeout(ev, 500):
-            continue
-        t = int.from_bytes(bytes(ev[0:4]), "little")
-        move = act = 0
-        if t == EV_QUIT:
-            break
-        if t == EV_PAD_ADDED:
-            sdl.SDL_OpenGamepad(int.from_bytes(bytes(ev[16:20]), "little"))
-        elif t == EV_PAD_DOWN:
-            b = ev[20]
-            move = -1 if b == PAD_UP else 1 if b == PAD_DOWN else 0
-            act = 1 if b == PAD_A else -1 if b == PAD_B else 0
-        elif t == EV_KEY_DOWN:
-            k = int.from_bytes(bytes(ev[28:32]), "little")
-            move = -1 if k == KEY_UP else 1 if k == KEY_DOWN else 0
-            act = 1 if k == KEY_RETURN else -1 if k == KEY_ESCAPE else 0
-        sel = (sel + move) % len(CHOICES)
-        if act == -1:
-            break
-        if act == 1:
-            pick = keys[sel]
+    dirty, running, rounds = True, True, 0
+    # Poll, never block: the Deck's own pad sends thousands of axis and sensor events a second, so every event is
+    # drained each round, unknown ones ignored, and the screen drawn once a round only after a change (a draw per
+    # event made the queue grow behind vsync: the menu froze after a few presses).
+    while running and pick is None:
+        while sdl.SDL_PollEvent(ev):
+            kind, which, move, act = handle(bytes(ev), sdl.SDL_IsGamepad)
+            if kind == "pad":
+                sdl.SDL_OpenGamepad(which)
+            elif kind == "joy":
+                sdl.SDL_OpenJoystick(which)  # a pad SDL has no mapping for: its hat events count
+            if move:
+                sel, dirty = (sel + move) % len(CHOICES), True
+            if act == -1:
+                running = False
+            elif act == 1 and pick is None:
+                pick = keys[sel]
+        rounds += 1
+        if dirty or rounds % 30 == 0:  # and twice a second, for a compositor that dropped a frame
+            draw(sdl, ren, sel)
+            dirty = False
+        sdl.SDL_Delay(16)
     sdl.SDL_Quit()
     if pick is None:
         return 1
