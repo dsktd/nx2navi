@@ -1,2 +1,3 @@
 id	date	scenario	recipe	kind	a	b	a_png	b_png	heat_png	score	status	note
 1	2026-11-12	field-gerudo-cliffs	5f0ec69b	ab	play40 DUMMY_CLEAR=0	play40 DUMMY_CLEAR=2	.lab/visual/2026-11-12/play40-field-gerudo-cliffs-A.png	.lab/visual/2026-11-12/play40-field-gerudo-cliffs-B.png	.lab/visual/2026-11-12/play40-field-gerudo-cliffs-heat.png	0.0991	flagged	flagged for Cal regardless (coordinator); no magenta at DUMMY_CLEAR=2, rocks normal colour; yaw -117.82 frames a near rock wall, not the valley cliffs; score from Link pose
+2	2026-11-13	field-f2663-standing		ab	play49	play50	.lab/visual/2026-11-13/play50-field-f2663-standing-A.png	.lab/visual/2026-11-13/play50-field-f2663-standing-B.png	.lab/visual/2026-11-13/play50-field-f2663-standing-heat.png	0.1236	flagged	
