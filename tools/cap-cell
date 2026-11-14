@@ -19,6 +19,8 @@ empty=$R/.lab/caps/empty-input.txt; mkdir -p ${empty%/*}; [ -f $empty ] || echo 
 for ((i=1; i<=reps; i++)); do
   log=$(ls -t $B/logs/play-*.log | head -1)
   [ $(( $(date +%s) - $(stat -c %Y $log) )) -lt 180 ] && { echo "cap-cell: Cal playing" >&2; exit 9; }
+  # Cal's rule (2026-11-14): no run while a game runs on the desktop (games-running exit 1); recheck every 5 min
+  until $HOME/claude/.services/locks/games-running desktop >/dev/null; do sleep 300; done
   name=cap-$tag-$i O=$R/.lab/$name.prep; l0=$(cell_wait)
   mkdir -p $O; python3 -I $R/tools/cap-prep "$cap" $O --ini "${INI:-$B/nx2navi.ini}" || exit 4
   (cd $R && LAB_BIN=$bin LAB_EXE=$lexe LAB_NODUMP=1 LAB_TIMEOUT=${LAB_TIMEOUT:-600} \
