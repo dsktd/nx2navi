@@ -557,6 +557,41 @@ All upstream analysers are portable: `runtime/perf.c`, `runtime/flight.c` and `k
 | Spin-wait loops holding virtual cores | `spin_waits.py` | ExeFS; emits patch-table lines |
 | Guest PGO | `pgo.py` (llvm-mingw, Windows build path) | not usable on our Linux link as is |
 
+### Upstream 0.10.1 lab tools we use (2026-11-14, all in `build` d2d2e64 = play51/deck5 and up101 5ae55db)
+
+- **Capture-start runs** (upstream 4fd70e3, `runtime/bugcap.c`, `docs/bug-capture.md`): `NX2NAVI_CAPTURE_AT=<frame>`
+  (or F8) writes `logs/captures/NNN-<time>/` (`capture.txt` place/camera/timing, `frame.png`, `frames.tsv`,
+  `settings.ini`, the save as `NX2navi-save-*.zip`); `NX2NAVI_CAPTURE_DIR` moves it. A run with
+  `NX2NAVI_CAPTURE_REPLAY=<dir>` presses A itself until Link appears, teleports to the nearest start, walks Link to the
+  captured x z (0.4-0.5 m, he is walked, not put), places the free camera exactly and logs
+  `capture: replay of <name> ready: ... m from the captured place`, then takes its own capture. No boot-timed input
+  script: it does not break when boot timing shifts (scn-stand.txt does). The capture's `settings.ini` REPLACES
+  nx2navi.ini (not read, not written; env still wins), so `tools/cap-prep` puts the reference ini (Cal's live one,
+  copied) in as settings.ini: both A/B sides then run Cal's whole ini and no game folder's ini is touched. The save
+  goes in as `profile/save-import` (fs_host.c import_pending). Ours: `tools/cap-prep`, `tools/cap-cell <exe|up101>
+  <capture> <tag> <reps>` (desktop, window = `ready` + SKIPF 300 frames to FRAME, `tools/cap-sum`),
+  `tools/deck/capcell.sh <up|d5> <capture> <tag>` (Deck; copy cap-prep + cap-sum to ~/nx2navi). Captures: `.lab/caps/`.
+  Not restored by a replay: time of day, actors, Link's pose/item, progress since the last save. Our recipes (0106,
+  exact position via warp-save) stay the tool for exact-place bugs; captures are the tool for boot-robust standing
+  cells and for upstream builds, which have no recipe patch. Checked 2026-11-14: one field-mid-standing capture
+  (made on play51 d2d2e64 by scn-cell + NX2NAVI_CAPTURE_AT=2700) replays on play51 and on up101 5ae55db alike: ready at
+  present 2259 / 2369, Link 0.05 m off, no teleport, Cal's ini read (30 keys). Pitfall: never stage the capture inside
+  `.lab/<label>`: lab-run empties its out dir, and the run then has no settings.ini (all defaults) and no replay.
+  The f2663 capture (.lab/caps/f2663/001-*) walks 0.32-0.35 m (save starts 3 m away) on both builds as well.
+- **Stutter map** (97671e8, e7c2fc6; `runtime/stutter_map.c`): `NX2NAVI_STUTTER_MAP=1` / ini `stutter_map = 1`, off by
+  default; a hitch = a frame long against the median of the last 32 (a steady pace change is not a hitch); every 10 min
+  and at exit `stutter map` blocks rank areas by hitches with causes and the pipelines/shaders draws met missing.
+  `python3 NX2navi/tools/stutter_map.py report LOG` makes the report; `missing GAME_DIR LIST` lists pipelines a list lacks.
+  Lab check (play51 d2d2e64, scn-cell field-running x1, 6400 frames, indicative): our `over25_min` said 341.7 a
+  minute where the map counted 24 hitches in play and 1008 long frames as a change of pace: >25 ms counts a slow
+  steady pace as stutter; use the map's hitches for stutter questions (#173). The run's route drifted into Market_Adult
+  for 3.2 min (the field-west warp is beside the Market entrance), so area rows show where a replay really went.
+- **Memory report** (d9429b0, 2820781; `vk_memory.c` owner_log/beyond_log, `mem_growth.h`): `mem: by owner`, `mem: host`,
+  `mem: outside VMA`, `mem: system`, `mem: growth` (>64 MiB) and `mem: growth ranking` (10 min + exit). Covers what our
+  patch 0037 (per-heap VRAM line every 1800 frames without TRACE=perf) gave. `mem_budget_test_vram_mb` / `_ram_mb` (0c153c1) pretend a small card or RAM on
+  the desktop: the way to reproduce Deck memory pressure without the Deck (texture cache rules are left alone).
+- **floor_watch** (cae09a2): hardware watchpoints are Windows-only (`platform/win32.c`); on Linux only floor_scan works.
+
 ### Launcher and what a run uses (2026-11-12)
 `just launcher` (`launcher/`, README "Launcher") reads which exe and caches the default run uses without starting it:
 the `runs/*.sh` chain ends in `exec just -f <justfile> play`, so running the script with a stand-in `just` first on
