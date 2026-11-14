@@ -1,0 +1,67 @@
+#!/usr/bin/env python3
+"""cap-prep <capture dir> <out dir> [--base PROFILE] [--ini INI]: stage a capture-start run (upstream 4fd70e3).
+
+Writes <out>/profile (the base profile without its saves, the capture's save zip as a waiting import, as upstream
+tools/capture_run.py make_profile does) and <out>/cap (a copy of the capture; with --ini its settings.ini is that ini,
+the capture's own kept as settings.capture.ini). The run then sets NX2NAVI_PROFILE_DIR=<out>/profile and
+NX2NAVI_CAPTURE_REPLAY=<out>/cap. Never touches the capture, the base profile or the ini. Desktop and Deck alike.
+"""
+import argparse
+import shutil
+import sys
+import zipfile
+from pathlib import Path
+
+SKIP = {"save", "save-backup", "save-tx", "save-import", "save-import.part", "coop-backup", "instance.lock"}
+
+
+def stage_profile(base, profile, capture):
+    profile.mkdir(parents=True)
+    if base.is_dir():
+        for entry in base.iterdir():
+            if entry.name in SKIP:
+                continue
+            if entry.is_dir():
+                shutil.copytree(entry, profile / entry.name)
+            else:
+                shutil.copy2(entry, profile / entry.name)
+    zips = sorted(capture.glob("NX2navi-save-*.zip"))
+    if not zips:
+        sys.exit(f"cap-prep: {capture} holds no save zip")
+    files = 0
+    with zipfile.ZipFile(zips[0]) as z:
+        for info in z.infolist():
+            rel = Path(info.filename[5:])
+            if info.is_dir() or not info.filename.startswith("save/") or rel.is_absolute() or ".." in rel.parts:
+                continue
+            if info.filename.lower().endswith((".keys", ".keys.txt")):
+                continue
+            dst = profile / "save-import" / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.write_bytes(z.read(info))
+            files += 1
+    return f"{files} save files from {zips[0].name}"
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("capture", type=Path)
+    ap.add_argument("out", type=Path)
+    ap.add_argument("--base", type=Path, default=Path.home() / "claude/nx2navi/.lab/scenarios/base-profile")
+    ap.add_argument("--ini", type=Path)
+    a = ap.parse_args()
+    cap = a.capture.resolve()
+    if not (cap / "capture.txt").is_file():
+        sys.exit(f"cap-prep: {cap} has no capture.txt (incomplete capture)")
+    for sub in ("profile", "cap"):
+        shutil.rmtree(a.out / sub, ignore_errors=True)
+    print("cap-prep: profile:", stage_profile(a.base, a.out / "profile", cap))
+    shutil.copytree(cap, a.out / "cap", ignore=shutil.ignore_patterns("replays", "flight"))
+    if a.ini:
+        shutil.copy2(a.out / "cap/settings.ini", a.out / "cap/settings.capture.ini")
+        shutil.copy2(a.ini, a.out / "cap/settings.ini")
+        print(f"cap-prep: settings.ini = {a.ini}")
+
+
+if __name__ == "__main__":
+    main()

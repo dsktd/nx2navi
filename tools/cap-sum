@@ -1,0 +1,41 @@
+#!/usr/bin/env python3
+"""cap-sum <run.log> [skip frames]: fps, 1% low, interval, replay, gpu over a capture-start run's standing window:
+from the present after `capture: replay of ... ready` + skip to the last perf window. Also where Link ended up."""
+import re
+import statistics as st
+import sys
+
+text = open(sys.argv[1], errors="replace").read().splitlines()
+skip = int(sys.argv[2]) if len(sys.argv) > 2 else 300
+frame, ready, off = 0, None, "?"
+iv, rp, gp = [], [], []
+for line in text:
+    m = re.search(r"present: frame (\d+)", line)
+    if m:
+        frame = int(m[1])
+    if ready is None and "capture: replay of" in line and " ready: " in line:
+        ready = frame
+        o = re.search(r"([0-9.]+) ?m from", line)
+        off = o[1] if o else line.split(" ready: ", 1)[1][:80]
+    p = re.search(r"perf: frame (\d+): (interval|gpu) avg ([\d.]+)", line)
+    if p and ready is not None and int(p[1]) >= ready + skip:
+        if p[2] == "gpu":
+            gp.append(float(p[3]))
+            continue
+        iv.append(float(p[3]))
+        r = re.search(r"replay avg ([\d.]+)", line)
+        if r:
+            rp.append(float(r[1]))
+if ready is None:
+    print("no 'capture: replay ... ready' line: the replay did not reach the place")
+    sys.exit(1)
+if not iv:
+    print(f"ready at present {ready}, no perf window after +{skip}: raise FRAME")
+    sys.exit(1)
+mean = st.mean(iv)
+low = sorted(iv)[-max(1, len(iv) // 100)]
+print(
+    f"ready_at={ready} link_off={off} n={len(iv)} interval {mean:.2f} ms ({1000 / mean:.1f} fps, worst window {low:.2f})"
+    + (f" replay {st.mean(rp):.2f}" if rp else "")
+    + (f" gpu {st.mean(gp):.2f}" if gp else "")
+)

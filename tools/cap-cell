@@ -1,0 +1,31 @@
+#!/bin/bash
+# cap-cell <exe|up101> <capture dir> <tag> <reps> [KEY=VAL...]: standing cell that starts from a bug capture (upstream
+# 4fd70e3, NX2NAVI_CAPTURE_REPLAY) instead of a boot-timed input script: the game presses A through the title itself,
+# teleports, walks Link to the captured place and puts the free camera there. Measured: present frames from the
+# replay's `ready` line + SKIPF (default 300, past the replay's own capture) to FRAME (default 5400).
+# Settings: the capture's settings.ini is replaced by INI (default Cal's live build/v111/nx2navi.ini, copied, never
+# written), so both sides of an A/B run Cal's whole ini; the capture's own stays as cap/settings.capture.ini.
+# exe up101 = clean upstream 0.10.1 (NX2navi/build/up101-game/ocarina); any other = builds.tsv row, nx2navi.<exe>.
+# Out: .lab/cap-<tag>-<i>/run.log, .lab/cap-<tag>-<i>.prep/ (profile, cap; cap/replays = the run's own capture;
+# not inside .lab/<name>: lab-run empties that), summary lines in .lab/cap-<tag>.txt.
+R=$HOME/claude/nx2navi; B=$R/NX2navi/build/v111; P=$R/.lab/parity
+exe=$1 cap=$(realpath "$2") tag=$3 reps=$4; shift 4
+[ -f "$cap/capture.txt" ] || { echo "cap-cell: $cap: no capture.txt" >&2; exit 2; }
+if [ $exe = up101 ]; then bin=$R/NX2navi/build/up101-game lexe=ocarina; xl=()
+else grep -q "^$exe	" $R/builds.tsv || { echo "cap-cell: no builds.tsv row for $exe" >&2; exit 8; }
+  . $R/tools/cell-lib.sh; bin=$B lexe=nx2navi.$exe; xl=(NX2NAVI_XLATE=$(cell_xlate $exe)); fi
+. $R/tools/cell-lib.sh
+empty=$R/.lab/caps/empty-input.txt; mkdir -p ${empty%/*}; [ -f $empty ] || echo '# no input: the capture replay presses A itself' > $empty
+for ((i=1; i<=reps; i++)); do
+  log=$(ls -t $B/logs/play-*.log | head -1)
+  [ $(( $(date +%s) - $(stat -c %Y $log) )) -lt 180 ] && { echo "cap-cell: Cal playing" >&2; exit 9; }
+  name=cap-$tag-$i O=$R/.lab/$name.prep; l0=$(cell_wait)
+  mkdir -p $O; python3 -I $R/tools/cap-prep "$cap" $O --ini "${INI:-$B/nx2navi.ini}" || exit 4
+  (cd $R && LAB_BIN=$bin LAB_EXE=$lexe LAB_NODUMP=1 LAB_TIMEOUT=${LAB_TIMEOUT:-600} \
+    taskset -c ${LAB_CPUS:-$(taskset -cp $$ | cut -d: -f2 | tr -d " ")} tools/lab-run $empty ${FRAME:-5400} $name \
+    NX2NAVI_PROFILE_DIR=$O/profile NX2NAVI_CAPTURE_REPLAY=$O/cap NX2NAVI_CAPTURE_DIR=$O/cap/replays \
+    NX2NAVI_SHADER_CACHE=${SC:-$P/scR} NX2NAVI_PIPELINE_CACHE=${PC:-$P/pcR.bin} NX2NAVI_TRACE=perf,present \
+    NX2NAVI_RUN_NAME=$name "${xl[@]}" "$@" > $R/.lab/$name.out 2>&1)
+  cell_note $name warm "$(sha256sum $cap/capture.txt | cut -c1-12)" $l0
+  python3 -I $R/tools/cap-sum $R/.lab/$name/run.log ${SKIPF:-300} | sed "s/^/$name /"
+done | tee -a $R/.lab/cap-$tag.txt
