@@ -1,0 +1,7 @@
+#!/bin/sh
+# dssh <ssh args...>: ssh to the Deck as tally over the WireGuard hub (10.77.0.4 through the relay as jump host;
+# steamdeckoled.local does not resolve in the container). Host key: the Deck's, kept under steamdeckoled.local.
+exec nix shell nixpkgs#openssh -c ssh -i $HOME/.config/gh/ssh/claude-steamdeck -o IdentitiesOnly=yes -o BatchMode=yes \
+  -o ConnectTimeout=15 -o UserKnownHostsFile=$HOME/claude/steamdeck-known_hosts -o HostKeyAlias=steamdeckoled.local \
+  -o "ProxyCommand=ssh -i $HOME/.claude/ssh/yakvc_server_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o UserKnownHostsFile=$HOME/.claude/ssh/known_hosts -W %h:%p claude@relay.yak.dsktd.net" \
+  tally@${DECK_HOST:-10.77.0.4} "$@"
