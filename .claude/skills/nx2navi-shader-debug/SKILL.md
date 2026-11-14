@@ -20,7 +20,7 @@ lowering bugs, invalid SPIR-V, window origin), section 6 "Texture cache" (wrong 
 2. **Lab replays only when no game is running.** `tools/lab-run [--show] <recording> <dump-frame> <label> [KEY=VALUE...]`
    (flock on /tmp/nx2navi-lab.lock; refuses if a game runs). `tools/lab-when <label> <regex>` gives the time of a log
    line. Caveat: replays drift. The same recording landed in three different scenes at frame 1900, in the pause menu,
-   or indoors after save data changed. Check the scene at the dump frame before trusting any A/B. Prefer an early
+   or indoors after save data changed. Check the scene at the dump frame before trusting any A/B. To look at a spot again without a boot-timed recording, start from a bug capture (`NX2NAVI_CAPTURE_REPLAY`, `tools/cap-cell`; add `NX2NAVI_DUMP=<frame after ready>`), ARCHITECTURE.md 11. Prefer an early
    frame, or a fresh recording from Cal's current save.
 3. **Dumps.** `NX2NAVI_DUMP=<frame>` (counts presents) with `NX2NAVI_DUMP_DIR`, `NX2NAVI_DUMP_UBO=n` (constants) and
    `NX2NAVI_DUMP_BUF=addr:size` (one range). Read `images.txt` for per-image NaN counts and `passes.txt` for

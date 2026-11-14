@@ -21,6 +21,7 @@ The reference is `~/claude/nx2navi/ARCHITECTURE.md` (private repo; about 5,500 w
 | Which private patch owns a knob | 10 Our private patches |
 | cfg rows, clean builds, current recipes/exes, dumps, lavapipe runs, MSBT/text mods, BNTX swizzle | 11 Working rules and tooling |
 | which tool for which problem (logstat, in-launch A/B, crit path, flight recorder, perf trace) | 11 "Tools" |
+| Standing cells from a capture, stutter map, memory report, faking a small card | 11 "Upstream 0.10.1 lab tools we use" |
 | A term (NVN, SVC, shadow, pin, one-shot pass, c0/c1, patch page) | 12 Glossary |
 
 Rules that follow from the architecture:
@@ -36,6 +37,12 @@ Rules that follow from the architecture:
 - Texture slots can follow another entry at the same address (other size/format) or hit the stale rule: an unresolved or wrong-size texture is usually `slot_resolve`, not the shader. Read the `vk: slot ... follows` / `stale slot` log lines first.
 - Perf A/B: compare runs with `just logstat A B` (rates per minute / per 600 frames); for a knob, prefer one run with `NX2NAVI_AB=<s>` + knob `ab` + `NX2NAVI_TRACE=perf`, read by `just ab LOG` (no replay drift). Only knobs tested via `RT_KNOB_ON` switch live.
 - `TEX_RT_RECYCLE` (`build`/play13 only; dead on rebase-upstream, as are `AO_ORDER`, `TEX_STALE_LIVE`, `TEX_RELEASED_LRU`) and RT trims lose content when the game takes a render target back: flicker after a VRAM change points there.
+- Standing cells start from a bug capture (`tools/cap-cell <exe|up101> <capture> <tag> <reps>`, Deck `capcell.sh`;
+  fc-cell, scn-cell and the Deck cell.sh do this when `.lab/caps/<scenario>/` exists, CAP=0 for the old input-script
+  path). The capture's settings.ini replaces nx2navi.ini, so cap-prep puts Cal's live ini in it; never stage a capture
+  inside `.lab/<label>` (lab-run empties it). New spot: any run with `NX2NAVI_CAPTURE_AT=<frame>`.
+- Stutter questions: `NX2NAVI_STUTTER_MAP=1` + `NX2navi/tools/stutter_map.py report LOG`; `over25_min` counts a slow
+  steady pace as stutter.
 - VMA block slack hides frees: driver VRAM usage does not fall when entries are destroyed.
 - `NX2NAVI_WATCH` is GPU-side; CPU counters need gdb or `/proc/pid/mem`.
 - Before telling Cal a command, check the justfile recipe and its default exe.
