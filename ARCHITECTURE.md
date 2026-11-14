@@ -814,6 +814,12 @@ All figures: entry as named, exe=nx2navi.play50 commit=15d14ce xlate=xlate-play3
   game_res 900 still gives a 1920x1080 picture, 1440x810 scene, which our 0120 lowers): FATAL access violation in
   libvulkan_radeon after a failed buffer allocation during the load, MemAvailable 181 MiB (2026-11-14, abu2-1). `tools/deck/ab-up.sh`
   runs either entry at field-mid-standing (upstream needs `scn-stand-up.txt`: its boot is slower than scn-stand.txt).
+- **One Steam entry with a build picker (2026-11-14).** "NX2navi" (3816935193, Exe play.sh) runs `tools/deck/pick.py`
+  first when Steam starts it (`SteamGameId` set, no cell.env): SDL3 from SteamOS through ctypes, SDL_RenderDebugText,
+  deck5 / deck5 + NX2NAVI_STUTTER_MAP=1 / deck4 (NX2NAVI_PLAY_ENV=play.env.deck4) / upstream; last pick in pick.last.
+  SDL3 event codes: 0x650 is GAMEPAD_AXIS_MOTION, 0x651 BUTTON_DOWN (the first picker read axis events as B and quit).
+  Steam Input layouts of non-Steam games are keyed by the lowercased name (config/nx2navi/, configset "nx2navi"), not appid.
+  play.env (play51 equivalent): play51's resolved chain minus TEX_RELEASED_MB=3072 (Deck default ~512 by RAM).
 - **The desktop's full pipeline list must not be prewarmed in the game process**: without the pipeline library
   (`RADV_DEBUG=nogpl`) the boot builds every recorded pipeline and keeps it: 18,568 whole pipelines took 16 min and
   7.0 GiB private. Upstream's `tools/pipeline_list.py merge` folds recorded lists and `--prepare-pipelines` builds a
