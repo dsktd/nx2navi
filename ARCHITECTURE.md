@@ -775,7 +775,9 @@ All figures: entry as named, exe=nx2navi.play50 commit=15d14ce xlate=xlate-play3
   real romfs/ into the out folder and use `--rebuild`. "NX2navi" (3816935193) = play.sh + play.env (deck5).
   Upstream 0.10.1 reaches the title but **cannot load a save on the Deck**: with Cal's ini the GPU device is lost during
   the load (3580 of 3664 MiB budget, 64 MiB dma-buf spans), with its defaults (device profile picks texture detail full
-  at the 12 GiB limit) MemAvailable falls under 100 MiB. Upstream has no memory clamp for the Deck. `tools/deck/ab-up.sh`
+  at the 12 GiB limit) MemAvailable falls under 100 MiB. Upstream has no memory clamp for the Deck. Same with Cal's 25 keys upstream knows in its own ini (it ignores game_res_min/max;
+  game_res 900 still gives a 1920x1080 picture, 1440x810 scene, which our 0120 lowers): FATAL access violation in
+  libvulkan_radeon after a failed buffer allocation during the load, MemAvailable 181 MiB (2026-11-14, abu2-1). `tools/deck/ab-up.sh`
   runs either entry at field-mid-standing (upstream needs `scn-stand-up.txt`: its boot is slower than scn-stand.txt).
 - **The desktop's full pipeline list must not be prewarmed in the game process**: without the pipeline library
   (`RADV_DEBUG=nogpl`) the boot builds every recorded pipeline and keeps it: 18,568 whole pipelines took 16 min and
