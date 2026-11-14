@@ -3,6 +3,10 @@
 # 10 s after the frame time settles (LONG=1: at <last-frame>), started through the Steam entry in the foreground; then
 # fps / 1% low / interval / replay / gpu over present frames LO(default 1800)..last. Out: ~/nx2navi/runs/<tag>/{run.log,sum.txt}
 N=$HOME/nx2navi; B=$N/build/v111; sc=$1 tag=$2 hi=$3; shift 3; lo=${LO:-1800}
+# capture start (2026-11-14): with ~/nx2navi/caps/<scenario>/ present, capcell.sh runs it (EXE as here, Cal's ini, no
+# scn-stand.txt); CAP=0: the old path below
+cap=$(ls -d $N/caps/$sc/*/ 2>/dev/null | head -1)
+[ "${CAP:-1}" != 0 ] && [ -n "$cap" ] && EXE=${EXE:-deck2} exec $N/capcell.sh d5 $cap $tag ${TMO:-240} "$@"
 exec 9>"$N/.game.lock"; flock -n 9 || { echo "cell: a game is running" >&2; exit 3; }
 pgrep -f "nx2navi\.[a-z0-9]+$" >/dev/null && { echo "cell: a game is running" >&2; exit 3; }
 O=$N/runs/$tag; rm -rf $O; mkdir -p $O $B/logs; cp -a $N/scn/$sc $O/profile

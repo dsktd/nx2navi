@@ -5,6 +5,10 @@ R=$HOME/claude/nx2navi; exe=$1 tag=$2 rep=$3; shift 3
 log=$(ls -t $R/NX2navi/build/v111/logs/play-*.log | head -1)
 [ $(( $(date +%s) - $(stat -c %Y $log) )) -lt 180 ] && { echo "fc: Cal playing" >&2; exit 9; }
 while [ "$(cut -d' ' -f1 /proc/loadavg | cut -d. -f1)" -ge 4 ]; do sleep 20; done
+# capture start (2026-11-14): with .lab/caps/f2663/ present, tools/cap-cell runs the f2663 capture (Cal's ini, no
+# input script; out .lab/cap-fc<tag>-<rep>-1, results.tsv rows cap-f2663); CAP=0: the old recipe path below
+cap=$(ls -d $R/.lab/caps/f2663/*/ 2>/dev/null | head -1)
+[ "${CAP:-1}" != 0 ] && [ -n "$cap" ] && exec $R/tools/cap-cell $exe $cap fc$tag-$rep 1 NX2NAVI_GPU_WAIT=0 NX2NAVI_ALIAS_EXTRA_MIB=512 NX2NAVI_POOL_IDLE_MS=8 NX2NAVI_SHADOW_BULK_WRITE=1 NX2NAVI_SHADOW_PRESYNC=1 NX2NAVI_SHADOW_TOUCH_LOCK=1 NX2NAVI_STALL_MS=100 NX2NAVI_TEX_DESC_STRICT=1 NX2NAVI_TEX_RELEASED_MB=3072 NX2NAVI_TEX_RELEASED_MIB=3072 NX2NAVI_VK_RECORDER=1 "$@"
 l=fc-$tag-$rep; echo "load $(cut -d' ' -f1-3 /proc/loadavg) $l"
 REPRO_EXE=$exe REPRO_FRAME=${FRAME:-3000} $R/tools/repro $R/NX2navi/build/v111/dump/f2663/recipe.dbg $l \
   NX2NAVI_ALIAS_EXTRA_MIB=512 NX2NAVI_GPU_WAIT=0 NX2NAVI_POOL_IDLE_MS=8 NX2NAVI_SHADOW_BULK_WRITE=1 \

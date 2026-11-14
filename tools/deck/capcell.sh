@@ -1,18 +1,20 @@
 #!/bin/bash
-# capcell.sh <up|d5> <capture dir> <tag> [secs]: one capture-start standing run on the Deck (upstream 4fd70e3,
+# capcell.sh <up|d5> <capture dir> <tag> [secs [KEY=VAL...]]: one capture-start standing run on the Deck (upstream 4fd70e3,
 # NX2NAVI_CAPTURE_REPLAY; no boot-timed scn-stand.txt): the upstream reference (~/nx2navi/upstream/ocarina) or the
 # patched entry's exe (play.env). Both read Cal's live build/v111/nx2navi.ini as the capture's settings.ini (a copy:
 # cap-prep; no game folder's ini is touched). Started directly on gamescope's :1 like ab-up.sh. Measured from the
-# replay's `ready` line + SKIPF (300) frames to the end (cap-sum). Out: runs/<tag>/
-N=$HOME/nx2navi; B=$N/build/v111; U=$N/upstream; w=$1 cap=$(realpath "$2") tag=$3 secs=${4:-240}
+# replay's `ready` line + SKIPF (300) frames to the end (cap-sum). EXE=<name> runs nx2navi.<name> instead of play.env's;
+# the pipeline cache is a per-run copy of PC (default build/v111/pipeline-cache-deck4.bin). Out: runs/<tag>/
+N=$HOME/nx2navi; B=$N/build/v111; U=$N/upstream; w=$1 cap=$(realpath "$2") tag=$3 secs=${4:-240}; shift 4 2>/dev/null || shift $#   # the rest: KEY=VAL for the run
 pgrep -x ocarina >/dev/null || pgrep -f "nx2navi\.[a-z0-9]+$" >/dev/null && { echo "capcell: a game is running" >&2; exit 3; }
 O=$N/runs/$tag; rm -rf $O; mkdir -p $O
 python3 -I $N/cap-prep "$cap" $O --base $N/scn/field-mid-standing --ini $B/nx2navi.ini || exit 4
-M="NX2NAVI_PROFILE_DIR=$O/profile NX2NAVI_CAPTURE_REPLAY=$O/cap NX2NAVI_CAPTURE_DIR=$O/cap/replays NX2NAVI_RUN_NAME=$tag NX2NAVI_TRACE=perf,present"
+M="NX2NAVI_PROFILE_DIR=$O/profile NX2NAVI_CAPTURE_REPLAY=$O/cap NX2NAVI_CAPTURE_DIR=$O/cap/replays NX2NAVI_RUN_NAME=$tag NX2NAVI_TRACE=perf,present $*"
 if [ $w = up ]; then exe=ocarina
   (cd $U; unset LD_PRELOAD LD_LIBRARY_PATH; env $M DISPLAY=:1 /nix/store/ynczmb6i3kjia50k0hv19biblhjdnly9-nixVulkanIntel/bin/nixVulkanIntel $N/libs.sh ./ocarina > $O/run.log 2>&1) &
 else
-  echo "$M CELL_LOG=$O/run.log" | tr ' ' '\n' > $N/cell.env; exe=nx2navi.$(. $N/play.env; echo $NX2NAVI_EXE)
+  cp ${PC:-$B/pipeline-cache-deck4.bin} $O/pc.bin; e=${EXE:-$(. $N/play.env; echo $NX2NAVI_EXE)}; exe=nx2navi.$e
+  echo "$M NX2NAVI_EXE=$e NX2NAVI_PIPELINE_CACHE=$O/pc.bin CELL_LOG=$O/run.log" | tr ' ' '\n' > $N/cell.env
   DISPLAY=:1 $N/play.sh &
 fi
 minav=999999

@@ -36,6 +36,10 @@ exe=$1 sc=$2 tag=$3 rep=$4; shift 4
 log=$(ls -t $B/logs/play-*.log | head -1)
 [ $(( $(date +%s) - $(stat -c %Y $log) )) -lt 180 ] && { echo "scn: Cal playing" >&2; exit 9; }
 while [ "$(cut -d' ' -f1 /proc/loadavg | cut -d. -f1)" -ge 4 ]; do sleep 20; done
+# capture start (2026-11-14): a standing scenario with a capture in .lab/caps/<scenario>/ runs through tools/cap-cell
+# (no boot-timed scn-stand.txt; out .lab/cap-scn<tag>-<rep>-1, results.tsv rows cap-<scenario>); CAP=0: the old path
+cap=$(ls -d $R/.lab/caps/$sc/*/ 2>/dev/null | head -1)
+[ "${CAP:-1}" != 0 ] && [ -n "$cap" ] && exec $R/tools/cap-cell $exe $cap scn$tag-$rep 1 NX2NAVI_PIPE_SKIP=any NX2NAVI_ALIAS_EXTRA_MIB=512 NX2NAVI_GPU_WAIT=0 NX2NAVI_POOL_IDLE_MS=8 NX2NAVI_SHADOW_BULK_WRITE=1 NX2NAVI_MARK_CHORD=off NX2NAVI_SHADOW_PRESYNC=1 NX2NAVI_SHADOW_TOUCH_LOCK=1 NX2NAVI_STALL_MS=100 NX2NAVI_TEX_DESC_STRICT=1 NX2NAVI_TEX_RELEASED_MB=3072 NX2NAVI_TEX_RELEASED_MIB=3072 NX2NAVI_VK_RECORDER=1 "$@"
 . $R/tools/cell-lib.sh
 if [ $sc = field-running ]; then
   w=$($R/tools/recipe field-west-standing warp); rec=$P/load-run.txt; base=$($R/tools/recipe field-west-standing base)
