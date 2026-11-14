@@ -627,6 +627,29 @@ one is v0, the hand-written `tools/scenarios/*.dbg` of 2026-11-12), so old marks
 - **Reference footage (`tools/ref`).** Per-area Switch 2 footage frames in `~/claude/nx2navi/refs/` (private, never in git); git holds only tool, `tools/ref-areas.json` (area keys = names shared with teleport; scene ids are decomp numbers from memory, unverified: no scene table in `romfs_index.py` or here) and `tools/ref-index.json` (URL + t). `ref compare <shot> [area]` ranks frames by HSV histogram + colour layout + ORB inliers (HUD masked) and writes side-by-sides to the gallery. Scores are rough: different time of day, camera or HDR tonemap lowers ORB matches, so the picture, not the number, decides. YouTube "Switch 2" titles are often fan/Remake-labelled; check with `ref sheet <area>` that a segment really is the area.
 - **Upstream tools.** Reach for `NX2navi/tools/` (perf_summary, crit_path, shader_census, ...) before writing new scripts.
 
+### One codebase, one branch (Cal, 2026-11-14)
+
+The desktop and the Steam Deck build from **one commit of the one working branch, `build`** (worktree `NX2navi/`).
+Only build flags and target may differ (today both are `build-linux.py --cpu v3`, the same flags); behaviour that
+differs per machine goes into runtime config (`cfg.c` device profiles such as the `DECK` table, `nx2navi.ini`), never
+into a separate patch or branch. Both builds get a builds.tsv row with the same commit. Every other local line is kept
+as a tag `archive/<name>` (2026-11-14: all 31 branches tagged; `play50-tip` = 15d14ce, `build-pre-deck5` = the old
+`build` tip feb8e60); builds name tags or commits, never branches. On 2026-11-14 `build` was reset onto d2d2e64
+(deck4, our stack + 0120 merged onto upstream v0.10.1 5ae55db): an audit of every commit in a01910d..e90b9a0 against
+d2d2e64 (added lines present in the file, then each missing line checked) found nothing of play50 lacking from it;
+the misses were the merge's known renames (`dbg_camera_watch_pub`, `MADE_AGE_N`, `gfx_shader_set_spirv`'s return),
+reflowed `cfg.c` lists, and upstream's removal of the 0.8 co-op (`coop_local.c`).
+**Fixed build dirs**: one `--out` per target, `NX2navi/build/desktop` and `NX2navi/build/deck` (seeded 2026-11-14 as
+copies of `build/v111-rebase6`, deck4's and play51's out dir), so ninja objects and the lift cache are reused; never a
+fresh out dir per build. (build-linux.py keeps the lift under `<extracted>/build-cache/lift`, objects under `<out>/obj`;
+make_game.py keeps `<out>/build-cache`.)
+First desktop smoke of play51 (d2d2e64, 2026-11-14, `.lab/d5smoke.sh`, ONE run each, machine under other agents'
+builds, load 3.6-8.5: indicative): boots, no FATAL; f2663 window 1800-3000 play50 42.8 fps, play51 with upstream 0.10.1
+defaults 37.3, play51 with `NX2NAVI_REPLAY_WORKERS=0 NX2NAVI_TAIL_EARLY=0` 41.4. Upstream's new defaults (workers auto,
+early tail on) look slower under async replay here, as play50's A/B found for workers 2-4. Note: the f2663 recipe's
+run loads HyruleField_Adult then KakarikoVillage_Adult_Alternative (~frame 1000-1100), so its window 1800-3000 is in
+Kakariko, in every run since at least play50's A/B.
+
 ## 12. Glossary
 
 - **NVN:** the Switch's native graphics API. The game calls it through a proc table; NX2navi implements it on Vulkan.
