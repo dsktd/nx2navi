@@ -592,6 +592,13 @@ All upstream analysers are portable: `runtime/perf.c`, `runtime/flight.c` and `k
   the desktop: the way to reproduce Deck memory pressure without the Deck (texture cache rules are left alone).
 - **floor_watch** (cae09a2): hardware watchpoints are Windows-only (`platform/win32.c`); on Linux only floor_scan works.
 
+- **Deck capture cells** (2026-11-14, `tools/deck/capcell.sh`, reached through `tools/deck/dssh` = 10.77.0.4 via the
+  relay; steamdeckoled.local does not resolve in the container): field-mid capture deck5 d2d2e64 18.3-18.7 fps, gpu 24 ms,
+  replay 19 ms (x3); the f2663 capture stops at the cell's LOWMEM 300 MiB guard right after `ready` on deck5 and slim2
+  alike (MemAvailable 280-299 MiB): f2663 does not fit the Deck at Cal's Deck ini, field-mid does (min 329-590 MiB).
+- **build = slim** (2026-11-14, 701e7ce, patch 0123): 9 dead or upstream-covered patches reverted, -664 lines; old tip
+  `archive/pre-slim`.
+
 ### Launcher and what a run uses (2026-11-12)
 `just launcher` (`launcher/`, README "Launcher") reads which exe and caches the default run uses without starting it:
 the `runs/*.sh` chain ends in `exec just -f <justfile> play`, so running the script with a stand-in `just` first on
