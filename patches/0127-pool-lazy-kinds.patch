@@ -1,0 +1,150 @@
+From ca12e5e9ffd7847f3cca2fa6395968d46666e4bc Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Sun, 15 Nov 2026 13:39:26 -0500
+Subject: [PATCH] NX2NAVI_POOL_LAZY_KINDS=1|2 (default 0): the texture pool's
+ first sync writes stand-ins as array runs, 1 only into the kinds in use and a
+ kind's when it first appears; NX2NAVI_POOL_SLOW_MS=<ms> (default 0) logs a
+ slower pool sync (#173)
+
+---
+ runtime/cfg.c          |  6 ++--
+ runtime/vk_exec_draw.c | 64 +++++++++++++++++++++++++++++++++++++++++-
+ 2 files changed, 66 insertions(+), 4 deletions(-)
+
+diff --git a/runtime/cfg.c b/runtime/cfg.c
+index 1c6c5e4..670d177 100644
+--- a/runtime/cfg.c
++++ b/runtime/cfg.c
+@@ -84,7 +84,7 @@ static const char *const known[] = {
+     "BIND_REUSE", "DYN_DELTA", "STG_ARENA", "SUBMIT_BATCH", "SUBMIT_THREAD", "ASTC_GPU_DESWIZZLE", "ASTC_SCRATCH_KEEP", "ASTC_ARENA", "ASTC_BC1",
+     "TEXUP_LOG_MS", "DYN_RES", "DYN_RES_TARGET", "DYN_RES_STEP", "TEXTURE_DETAIL", "VRAM_USE",   // vram_use: the removed Video memory use row, read by nothing
+     "RECORDER_CORE", "RECORDER_PRIO", "REPLAY_TIME", "LOCK_TIME", "POOL_CREATE_BUDGET", "POOL_CREATE_MS", "POOL_FINI_IDLE", "POOL_LOAD_BACKLOG", "POOL_LOAD_MS",
+-    "POOL_LOAD_STEP", "POOL_IDLE_MS", "SHADOW_RECYCLE_MB", "SHADOW_TOUCH_LOCK",   // private (build branch)
++    "POOL_LOAD_STEP", "POOL_IDLE_MS", "POOL_SLOW_MS", "POOL_LAZY_KINDS", "SHADOW_RECYCLE_MB", "SHADOW_TOUCH_LOCK",   // private (build branch)
+     "VMA_BLOCK_MB", "SYNC_WAKE_ALL", "LOG_ASYNC", "DEVICE_LOST_AT", "STAGING_FAIL_AT", "VRAM_BALLAST_MB",
+     "MEM_BUDGET_TEST_VRAM_MB", "MEM_BUDGET_TEST_RAM_MB",
+     "TEX_COMPACT", "TEX_COMPACT_MIN_MB", "TEX_COMPACT_FRAME_MB",   // texture compaction (vk_texture.c); no menu row
+@@ -152,7 +152,7 @@ static const struct { const char *key, *section; } sections[] = {
+     {"DYN_DELTA", "performance"}, {"STG_ARENA", "performance"}, {"SUBMIT_BATCH", "performance"}, {"SUBMIT_THREAD", "performance"},
+     {"BUILD_FREE_MB", "performance"}, {"BUILD_RESERVE_MB", "performance"}, {"MEM_NEED_MB", "diagnostics"},
+     {"ASTC_GPU_DESWIZZLE", "performance"}, {"ASTC_SCRATCH_KEEP", "performance"}, {"ASTC_ARENA", "performance"}, {"ASTC_BC1", "performance"}, {"POOL_CREATE_BUDGET", "performance"},
+-    {"POOL_CREATE_MS", "performance"}, {"POOL_FINI_IDLE", "performance"}, {"FREEZE_BUDGET_US", "performance"}, {"POOL_LOAD_BACKLOG", "performance"}, {"POOL_LOAD_MS", "performance"}, {"POOL_LOAD_STEP", "performance"}, {"performance"}, {"POOL_IDLE_MS", "performance"}, {"SHADOW_RECYCLE_MB", "performance"},
++    {"POOL_CREATE_MS", "performance"}, {"POOL_FINI_IDLE", "performance"}, {"FREEZE_BUDGET_US", "performance"}, {"POOL_LOAD_BACKLOG", "performance"}, {"POOL_LOAD_MS", "performance"}, {"POOL_LOAD_STEP", "performance"}, {"performance"}, {"POOL_IDLE_MS", "performance"}, {"POOL_SLOW_MS", "performance"}, {"POOL_LAZY_KINDS", "performance"}, {"SHADOW_RECYCLE_MB", "performance"},
+     {"TIMER_1MS", "performance"}, {"PIPE_WAIT", "performance"}, {"PIPE_SKIP", "performance"}, {"ONESHOT_BUDGET", "performance"},
+     {"PIPE_FRAME_WAIT_MS", "performance"}, {"PIPE_SKIP_STEADY", "performance"}, {"DRAW_WRITERS_WAIT", "performance"},
+     {"CACHE_DIE", "performance"}, {"ONE_PER_CORE", "performance"},
+@@ -315,7 +315,7 @@ static const CfgMeta metas[] = {
+     {"DYN_RES", "0", "0|1", LIVE}, {"DYN_RES_TARGET", "16.7", "1..100", LIVE}, {"DYN_RES_STEP", "45", "8..600", LIVE},
+     // the recording thread: a core of its own (auto: with 12 or more logical processors) and the highest priority
+     // (vk_exec.c rec_claim)
+-    {"RECORDER_CORE", "0", "auto|0|1", RESTART}, {"RECORDER_PRIO", "1", "0|1", RESTART}, {"REPLAY_TIME", "0", "0|1", RESTART}, {"LOCK_TIME", "0", "0|1", RESTART}, {"POOL_CREATE_BUDGET", "16", "1..4096", RESTART}, {"POOL_CREATE_MS", "6", "0..100", RESTART}, {"POOL_FINI_IDLE", "0", "0|1", RESTART}, {"FREEZE_BUDGET_US", "1000", "0..100000", RESTART}, {"POOL_LOAD_BACKLOG", "512", "0..65536", RESTART}, {"POOL_LOAD_MS", "50", "1..1000", RESTART}, {"POOL_LOAD_STEP", "128", "0..65536", RESTART}, {"0", "0|1", RESTART}, {"POOL_IDLE_MS", "0", "0..50", RESTART}, {"SHADOW_RECYCLE_MB", "1024", "0..16384", RESTART},
++    {"RECORDER_CORE", "0", "auto|0|1", RESTART}, {"RECORDER_PRIO", "1", "0|1", RESTART}, {"REPLAY_TIME", "0", "0|1", RESTART}, {"LOCK_TIME", "0", "0|1", RESTART}, {"POOL_CREATE_BUDGET", "16", "1..4096", RESTART}, {"POOL_CREATE_MS", "6", "0..100", RESTART}, {"POOL_FINI_IDLE", "0", "0|1", RESTART}, {"FREEZE_BUDGET_US", "1000", "0..100000", RESTART}, {"POOL_LOAD_BACKLOG", "512", "0..65536", RESTART}, {"POOL_LOAD_MS", "50", "1..1000", RESTART}, {"POOL_LOAD_STEP", "128", "0..65536", RESTART}, {"0", "0|1", RESTART}, {"POOL_IDLE_MS", "0", "0..50", RESTART}, {"POOL_SLOW_MS", "0", "0..10000", RESTART}, {"POOL_LAZY_KINDS", "0", "0|1|2", RESTART}, {"SHADOW_RECYCLE_MB", "1024", "0..16384", RESTART},
+     // held submissions handed to the queue together (vk_sync.c, submit batching)
+     {"SUBMIT_BATCH", "4", "1..16", RESTART},
+ #ifdef _WIN32
+diff --git a/runtime/vk_exec_draw.c b/runtime/vk_exec_draw.c
+index 36949ef..29a6ab1 100644
+--- a/runtime/vk_exec_draw.c
++++ b/runtime/vk_exec_draw.c
+@@ -2746,6 +2746,54 @@ static int pool_fill(VkExec *ex, uint32_t id, uint32_t mask, uint64_t tok) {
+     return ok;
+ }
+ 
++// NX2NAVI_POOL_LAZY_KINDS=1, 2 (default 0: the old way, pool_fill of every slot in all 16 kinds into every set): the
++// first sync's stand-ins go in as runs of array elements, one VkWriteDescriptorSet a run and set instead of one a
++// descriptor. 1: only into the kinds the pipelines made so far use, and a kind's stand-ins when it first appears (fresh
++// in pool_sync_entries, before its slots are filled), since a shader can only sample a kind vk_pipeline.c noted in
++// vk_pool_kinds_used when it made the module; 2: every kind, as before, only batched. The first sync wrote 16 x 40,960
++// x 8 = 5.3M single descriptors (134 ms of one replay frame near f971 of stream-zora, #173) while kinds 0x40c are used.
++static int pool_lazy_kinds(void) {
++    static int v = -1;
++    if (v < 0) v = cfg_int("NX2NAVI_POOL_LAZY_KINDS");
++    return v;
++}
++static uint32_t pool_standin_kinds;   // the kinds whose stand-ins are in (POOL_LAZY_KINDS)
++
++// Every slot of the kinds in mask that holds no view yet gets the kind's stand-in, in every set.
++static void pool_standins(VkExec *ex, uint32_t mask) {
++    static VkDescriptorImageInfo *ii;   // VK_POOL_TEX copies of one kind's stand-in
++    if (!ii && !(ii = malloc(sizeof *ii * VK_POOL_TEX))) rt_fatal("vk: out of memory");
++    pool_flush();
++    for (int k = 0; k < VK_POOL_KINDS; k++) {
++        if (!(mask >> k & 1) || pool_standin_kinds >> k & 1) continue;
++        GfxShaderRes r = {0};
++        r.type = pool_kind_type(k);
++        VkDescriptorImageInfo s;
++        VkImage img;
++        tex_info_full(ex, &r, 0, 0, 1, &s, &img);
++        s.sampler = VK_NULL_HANDLE, s.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
++        for (uint32_t i = 0; i < VK_POOL_TEX; i++) ii[i] = s;
++        VkImageView *e = &PL.view[(size_t)k * VK_POOL_TEX];
++        for (uint32_t id = 0; id < VK_POOL_TEX;) {
++            if (e[id]) {
++                id++;
++                continue;
++            }
++            uint32_t j = id;
++            while (j < VK_POOL_TEX && !e[j]) e[j++] = s.imageView;
++            for (int i = 0; i < PL.nsets; i++) {
++                VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = PL.sets[i],
++                                          .dstBinding = (uint32_t)k, .dstArrayElement = id, .descriptorCount = j - id,
++                                          .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, .pImageInfo = ii};
++                vkUpdateDescriptorSets(vk_ctx()->device, 1, &w, 0, NULL);
++            }
++            PL.writes += (uint64_t)(j - id) * (uint64_t)PL.nsets;
++            id = j;
++        }
++        pool_standin_kinds |= 1u << k;
++    }
++}
++
+ static void pool_sync_entries(VkExec *ex);
+ 
+ static void pool_sync(VkExec *ex);
+@@ -2794,6 +2842,10 @@ static void pool_sync(VkExec *ex) {
+     if (PL.sealed) return;   // current when checked: a change since waits for the next sync, which takes a new set
+     uint64_t t0 = kern_now_ns(), f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
+     if (f != PL.frame) PL.frame = f, PL.frame_ns = 0;
++    // NX2NAVI_POOL_SLOW_MS=<ms> (diagnosis, default 0 off): a sync that took longer logs what it did (#173 hitches)
++    static int slow_ms = -1;
++    if (slow_ms < 0) slow_ms = cfg_int("NX2NAVI_POOL_SLOW_MS");
++    uint64_t sw0 = PL.writes + pool_nw, sr0 = PL.n_refill, sf0 = PL.n_fresh, sk0 = PL.kinds;
+     vk_texture_pool_make_ns_take();   // what other lookups left: only this sync's making counts for the frame
+     pool_sync_entries(ex);
+     uint64_t t1 = kern_now_ns();
+@@ -2806,6 +2858,13 @@ static void pool_sync(VkExec *ex) {
+         PL.catch_ns += kern_now_ns() - t1;
+     }
+     PL.set_synced[PL.cur] = PL.logn;
++    if (slow_ms && kern_now_ns() - t0 > (uint64_t)slow_ms * 1000000u)
++        rt_log("vk: slow pool_sync frame %llu: %.1f ms (entries %.1f, catch-up %.1f): %llu descriptor writes, %llu "
++               "refilled, %llu fresh fills, kinds %#llx -> %#x, log %llu entries since the set's last sync",
++               (unsigned long long)f, (kern_now_ns() - t0) / 1e6, (t1 - t0) / 1e6, (kern_now_ns() - t1) / 1e6,
++               (unsigned long long)(PL.writes + pool_nw - sw0), (unsigned long long)(PL.n_refill - sr0),
++               (unsigned long long)(PL.n_fresh - sf0), (unsigned long long)sk0, (unsigned)PL.kinds,
++               (unsigned long long)(switched ? pre - from : 0));
+     // A set taken and up to date (with one set, the refresh above wrote into it directly), counted only when this sync
+     // left no slot behind: once the frame's creation time is spent, pool_refill skips a slot it left earlier in the frame
+     // and pool_sync_entries may return before the walk, and such a slot keeps its old view in this set with nothing in
+@@ -3002,14 +3061,17 @@ static void pool_sync_entries(VkExec *ex) {
+     int n = vk_texture_slot_count_locked();
+     if (n > VK_POOL_TEX) n = VK_POOL_TEX;
+     if (!PL.ready) {   // every entry a stand-in first: partially bound arrays are still read out of range by guests
++        int lazy = pool_lazy_kinds();
++        if (lazy) pool_standins(ex, lazy == 1 ? used : 0xffffu);
+         PL.all = 1;
+-        for (uint32_t id = 0; id < VK_POOL_TEX; id++) pool_fill(ex, id, 0xffffu, 0);
++        for (uint32_t id = 0; id < VK_POOL_TEX && !lazy; id++) pool_fill(ex, id, 0xffffu, 0);
+         for (uint32_t id = 0; id < VK_POOL_SAMP; id++) PL.samp[id] = Z.samp, pool_write(VK_POOL_KINDS, id, VK_NULL_HANDLE, Z.samp);
+         pool_flush();
+         PL.all = 0;
+         PL.ready = 1, PL.sgen = 0;
+     }
+     int retry = 0;   // slots whose texture the creation budget left: filled again by the next sync
++    if (fresh & ~pool_standin_kinds && pool_lazy_kinds()) pool_standins(ex, fresh);   // a kind seen first: its stand-ins
+     if (fresh || gen != PL.gen || ep != PL.epoch || PL.retry) {
+         vk_texture_create_budget_locked(spent ? 0 : pool_create_budget());
+         PL.n_frame_stops += (uint64_t)spent;
+-- 
+2.56.0
+
