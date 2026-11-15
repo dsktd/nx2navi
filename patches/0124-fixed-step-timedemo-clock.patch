@@ -1,0 +1,165 @@
+From ef9a7a8a587c64dfa69d84101b2a9a87d6ffc330 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Sun, 15 Nov 2026 09:01:35 -0500
+Subject: [PATCH] NX2NAVI_FIXED_STEP=<hz> (default off): a timedemo clock for
+ lab replays. Every present steps the game exactly 1/<hz> s; the world clock,
+ input-script ticks, debug routes, free camera and capture replays count that
+ game time instead of the host clock (#145)
+
+---
+ runtime/bugcap.c      |  4 ++--
+ runtime/debug_tools.c |  8 ++++----
+ runtime/frame_rate.c  | 34 +++++++++++++++++++++++++++++++---
+ runtime/host.h        |  2 ++
+ 4 files changed, 39 insertions(+), 9 deletions(-)
+
+diff --git a/runtime/bugcap.c b/runtime/bugcap.c
+index 48ec26d..1ee2180 100644
+--- a/runtime/bugcap.c
++++ b/runtime/bugcap.c
+@@ -649,7 +649,7 @@ void bugcap_replay_pad(uint64_t *buttons) {
+     if (reads > 300 && reads % 100 < 4) *buttons |= 1ull << B_A;
+ }
+ 
+-static void rp_go(int state) { rp.state = state, rp.t_ns = plat_now_ns(); }
++static void rp_go(int state) { rp.state = state, rp.t_ns = frame_step_script_ns(); }
+ 
+ static void rp_fail(const char *what) {
+     rt_log("capture: replay of %s stopped: %s", rp_src.name, what);
+@@ -658,7 +658,7 @@ static void rp_fail(const char *what) {
+ 
+ void bugcap_replay_tick(uint64_t tick) {
+     if (rp.state == R_DONE || !bugcap_replay_dir()) return;
+-    uint64_t now = plat_now_ns();
++    uint64_t now = frame_step_script_ns();   // game time with NX2NAVI_FIXED_STEP
+     double in_state = (double)(now - rp.t_ns) / 1e9;
+     char text[256], area[64] = "";
+     float p[3] = {0, 0, 0};
+diff --git a/runtime/debug_tools.c b/runtime/debug_tools.c
+index b7034fd..383cab9 100644
+--- a/runtime/debug_tools.c
++++ b/runtime/debug_tools.c
+@@ -911,7 +911,7 @@ void dbg_freecam_ground(const float *dist, int n, float tan_half_y, float aspect
+     for (int i = 0; i < 9; i++) fc.ground[i] = dist[i] > 0 && isfinite(dist[i]) ? dist[i] : 0;
+     fc.ground_tan = tan_half_y, fc.ground_aspect = aspect;
+     plat_mutex_unlock(&ground_lock);
+-    __atomic_store_n(&fc.ground_ns, plat_now_ns(), __ATOMIC_RELEASE);
++    __atomic_store_n(&fc.ground_ns, frame_step_script_ns(), __ATOMIC_RELEASE);
+ }
+ 
+ // How far below the camera the ground is, in metres, from the view distances above, or a negative number when they show
+@@ -1120,7 +1120,7 @@ static void route_end(void) {
+ static void route_start(float within) {
+     route.within = within, route.gave_up = 0;
+     route.at = 0, route.have_last = route.have_heading = 0, route.stuck = 0, route.side = 1, route.integ = 0;
+-    route.best = 1e9f, route.prog_ns = plat_now_ns(), route.side_until = 0, route.prev_ns = 0;
++    route.best = 1e9f, route.prog_ns = frame_step_script_ns(), route.side_until = 0, route.prev_ns = 0;
+     if (route.by_camera) dbg_camera_watch(0);   // of a walk that this route replaces
+     route.by_camera = 0;
+     route.on = route.n > 0;
+@@ -1132,7 +1132,7 @@ static void route_start(float within) {
+ static void route_pad(int32_t *lx, int32_t *ly) {
+     float p[3];
+     if (!route.on || !dbg_player_pos(p)) return;
+-    uint64_t now = plat_now_ns();
++    uint64_t now = frame_step_script_ns();
+     double dt = route.prev_ns ? (double)(now - route.prev_ns) / 1e9 : 0;
+     route.prev_ns = now;
+     if (dt > 0.1) dt = 0.1;
+@@ -1213,7 +1213,7 @@ void dbg_pad(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *
+         fc.last_ns = 0;
+         return;
+     }
+-    uint64_t now = plat_now_ns();
++    uint64_t now = frame_step_script_ns();
+     double dt = fc.last_ns ? (double)(now - fc.last_ns) / 1e9 : 0;
+     fc.last_ns = now;
+     if (dt > 0.1) dt = 0.1;
+diff --git a/runtime/frame_rate.c b/runtime/frame_rate.c
+index 912f2bd..0862c37 100644
+--- a/runtime/frame_rate.c
++++ b/runtime/frame_rate.c
+@@ -841,12 +841,35 @@ static void speed_report(uint64_t now, double step, int interval) {
+     memset(win_hist, 0, sizeof win_hist);
+ }
+ 
++// NX2NAVI_FIXED_STEP=<hz> (lab, 0 = off, the default): a timedemo clock. Every present gives the game exactly 1/<hz> s,
++// whatever the display interval, a load or a hitch took, and the world clock and the input scripts' ticks count those
++// steps; the pacer and the frame limit stay as they are, so a run measures wall-clock frame rate while each frame N is
++// the same amount of game time in every run. A slow lab frame then slows the game, as a timedemo does. The sound job
++// follows the step (osound) as at 60 fps; the audio device and the guest's tick counter (rt_ticks: nn::os
++// GetSystemTick, NVN timestamps, nn::time) stay on the host clock, and guest threads are still scheduled by the host,
++// so loads and streaming can still land on other frames (ARCHITECTURE.md 8). 15..240 Hz; anything else is off.
++double frame_step_fixed_s(void) {
++    static double s = -1;
++    if (s < 0) {
++        const char *e = cfg_get("NX2NAVI_FIXED_STEP");
++        double hz = e ? atof(e) : 0;
++        s = hz >= 15 && hz <= 240 ? 1.0 / hz : 0;
++        if (s > 0) rt_log("frame step: fixed step %.3f ms a present (NX2NAVI_FIXED_STEP=%s): game time counts presents", s * 1e3, e);
++    }
++    return s;
++}
++
+ static _Atomic int64_t world_us = -1;
+ static _Atomic uint64_t game_us;   // game time stepped since the first present (frame_step_ticks)
+ static uint64_t presents;
+ 
+ int64_t frame_step_world_us(void) { return atomic_load_explicit(&world_us, memory_order_relaxed); }
+ uint64_t frame_step_ticks(void) { return atomic_load_explicit(&game_us, memory_order_relaxed) * 60 / 1000000; }
++// The clock of the scripted helpers (debug_tools.c routes and free camera, bugcap.c capture replays): game time with
++// NX2NAVI_FIXED_STEP, so they act on the same frames in every run; the host clock without it, as before.
++uint64_t frame_step_script_ns(void) {
++    return frame_step_fixed_s() > 0 ? atomic_load_explicit(&game_us, memory_order_relaxed) * 1000 : plat_now_ns();
++}
+ 
+ static void world_clock(double dt, double step) {
+     presents++;
+@@ -861,6 +884,7 @@ static void world_clock(double dt, double step) {
+         return;
+     }
+     if (!step_word) step = dt > STEP_MAX_S ? STEP_MAX_S : dt;   // whole-vsync steps: the display time stands in
++    if (frame_step_fixed_s() > 0) step = frame_step_fixed_s();
+     atomic_store_explicit(&world_us, w + (int64_t)(step * 1e6 + 0.5), memory_order_relaxed);
+ }
+ 
+@@ -1311,8 +1335,11 @@ void frame_step_present(uint64_t display_ns, int interval) {
+     atomic_fetch_add_explicit(&guest_presents, 1, memory_order_relaxed);
+     game_interval = interval > 0 ? interval : 1;
+     frame_limit_live();
+-    double step = 0, dt = last_ns ? (double)(display_ns - last_ns) * 1e-9 : 0;
+-    if (step_word && last_ns) {
++    double step = 0, dt = last_ns ? (double)(display_ns - last_ns) * 1e-9 : 0, fixed = frame_step_fixed_s();
++    if (step_word && last_ns && fixed > 0) {
++        step = fixed;
++        step_store((float)step);
++    } else if (step_word && last_ns) {
+         if (dt > STEP_RESET_S || dt < 0.001) {
+             sample_count = sample_next = 0;
+         } else {
+@@ -1328,7 +1355,8 @@ void frame_step_present(uint64_t display_ns, int interval) {
+     }
+     if (frame_free_running() && last_ns) {
+         // the debug menu's speed factor (debug_tools.c) multiplies the step the game is given
+-        if (dt > 0 && dt < STEP_RESET_S) ocarina_step_write(ocarina_step(dt) * (double)dbg_speed_factor());
++        if (fixed > 0) ocarina_step_write(fixed * (double)dbg_speed_factor());
++        else if (dt > 0 && dt < STEP_RESET_S) ocarina_step_write(ocarina_step(dt) * (double)dbg_speed_factor());
+         else ocarina_step_reset();   // a load or a debugger stop: the intervals before it say nothing about the next
+     }
+     last_ns = display_ns;
+diff --git a/runtime/host.h b/runtime/host.h
+index 1ea4229..48b8960 100644
+--- a/runtime/host.h
++++ b/runtime/host.h
+@@ -430,6 +430,8 @@ void rtss_limit_restore(void);                            // before the process
+ int64_t frame_step_world_us(void);                         // game time since the loaded save's first frame, -1 before
+                                                            // (NX2NAVI_FPS_LIMIT, live)
+ uint64_t frame_step_ticks(void);                           // game time since the first present in 60 Hz ticks (input scripts)
++double frame_step_fixed_s(void);                           // NX2NAVI_FIXED_STEP's step in seconds, 0 off (lab replays)
++uint64_t frame_step_script_ns(void);                       // game time with NX2NAVI_FIXED_STEP, else plat_now_ns
+ // In-launch A/B measurement: NX2NAVI_AB=<seconds> splits the world clock (frame_step_world_us) into blocks of that much
+ // game time in the order A B B A (repeated); rt_ab() is 1 in the B blocks, 0 in A blocks, before the world clock and
+ // without NX2NAVI_AB. rt_knob(name, def) reads the switch
+-- 
+2.56.0
+

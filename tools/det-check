@@ -1,0 +1,56 @@
+#!/usr/bin/env python3
+"""det-check <run dir>... : how alike replay runs are (deterministic replay, NX2NAVI_FIXED_STEP, tracker #145).
+
+Per run: the present of the capture replay's `ready` line, the fixed-step line if any, the player position of each
+`fps:` line (NX2NAVI_SPEED_PROBE=1) keyed by the last `present: frame N` before it, and the SHA-256 of each shot
+(NX2NAVI_SHOTS, files f<n>.png in <run dir>/shots or the dir given by `shots=<dir>` after the run dir).
+Then across runs: ready spread, the largest position difference at presents every run logged, and per shot frame
+how many distinct pictures the runs made (1 = identical bytes)."""
+import collections, hashlib, math, os, re, sys
+
+runs = []
+for arg in sys.argv[1:]:
+    d, _, shots = arg.partition(":")
+    log = open(os.path.join(d, "run.log"), errors="replace").read().splitlines()
+    frame, ready, fixed, pos = 0, None, None, {}
+    for line in log:
+        m = re.search(r"present: frame (\d+)", line)
+        if m:
+            frame = int(m[1])
+        if ready is None and "capture: replay of" in line and " ready: " in line:
+            ready = frame
+        if "fixed step" in line and "NX2NAVI_FIXED_STEP" in line:
+            fixed = line.split("frame step: ", 1)[-1][:40]
+        p = re.search(r"^.*fps: .*; player (-?[\d.]+) (-?[\d.]+) (-?[\d.]+)", line)
+        if p:
+            pos[frame // 60 * 60] = tuple(float(v) for v in p.groups())
+    sd = shots or os.path.join(d, "shots")
+    sh = {}
+    if os.path.isdir(sd):
+        for f in sorted(os.listdir(sd)):
+            if f.endswith(".png"):
+                sh[f] = hashlib.sha256(open(os.path.join(sd, f), "rb").read()).hexdigest()[:12]
+    runs.append((d, ready, fixed, pos, sh))
+    print(f"{os.path.basename(d.rstrip('/'))}: ready_at={ready} fixed={'yes' if fixed else 'no'} pos_windows={len(pos)} shots={len(sh)}")
+
+readies = [r[1] for r in runs if r[1] is not None]
+if readies:
+    print(f"ready_at: {sorted(readies)} spread {max(readies) - min(readies)} presents")
+common = set.intersection(*(set(r[3]) for r in runs)) if runs else set()
+if common:
+    worst = 0.0
+    for f in sorted(common):
+        ps = [r[3][f] for r in runs]
+        worst = max(worst, max(math.dist(a, b) for a in ps for b in ps))
+    last = max(common)
+    ps = [r[3][last] for r in runs]
+    print(f"player position: {len(common)} common windows, largest spread {worst:.2f} m; at present ~{last}: "
+          + ", ".join(f"{p[0]:.1f} {p[1]:.1f} {p[2]:.1f}" for p in ps))
+names = sorted(set.intersection(*(set(r[4]) for r in runs))) if runs else []
+if names:
+    same = 0
+    for n in names:
+        k = len(collections.Counter(r[4][n] for r in runs))
+        same += k == 1
+        print(f"shot {n}: {k} distinct of {len(runs)}")
+    print(f"shots identical across all runs: {same} of {len(names)}")
