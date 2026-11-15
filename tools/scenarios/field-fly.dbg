@@ -1,0 +1,10 @@
+# recipe v1
+# field-fly (#173 stand-in for riding Epona fast): Hyrule Field from Lake Hylia, adult; the free camera (sticks on) flies
+# straight over the field from tick 300 while the cell holds the left stick, so the game streams the field around the view.
+# Not a standing recipe: the movement IS the measurement (indicative only).
+# base: .lab/scenarios/base-profile
+# warp: scene=HyruleField_Adult entrance=HyruleField_FromLakeHylia age=adult
+300:freecam 1 1 20
+2000:campos
+3000:campos
+4500:campos
