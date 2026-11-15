@@ -6,6 +6,7 @@
 # <reps> repeats per area cost about GAP/60 s each instead of a boot. tools/load-stat prints the loads of the run.
 # Not for builds before the rebase (play13 has no NX2NAVI_DBG_TEST): those take cold loads, one per boot
 # (COLD=west|grave: no teleports, the save's own load only; also the like-for-like baseline for the rebase builds).
+# TOUR (comma list of "Scene Entrance") = the areas of one round, default Graveyard and Field west.
 # GAP (default 900) = pad ticks between teleports; FIRST (default 600) = tick of the first one. Stops (exit 9) when a
 # new play log appears. Caches: the parity copies in .lab/parity. Sibling of tools/ab-cell (steady A/B).
 R=$HOME/claude/nx2navi; P=$R/.lab/parity; B=$R/NX2navi/build/v111
@@ -23,9 +24,10 @@ case ${COLD:-} in
   west) name=lc-$tag-west-$reps; cell_scenario field-west-standing;;   # reps is the run's number here
   grave) name=lc-$tag-grave-$reps; w=$grave; rec=lab-profile-flicker/load-slot01.txt; cell_scenario graveyard-standing;;
   *) cell_scenario field-west-standing; t=$first
+     # TOUR="Scene Entrance,Scene Entrance,...": the areas of one round (default Graveyard, Field west), e.g. the #160 tour
+     IFS=, read -ra areas <<< "${TOUR:-Graveyard_Adult GraveYard_KakarikoSide,HyruleField_Adult HyruleField_FrontOfMarket}"
      for ((i = 0; i < reps; i++)); do
-       script+="$t:warp Graveyard_Adult GraveYard_KakarikoSide;"; t=$((t + gap))
-       script+="$t:warp HyruleField_Adult HyruleField_FrontOfMarket;"; t=$((t + gap))
+       for a in "${areas[@]}"; do script+="$t:warp $a;"; t=$((t + gap)); done
      done
      frame=$((1100 + t));;
 esac

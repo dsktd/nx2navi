@@ -1,0 +1,16 @@
+#!/usr/bin/env python3
+# vram-tour <run.log> [areas_per_round] [gap]: #160 reading of a load-cell TOUR run. Per round (areas x gap frames after
+# FIRST 600): mean and max of the 'mem: vram by use' fields (in use, textures = live, released). Growth shows as rounds
+# 2..N above round 1. Frames are present frames, ticks are pad ticks: the round split is approximate.
+import re, sys
+log = sys.argv[1]; n = int(sys.argv[2]) if len(sys.argv) > 2 else 8; gap = int(sys.argv[3]) if len(sys.argv) > 3 else 1200
+rx = re.compile(r"vram by use frame (\d+): in use (\d+) MiB.*?\(textures (\d+), released textures (\d+), VRAM mirrors (\d+)")
+rows = [tuple(map(int, m.groups())) for m in map(rx.search, open(log, errors="replace")) if m]
+rnd = {}
+for f, use, live, rel, mir in rows:
+    r = (f - 600) // (n * gap) + 1
+    if f >= 600: rnd.setdefault(r, []).append((use, live, rel, mir))
+print("round  n  in_use mean/max   live mean/max   released mean/max   mirrors max")
+for r, v in sorted(rnd.items()):
+    c = list(zip(*v)); mm = lambda x: f"{sum(x)//len(x):6d}/{max(x):6d}"
+    print(f"{r:5d} {len(v):2d}  {mm(c[0])}  {mm(c[1])}  {mm(c[2])}  {max(c[3]):6d}")
