@@ -14,6 +14,8 @@
 //                                   ring's last RING samples.
 //   NX2NAVI_PROFILE_MAIN=1, NX2NAVI_PROFILE_RENDER=1  also the guest main thread, the presenting thread
 //   NX2NAVI_PROFILE_CHAINS=1        every thread of the process (period 2 ms)
+//   NX2NAVI_PROFILE_NAMES=a,b       also every thread whose name holds one of these (e.g. "replay worke" for the
+//                                   replay workers); CHAINS signals guest threads too and can crash in the unwinder
 // Default: the replay thread only. Waits of guest threads may return early on a signal, so sampling them can change
 // the game's timing; the replay thread waits in pthread conditions and driver calls, which restart.
 //
@@ -58,6 +60,7 @@ static struct { uint64_t frame, t; } frames[MAXF];
 static volatile uint32_t nframes;
 static const char *out_path;
 static int sig, all, want_main, want_render;
+static const char *names;   // NX2NAVI_PROFILE_NAMES
 static uint64_t frame_lo, frame_hi;
 static volatile int32_t active, written, stop;
 
@@ -105,6 +108,27 @@ static void targets(void) {
         if (d) closedir(d);
         return;
     }
+    if (names && *names) {
+        DIR *d = opendir("/proc/self/task");
+        struct dirent *de;
+        while (d && (de = readdir(d))) {
+            uint32_t t = (uint32_t)strtoul(de->d_name, NULL, 10);
+            char path[64], comm[32] = "";
+            if (!t) continue;
+            snprintf(path, sizeof path, "/proc/self/task/%u/comm", t);
+            FILE *f = fopen(path, "r");
+            if (!f) continue;
+            if (!fgets(comm, sizeof comm, f)) comm[0] = 0;
+            fclose(f);
+            comm[strcspn(comm, "\n")] = 0;
+            for (const char *n = names; *n;) {
+                size_t l = strcspn(n, ",");
+                if (l && memmem(comm, strlen(comm), n, l)) { slot_of(t, 1); break; }
+                n += l + (n[l] == ',');
+            }
+        }
+        if (d) closedir(d);
+    }
     if (prof_replay_tid) slot_of(prof_replay_tid, 1);
     if (want_main && prof_main_tid) slot_of(prof_main_tid, 1);
     if (want_render && prof_render_tid) slot_of(prof_render_tid, 1);
@@ -138,6 +162,7 @@ int prof_sampler_start(void) {
     all = (e = cfg_get("NX2NAVI_PROFILE_CHAINS")) && *e == '1';
     want_main = (e = cfg_get("NX2NAVI_PROFILE_MAIN")) && *e == '1';
     want_render = (e = cfg_get("NX2NAVI_PROFILE_RENDER")) && *e == '1';
+    names = cfg_get("NX2NAVI_PROFILE_NAMES");
     if ((e = cfg_get("NX2NAVI_PROFILE_FRAMES")) && *e) {
         char *end;
         frame_lo = strtoull(e, &end, 10);
