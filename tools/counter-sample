@@ -107,7 +107,7 @@ def main():
                 g0, = rd(mem, tm + 0x0, '<f')
                 line += f' tm=0x{tm:x} tm10={f10:.4f} tm18={f18:.5f} tm1c={i1c} tm0={g0:.4f}'
             print(line, file=out, flush=True)
-        except OSError:
+        except (OSError, struct.error):   # short read: the game is exiting
             break
         time.sleep(interval)
     print('# process gone', file=out, flush=True)
