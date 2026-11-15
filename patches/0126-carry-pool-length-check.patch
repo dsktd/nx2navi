@@ -1,0 +1,467 @@
+From 9b69085194e81790989358646b53799a4d76c9d2 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Sun, 15 Nov 2026 10:25:18 -0500
+Subject: [PATCH] Carry upstream 46c764a + b04e7c8: NX2NAVI_SHADER_CARRY_POOL=1
+ (default 0) refuses carried translations whose texture pool array has the old
+ 32768 length; log a shader of that length in use and a texture slot
+ 32768..40959 it cannot reach (#149)
+
+---
+ docs/building.md          |   5 +
+ runtime/cfg.c             |   5 +-
+ runtime/gfx.h             |   2 +
+ runtime/gfx_shader.c      |  79 +++++++++++++--
+ runtime/vk_texture.c      |   8 ++
+ tests/carry_pool_check.py | 205 ++++++++++++++++++++++++++++++++++++++
+ 6 files changed, 293 insertions(+), 11 deletions(-)
+ create mode 100644 tests/carry_pool_check.py
+
+diff --git a/docs/building.md b/docs/building.md
+index 656a3f3..58aaaa1 100644
+--- a/docs/building.md
++++ b/docs/building.md
+@@ -631,6 +631,11 @@ A change to the layout of `shader-prepared.bin` (`runtime/prp_file.h`, `runtime/
+ the header alone, checks the parse of both versions and has `make_game.py` read the list the C side wrote. No game
+ files, no GPU.
+ 
++A change to which translations of a previous translator are served (`runtime/gfx_shader.c` `carry_usable`,
++`carry_load`, `carry_find_iid`) passes `python tests\carry_pool_check.py`, which cuts the carry lookups out of
++`gfx_shader.c` and runs them against stand-in caches: a translation whose texture pool array has the earlier length
++(32768) is freed and the lookup goes on, one with the current length or no pool is served. No game files, no GPU.
++
+ A change to where the lazy write-back is on by default (`runtime/wb_lazy_choice.h`, `runtime/vk_memory.c`
+ `vk_mem_lazy_decide`) passes `python tests\wb_lazy_check.py`, which builds the header alone and checks the choice and
+ its reason by platform, by GPU driver and by what the player set. No game files, no GPU.
+diff --git a/runtime/cfg.c b/runtime/cfg.c
+index f7ac481..1c6c5e4 100644
+--- a/runtime/cfg.c
++++ b/runtime/cfg.c
+@@ -71,7 +71,7 @@ static const char *const known[] = {
+     "PRESNAP_PLACE",
+     "REPLAY_CHECK", "RESOLVE_CHECK", "RESTART_WAIT", "ROMFS", "ROMFS_INDEX", "ROMFS_MMAP", "ROMFS_MODS", "ROMFS_PATCHES",
+     "ROMFS_PROOF_DIR", "ROMFS_VERIFY", "RSTICK_DEADZONE", "RUMBLE", "RUMBLE_CURVE", "RUMBLE_HD", "RUMBLE_HD_MS", "RUMBLE_STRENGTH", "RUMBLE_TRIGGERS", "SHADER_CACHE",
+-    "SHADER_CACHE_FLUSH", "SHADER_CARRY", "SHADER_COMPRESS", "SHADER_COMPRESS_IDLE_S", "SHADER_MEMO", "SHADOW_BULK_WRITE", "SHADOW_CHECK", "SHADOW_COMPARE", "SHADOW_PCF", "SHADOW_RANGE", "SHADOW_RES", "SHADOW_SCALE", "SHADOW_TABLE_STORES", "SHARED_FONTS", "SHARPNESS", "SHOTS", "SHOTS_DIR",
++    "SHADER_CACHE_FLUSH", "SHADER_CARRY", "SHADER_CARRY_POOL", "SHADER_COMPRESS", "SHADER_COMPRESS_IDLE_S", "SHADER_MEMO", "SHADOW_BULK_WRITE", "SHADOW_CHECK", "SHADOW_COMPARE", "SHADOW_PCF", "SHADOW_RANGE", "SHADOW_RES", "SHADOW_SCALE", "SHADOW_TABLE_STORES", "SHARED_FONTS", "SHARPNESS", "SHOTS", "SHOTS_DIR",
+     "SVC_SLOW_MS",
+     "SHOTS_FULL", "SPEED_PROBE", "SPIN", "SPIN_HANDOFF_US", "SPLIT_DRAWS", "SPLIT_IDLE", "SPLIT_IN_PASS", "SPLIT_US", "SPV_MARK_TEST", "SPV_OVERRIDE", "STICK_DEADZONE", "STICK_SENS",
+     "SWKBD_ANSWER",
+@@ -163,7 +163,7 @@ static const struct { const char *key, *section; } sections[] = {
+     {"TEX_ALIAS", "performance"}, {"DEPTH_INIT_INLINE", "performance"}, {"DEPTH_ALIAS_LOG", "diagnostics"}, {"TEX_DISUSE", "performance"}, {"TEX_DISUSE_EVICT", "performance"}, {"TEX_GEN_UNDO", "performance"}, {"TEX_REUSE", "performance"}, {"TEX_SPLIT_FILL", "performance"}, {"TEX_VRAM_PRESSURE", "performance"}, {"TEX_RELEASED_HOLD", "performance"}, {"TEX_PROC_COMMIT_MB", "performance"}, {"ASTC_BC", "performance"}, {"LOD_GUARD", "performance"}, {"FIX_C0", "performance"}, {"FIX_ZERO", "performance"}, {"WATER_PROJECTIVE", "performance"},
+     {"SHADER_COMPRESS", "performance"}, {"SHADER_COMPRESS_IDLE_S", "performance"},
+     {"TEX_DESC_STRICT", "performance"}, {"TLD_CLAMP", "performance"},   // private (build branch)
+-    {"BIND_SKIP", "performance"}, {"SHADER_CACHE_FLUSH", "performance"}, {"SHADER_CARRY", "performance"}, {"PIPELINE_CACHE_PLAY", "performance"}, {"PIPELINE_CACHE_PLAY_MB", "performance"}, {"FFX_PIPE_CACHE", "performance"}, {"SHADER_MEMO", "performance"}, {"PIPE_MEMO", "performance"}, {"TEX_MEMO", "performance"}, {"DESC_TEMPLATE", "performance"},
++    {"BIND_SKIP", "performance"}, {"SHADER_CACHE_FLUSH", "performance"}, {"SHADER_CARRY", "performance"}, {"SHADER_CARRY_POOL", "performance"}, {"PIPELINE_CACHE_PLAY", "performance"}, {"PIPELINE_CACHE_PLAY_MB", "performance"}, {"FFX_PIPE_CACHE", "performance"}, {"SHADER_MEMO", "performance"}, {"PIPE_MEMO", "performance"}, {"TEX_MEMO", "performance"}, {"DESC_TEMPLATE", "performance"},
+     {"TEX_CLOBBER", "performance"}, {"LOW_END_GPU", "performance"},
+     {"PUSH_SKIP", "performance"}, {"SPLIT_DRAWS", "performance"}, {"SPLIT_IDLE", "performance"}, {"SPLIT_IN_PASS", "performance"}, {"SPLIT_US", "performance"}, {"VK_VALIDATION", "performance"},
+     {"VK_DYN_VERTEX", "performance"}, {"VK_DYN_A2C", "performance"}, {"VK_SUBGROUP_PIN", "performance"}, {"VK_RECONVERGE", "performance"},
+@@ -373,6 +373,7 @@ static const CfgMeta metas[] = {
+     // all|<count>: the compute pipelines the boot keeps, those dispatched most recently (vk_pipeline.c, compute-used.bin)
+     {"COMPUTE_KEEP", "512", NULL, RESTART},
+     {"SHADER_CARRY", "1", "0|1", RESTART},   // gfx_shader.c "Carry": a previous translator's translations until translated again
++    {"SHADER_CARRY_POOL", "0", "0|1", RESTART},   // gfx_shader.c carry_usable: 1 refuses carried 32768-entry pool translations
+     // gfx_shader.c "SPIR-V at rest": a shader's SPIR-V is kept zstd-compressed in memory once no pipeline was made of
+     // it for the idle seconds; 0 keeps every shader's SPIR-V plain
+     {"SHADER_COMPRESS", "1", "0|1", RESTART},
+diff --git a/runtime/gfx.h b/runtime/gfx.h
+index 7f2fcf4..eef181a 100644
+--- a/runtime/gfx.h
++++ b/runtime/gfx.h
+@@ -166,6 +166,8 @@ typedef struct { uint8_t type, comps, packed; } GfxShaderIo;   // GFX_TYPE_*, co
+ int gfx_shader_stage(const GfxShader *s);                   // GFX_STAGE_VS, GFX_STAGE_FS or GFX_STAGE_CS
+ int gfx_shader_resources(const GfxShader *s, int kind, const GfxShaderRes **res);   // count of GFX_RES_* kind; array in *res
+ uint32_t gfx_shader_exact_seen(void);   // shaders loaded so far with a GfxShaderRes.exact texture (the texture census line)
++uint32_t gfx_shader_pool_short_seen(void);   // shaders in memory whose texture pool array has the earlier length, 32768
++                                             // (gfx_shader.c pool_short_note; vk_texture_register's warning)
+ uint32_t gfx_shader_slot_mask(const GfxShader *s);                    // texture/image slots whose type its translation read
+ uint32_t gfx_shader_inputs(const GfxShader *s, GfxShaderIo io[32]);    // Input Locations (VS attributes, FS varyings) as a mask
+ uint32_t gfx_shader_outputs(const GfxShader *s, GfxShaderIo io[32]);
+diff --git a/runtime/gfx_shader.c b/runtime/gfx_shader.c
+index 7554539..6d8c700 100644
+--- a/runtime/gfx_shader.c
++++ b/runtime/gfx_shader.c
+@@ -29,7 +29,8 @@
+ // current key on disk, the previous keys on disk, then a translation (carry_find). A shader served from a previous
+ // translator thus keeps that translation for the rest of the session, deliberately: no pipeline is built a second
+ // time for it, and the pass below needs no way to swap shaders under the renderer. A shader first met after the pass
+-// translated it gets the new translation.
++// translated it gets the new translation. A translation that indexes the texture pool with the earlier translator's
++// length is never served (carry_usable): its clamp would draw the textures numbered past that length with another.
+ // The background pass (gfx_shader_carry_start, after the boot prewarm) translates every stored input that has a
+ // previous translator's entry again under the current identity, on a translator child of its own that runs at idle
+ // priority, outside the pool, and waits while on-demand translations are queued or running. It writes cache files only;
+@@ -201,6 +202,8 @@ static struct {
+     int n_dropped;
+     volatile int64_t served;                               // shaders served from a previous translator this session
+     int64_t served_logged;
++    volatile int64_t refused;                              // previous translations not used (carry_usable)
++    int64_t refused_logged;
+ } C;
+ static PlatMutex ids_lock = PLAT_MUTEX_INIT;               // identities.txt rewrites, C.dropped
+ 
+@@ -728,6 +731,7 @@ static void carry_served(const GfxShader *s) {
+ }
+ 
+ static void zpass_kick(void);
++static void pool_short_note(const GfxShader *s);
+ 
+ // Inserts s, or frees it and returns the entry another thread inserted first.
+ static GfxShader *mem_insert(GfxShader *s) {
+@@ -747,7 +751,7 @@ static GfxShader *mem_insert(GfxShader *s) {
+     plat_mutex_unlock(&cache_lock);
+     if (added && s->carried) carry_served(s);
+     else if (added) ids_note();
+-    if (added) zpass_kick();
++    if (added) pool_short_note(s), zpass_kick();
+     return s;
+ }
+ 
+@@ -1967,10 +1971,55 @@ static int use_lookup(const uint8_t id[32], const uint8_t h[32], UseMask *m) {
+     return known;
+ }
+ 
++// The texture pool length of the earlier translator (vk.h VK_POOL_TEX_CARRIED). Its pool arrays clamp every handle to
++// slot 32767, so a texture the game numbers from 32768 up (Ocarina's pool has 33068 descriptors) is drawn with whatever
++// slot 32767 holds: ground seen through after an area load. The current translator declares VK_POOL_TEX (40960).
++#define POOL_TEX_SHORT 32768
++
++// Whether s declares a texture pool array (reflection "pool" 1) of the earlier length.
++static int pool_short(const GfxShader *s) {
++    for (int k = 0; k < s->nres[GFX_RES_TEX]; k++)
++        if (s->res[GFX_RES_TEX][k].pool == 1 && s->res[GFX_RES_TEX][k].count == POOL_TEX_SHORT) return 1;
++    return 0;
++}
++
++// Shaders that entered the memory cache with a texture pool array of the earlier length (mem_insert). carry_usable
++// keeps the carried ones out, so these come from a translator in use that is older than the runtime's pool (a dev
++// build pointed at an old one, or an install whose translator was not rebuilt). Counted, the first logged;
++// vk_texture.c vk_texture_register names the count when the game registers a texture they cannot reach.
++static volatile int32_t n_pool_short;
++static void pool_short_note(const GfxShader *s) {
++    if (!pool_short(s) || plat_inc32(&n_pool_short) != 1) return;
++    rt_log("gfx_shader: a shader of the translator in use indexes the texture pool with %d entries: it reads slot %d "
++           "for every texture numbered from %d up; the translator is older than this runtime (tools/build_xlate.py "
++           "builds the current one)", POOL_TEX_SHORT, POOL_TEX_SHORT - 1, POOL_TEX_SHORT);
++}
++
++uint32_t gfx_shader_pool_short_seen(void) { return (uint32_t)__atomic_load_n(&n_pool_short, __ATOMIC_RELAXED); }
++
++// Whether previous identity j's translation s may serve. One that indexes the texture pool with the earlier length is
++// not used: the lookup goes on to the next previous identity and then to a translation under the current one (the boot
++// prewarm translates the shaders it names on the boot screen, others are translated at first use). Served, it would
++// keep the clamp for the whole session (see "Carry" at the top). Counted for gfx_shader_record_flush; the first logged.
++// NX2NAVI_SHADER_CARRY_POOL=1 (patch 0126, default 0 = serve them as before) turns the refusal on.
++static int carry_usable(const GfxShader *s, int j) {
++    static int on = -1;
++    if (on < 0) on = cfg_int("NX2NAVI_SHADER_CARRY_POOL");
++    if (!on || !pool_short(s)) return 1;
++    if (plat_inc64(&C.refused) == 1) {
++        const uint8_t *id = C.prev[j];
++        rt_log("gfx_shader: carry: translations of a previous translator (%02x%02x%02x%02x) that index the texture pool "
++               "with %d entries are not used (textures numbered from %d up would read slot %d); those shaders are "
++               "translated again", id[0], id[1], id[2], id[3], POOL_TEX_SHORT, POOL_TEX_SHORT, POOL_TEX_SHORT - 1);
++    }
++    return 0;
++}
++
+ // Previous identity j's entry `key` from the disk cache into the memory cache; NULL when the cache has no valid one.
+-// stage (GFX_STAGE_*, -1 any): an entry of another stage than the request's is not used. Every entry passes
+-// disk_load's checks (whole SPIR-V, a .res.json naming its stage, both from the pack or both loose), which matters most
+-// for compute shaders: the replay thread dispatches one the moment it has it (vk_exec_draw.c shader_for).
++// stage (GFX_STAGE_*, -1 any): an entry of another stage than the request's is not used, nor one carry_usable refuses.
++// Every entry passes disk_load's checks (whole SPIR-V, a .res.json naming its stage, both from the pack or both loose),
++// which matters most for compute shaders: the replay thread dispatches one the moment it has it (vk_exec_draw.c
++// shader_for).
+ static GfxShader *carry_load(const uint8_t key[32], const uint8_t iid[32], int stage, int j) {
+     GfxShader *s = disk_load(key, iid);
+     if (!s) return NULL;
+@@ -1981,6 +2030,10 @@ static GfxShader *carry_load(const uint8_t key[32], const uint8_t iid[32], int s
+         shader_free(s);
+         return NULL;
+     }
++    if (!carry_usable(s, j)) {
++        shader_free(s);
++        return NULL;
++    }
+     s->carried = (uint8_t)(j + 1);
+     return mem_insert(s);
+ }
+@@ -2014,7 +2067,10 @@ static GfxShader *carry_find_iid(const uint8_t iid[32], int disk, int *owned) {
+             continue;
+         }
+         if (!owned) s = carry_load(key, iid, -1, j);
+-        else if ((s = disk_load(key, iid))) s->carried = (uint8_t)(j + 1), *owned = 1;
++        else if ((s = disk_load(key, iid))) {
++            if (carry_usable(s, j)) s->carried = (uint8_t)(j + 1), *owned = 1;
++            else shader_free(s), s = NULL;
++        }
+         if (s) return s;
+     }
+     return NULL;
+@@ -2313,7 +2369,9 @@ static int failed_slot(const uint8_t key[32], int insert) {
+ }
+ 
+ // The lookup order with carry (see "Carry" at the top): the current key in memory, a previous translator's entry in
+-// memory, the current key on disk, a previous translator's entry on disk.
++// memory, the current key on disk, a previous translator's entry on disk. A key whose translation failed skips the
++// last: that lookup found nothing usable before the translation, and a refused entry (carry_usable) would otherwise be
++// read from the disk again at every call (a compute shader's at every dispatch, vk_exec_draw.c shader_for).
+ static const GfxShader *get_one(const Req *r, int stage, const uint8_t *control, const uint8_t *code,
+                                 const GfxShaderAnswers *a) {
+     GfxShader *s = mem_find(r->key);
+@@ -2321,8 +2379,8 @@ static const GfxShader *get_one(const Req *r, int stage, const uint8_t *control,
+     paths();
+     if (!cache_dir[0]) return fail("no cache directory", NULL);
+     if (r->final && (s = disk_load(r->key, r->iid))) return plat_inc64(&n_hits), mem_insert(s);
+-    if ((s = carry_find(r->code_hash, a, stage, 1))) return plat_inc64(&n_hits), s;
+     if (failed_slot(r->key, 0)) return NULL;
++    if ((s = carry_find(r->code_hash, a, stage, 1))) return plat_inc64(&n_hits), s;
+     const GfxShader *t = translate(r, stage, control, code, a);
+     if (!t) failed_slot(r->key, 1);
+     return t;
+@@ -3402,9 +3460,12 @@ static PlatMutex rec_io = PLAT_MUTEX_INIT;   // the record files: appends in ord
+ void gfx_shader_record_flush(int force) {
+     static volatile int64_t last;
+     int64_t now = (int64_t)plat_now_ms();
+-    int64_t served = __atomic_load_n(&C.served, __ATOMIC_RELAXED);
++    int64_t served = __atomic_load_n(&C.served, __ATOMIC_RELAXED), refused = __atomic_load_n(&C.refused, __ATOMIC_RELAXED);
+     if (force && served != __atomic_exchange_n(&C.served_logged, served, __ATOMIC_RELAXED))   // the saves and the exit
+         rt_log("gfx_shader: carry: %lld shaders served from a previous translator this session", (long long)served);
++    if (force && refused != __atomic_exchange_n(&C.refused_logged, refused, __ATOMIC_RELAXED))
++        rt_log("gfx_shader: carry: a previous translator's translation was not used %lld times this session (texture "
++               "pool of %d entries)", (long long)refused, POOL_TEX_SHORT);
+     if (!RC.on || (!force && now - last < 2000)) return;
+     last = now;
+     // The files are written outside RC.lock, which the render thread takes to record a new answer.
+diff --git a/runtime/vk_texture.c b/runtime/vk_texture.c
+index 77c1b29..f3be28d 100644
+--- a/runtime/vk_texture.c
++++ b/runtime/vk_texture.c
+@@ -4769,6 +4769,14 @@ void vk_texture_register(int id, const tex_t *t, const view_t *v) {
+             rt_log("vk: texture slot %d registered, past the %d the shaders index (VK_POOL_TEX): a shader that samples it "
+                    "reads slot %d instead (%d for a translation carried over from the translator before)", id,
+                    VK_POOL_TEX, VK_POOL_TEX - 1, VK_POOL_TEX_CARRIED - 1);
++    } else if (id >= VK_POOL_TEX_CARRIED) {   // within the pool, past what a shader of the earlier length reaches
++        static int said;
++        uint32_t n;
++        if (!__atomic_load_n(&said, __ATOMIC_RELAXED) && (n = gfx_shader_pool_short_seen()) &&
++            !__atomic_exchange_n(&said, 1, __ATOMIC_RELAXED))
++            rt_log("vk: texture slot %d registered while %u shaders in use index the texture pool with the earlier "
++                   "length (%d, gfx_shader.c pool_short_note): they read slot %d in its place", id, n,
++                   VK_POOL_TEX_CARRIED, VK_POOL_TEX_CARRIED - 1);
+     }
+     lock();
+     if (id >= ntslots) {
+diff --git a/tests/carry_pool_check.py b/tests/carry_pool_check.py
+new file mode 100644
+index 0000000..bbfe13b
+--- /dev/null
++++ b/tests/carry_pool_check.py
+@@ -0,0 +1,205 @@
++"""Check runtime/gfx_shader.c's carry refusal: a previous translator's translation whose texture pool array has the
++earlier length (32768, vk.h VK_POOL_TEX_CARRIED) is never served, because its clamp draws every texture numbered from
++32768 up with slot 32767. The check cuts pool_short, carry_usable, carry_load, carry_find and carry_find_iid out of
++gfx_shader.c, compiles them against stand-ins for the disk and memory caches, and walks the lookups: a refused entry
++is freed and the lookup goes on to the next previous identity, the owned branch (gfx_shader_load_private) frees it as
++well, and entries with the current length, the sampler pool or no pool are served as before. pool_short_note, which
++counts the shaders of the earlier length that enter the memory cache for vk_texture.c's warning, counts those only.
++
++No GPU, no game files, any Python.
++
++Usage: carry_pool_check.py
++"""
++import os
++import shutil
++import subprocess
++import sys
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++MSYS_BIN = Path(r'C:\msys64\ucrt64\bin')
++
++
++def compiler():
++    """$CC, else MSYS2 UCRT64's clang, else clang on PATH."""
++    if os.environ.get('CC'):
++        return os.environ['CC']
++    if os.name == 'nt' and (MSYS_BIN / 'clang.exe').exists():
++        return str(MSYS_BIN / 'clang.exe')
++    return shutil.which('clang') or 'clang'
++
++
++HARNESS = r'''
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <assert.h>
++#include "gfx.h"
++
++typedef struct GfxShader {
++    GfxShaderRes *res[GFX_RES_KINDS];
++    int nres[GFX_RES_KINDS];
++    int stage;
++    uint8_t carried;
++    int pool_len;                 /* the stand-in disk entry's texture pool length, -1 none */
++    int keyj;                     /* the previous identity whose key it was read under */
++} GfxShader;
++typedef struct { uint32_t slots, attrs, fouts; } UseMask;
++
++
++static struct {
++    int n_prev;
++    uint8_t prev[8][32], prev_eff[8][32];
++    volatile int64_t refused;
++} C;
++static int carry_on(void) { return C.n_prev > 0; }
++static int64_t plat_inc64(volatile int64_t *p) { return ++*p; }
++static int32_t plat_inc32(volatile int32_t *p) { return ++*p; }
++static int logs;
++static char last_log[512];
++void rt_log(const char *fmt, ...) {
++    logs++;
++    snprintf(last_log, sizeof last_log, "%s", fmt);
++}
++
++/* The disk cache: entry j of the previous identities (key byte 0 = j) holds a shader whose texture pool array has
++   disk_len[j] entries (0: no entry), of stage disk_stage[j]. */
++static int disk_len[8], disk_stage[8], loads, frees, live;
++static GfxShader *mem;            /* the memory cache: at most one shader here */
++static void key_of_input_id(const uint8_t id[32], const uint8_t iid[32], uint8_t key[32]) {
++    memset(key, 0, 32);
++    key[0] = id[0];
++}
++static void iid_of(const uint8_t h[32], const GfxShaderAnswers *a, const UseMask *m, uint8_t iid[32]) { memset(iid, 0, 32); }
++static int use_lookup(const uint8_t id[32], const uint8_t h[32], UseMask *m) { return 1; }
++static GfxShader *mem_find(const uint8_t key[32]) { return mem && mem->keyj == key[0] ? mem : NULL; }
++static GfxShader *mem_insert(GfxShader *s) { mem = s; return s; }
++static void shader_free(GfxShader *s) { frees++, live--; free(s->res[GFX_RES_TEX]); free(s); }
++static GfxShader *disk_load(const uint8_t key[32], const uint8_t *iid) {
++    int j = key[0];
++    if (!disk_len[j]) return NULL;
++    loads++, live++;
++    GfxShader *s = calloc(1, sizeof *s);
++    s->stage = disk_stage[j];
++    s->keyj = j;
++    s->pool_len = disk_len[j];
++    s->res[GFX_RES_TEX] = calloc(3, sizeof(GfxShaderRes));
++    s->nres[GFX_RES_TEX] = 3;
++    s->res[GFX_RES_TEX][0] = (GfxShaderRes){.slot = 2, .count = 1};                  /* a bound texture */
++    s->res[GFX_RES_TEX][1] = (GfxShaderRes){.slot = -1, .count = 4096, .pool = 2};   /* the sampler pool */
++    if (disk_len[j] > 0) s->res[GFX_RES_TEX][2] = (GfxShaderRes){.slot = -1, .count = (uint16_t)disk_len[j], .pool = 1};
++    else s->nres[GFX_RES_TEX] = 2;
++    return s;
++}
++'''
++
++MAIN = r'''
++static void reset(void) {
++    if (mem) shader_free(mem), mem = NULL;
++    for (int j = 0; j < 8; j++) disk_len[j] = 0, disk_stage[j] = 1;
++    C.refused = 0, logs = 0, loads = 0, frees = 0, live = 0;
++}
++
++int main(void) {
++    uint8_t h[32] = {0}, iid[32] = {0};
++    GfxShaderAnswers a = {0};
++    C.n_prev = 2;
++    C.prev[0][0] = 0x4d, C.prev_eff[0][0] = 0;   /* key byte 0 = identity index */
++    C.prev[1][0] = 0x9c, C.prev_eff[1][0] = 1;
++
++    /* The earlier length: refused, freed, nothing served; counted once, logged once. */
++    reset();
++    disk_len[0] = 32768;
++    assert(!carry_find(h, &a, 1, 1));
++    assert(loads == 1 && frees == 1 && live == 0 && !mem);
++    assert(C.refused == 1 && logs == 1 && strstr(last_log, "texture pool"));
++    assert(!carry_find_iid(iid, 1, NULL));
++    assert(C.refused == 2 && logs == 1 && live == 0);
++
++    /* The lookup goes on to the next previous identity, whose translation has the current length. */
++    reset();
++    disk_len[0] = 32768, disk_len[1] = 40960;
++    GfxShader *s = carry_find(h, &a, 1, 1);
++    assert(s && s->pool_len == 40960 && s->carried == 2 && mem == s);
++    assert(C.refused == 1 && frees == 1 && live == 1);
++
++    /* The current length, a shader with only the sampler pool and bound textures: served as before. */
++    reset();
++    disk_len[0] = 40960;
++    s = carry_find(h, &a, 1, 1);
++    assert(s && s->carried == 1 && C.refused == 0 && logs == 0);
++    reset();
++    disk_len[0] = -1;   /* no texture pool array */
++    s = carry_find_iid(iid, 1, NULL);
++    assert(s && s->carried == 1 && C.refused == 0);
++
++    /* A stage mismatch is still refused for its own reason, before the pool is looked at. */
++    reset();
++    disk_len[0] = 32768, disk_stage[0] = 2;
++    assert(!carry_find(h, &a, 1, 1) && C.refused == 0 && frees == 1);
++
++    /* The owned branch (gfx_shader_load_private): refused and freed, or handed over with *owned 1. */
++    reset();
++    disk_len[0] = 32768;
++    int owned = 0;
++    assert(!carry_find_iid(iid, 1, &owned) && !owned && C.refused == 1 && frees == 1 && live == 0);
++    reset();
++    disk_len[0] = 32768, disk_len[1] = 40960;
++    owned = 0;
++    s = carry_find_iid(iid, 1, &owned);
++    assert(s && owned && s->carried == 2 && !mem && C.refused == 1 && live == 1);
++    shader_free(s);
++
++    /* Memory only (disk 0) never reads the disk. */
++    reset();
++    disk_len[0] = 32768;
++    assert(!carry_find(h, &a, 1, 0) && !carry_find_iid(iid, 0, NULL) && loads == 0);
++
++    /* pool_short_note (what mem_insert calls for every shader entering the memory cache): only shaders with a pool
++       array of the earlier length count, the first is logged, gfx_shader_pool_short_seen gives the count. */
++    reset();
++    uint8_t k[32] = {0};
++    disk_len[0] = 40960, disk_len[1] = 32768, disk_len[2] = -1;
++    GfxShader *cur = disk_load(k, NULL);
++    k[0] = 1;
++    GfxShader *old = disk_load(k, NULL);
++    k[0] = 2;
++    GfxShader *none = disk_load(k, NULL);
++    pool_short_note(cur), pool_short_note(none);
++    assert(gfx_shader_pool_short_seen() == 0 && logs == 0);
++    pool_short_note(old), pool_short_note(old);
++    assert(gfx_shader_pool_short_seen() == 2 && logs == 1 && strstr(last_log, "older than this runtime"));
++    shader_free(cur), shader_free(old), shader_free(none);
++
++    reset();
++    printf("carry pool check: earlier-length pool translations refused and freed, the lookup goes on, others served; "
++           "shaders of the earlier length in use counted\n");
++    return 0;
++}
++'''
++
++
++def cut(source, start, end):
++    i = source.index(start)
++    return source[i:source.index(end, i)]
++
++
++def main():
++    src = (ROOT / 'runtime' / 'gfx_shader.c').read_text(encoding='utf-8')
++    production = cut(src, '#define POOL_TEX_SHORT', '// Whether the cache holds a previous translator\'s entry of input iid.')
++    work = ROOT / 'build' / 'test' / 'carry_pool'
++    work.mkdir(parents=True, exist_ok=True)
++    c = work / 'check.c'
++    c.write_text(HARNESS + production + MAIN, encoding='utf-8')
++    exe = work / ('check.exe' if os.name == 'nt' else 'check')
++    env = dict(os.environ)
++    if os.name == 'nt' and MSYS_BIN.exists():
++        env['PATH'] = str(MSYS_BIN) + os.pathsep + env.get('PATH', '')
++    subprocess.check_call([compiler(), '-O1', '-g', '-Wall', '-Wno-unused-function', '-I', str(ROOT / 'runtime'),
++                           str(c), '-o', str(exe)], env=env)
++    return subprocess.run([str(exe)], env=env, timeout=60).returncode
++
++
++if __name__ == '__main__':
++    sys.exit(main())
+-- 
+2.56.0
+
