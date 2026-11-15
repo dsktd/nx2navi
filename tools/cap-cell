@@ -2,7 +2,8 @@
 # cap-cell <exe|up101> <capture dir> <tag> <reps> [KEY=VAL...]: standing cell that starts from a bug capture (upstream
 # 4fd70e3, NX2NAVI_CAPTURE_REPLAY) instead of a boot-timed input script: the game presses A through the title itself,
 # teleports, walks Link to the captured place and puts the free camera there. Measured: present frames from the
-# replay's `ready` line + SKIPF (default 300, past the replay's own capture) to FRAME (default 5400).
+# replay's `ready` line + SKIPF (default 300, past the replay's own capture) to FRAME (default 5400), or with WINF=<n>
+# only the n frames from there (same window length every run; FRAME must reach ready + SKIPF + WINF).
 # Settings: the capture's settings.ini is replaced by INI (default Cal's live build/v111/nx2navi.ini, copied, never
 # written), so both sides of an A/B run Cal's whole ini; the capture's own stays as cap/settings.capture.ini.
 # exe up101 = clean upstream 0.10.1 (NX2navi/build/up101-game/ocarina); any other = builds.tsv row, nx2navi.<exe>.
@@ -29,7 +30,7 @@ for ((i=1; i<=reps; i++)); do
     NX2NAVI_SHADER_CACHE=${SC:-$P/scR} NX2NAVI_PIPELINE_CACHE=${PC:-$P/pcR.bin} NX2NAVI_TRACE=perf,present \
     NX2NAVI_RUN_NAME=$name "${xl[@]}" "$@" > $R/.lab/$name.out 2>&1)
   cell_note $name warm "$(sha256sum $cap/capture.txt | cut -c1-12)" $l0
-  line=$(python3 -I $R/tools/cap-sum $R/.lab/$name/run.log ${SKIPF:-300}) && ok=1 || ok=0; echo "$name $line"
+  line=$(python3 -I $R/tools/cap-sum $R/.lab/$name/run.log ${SKIPF:-300} ${WINF:-0}) && ok=1 || ok=0; echo "$name $line"
   # results.tsv: n=1 rows per run (indicative), scenario cap-<capture's parent folder>, e.g. cap-mid
   [ $ok = 1 ] && for m in "fps ([0-9.]+) fps" "replay_ms replay ([0-9.]+)" "gpu_ms gpu ([0-9.]+)" "interval_ms interval ([0-9.]+) ms"; do
     k=${m%% *} re=${m#* }; [[ $line =~ $re ]] && v=${BASH_REMATCH[1]} &&

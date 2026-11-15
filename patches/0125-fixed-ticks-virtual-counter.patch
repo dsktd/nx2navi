@@ -1,0 +1,92 @@
+From 0c4f2104b2d2f2083727754301884d4e200a6468 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Sun, 15 Nov 2026 10:03:04 -0500
+Subject: [PATCH] NX2NAVI_FIXED_TICKS=1 (default off, needs
+ NX2NAVI_FIXED_STEP): the guest counter (GetSystemTick, CNTPCT, NVN
+ timestamps) counts the fixed step's game time, at least one tick per read
+ (#145)
+
+---
+ runtime/frame_rate.c |  1 +
+ runtime/host.h       |  1 +
+ runtime/main.c       | 33 ++++++++++++++++++++++++++++++++-
+ 3 files changed, 34 insertions(+), 1 deletion(-)
+
+diff --git a/runtime/frame_rate.c b/runtime/frame_rate.c
+index 0862c37..f095064 100644
+--- a/runtime/frame_rate.c
++++ b/runtime/frame_rate.c
+@@ -865,6 +865,7 @@ static uint64_t presents;
+ 
+ int64_t frame_step_world_us(void) { return atomic_load_explicit(&world_us, memory_order_relaxed); }
+ uint64_t frame_step_ticks(void) { return atomic_load_explicit(&game_us, memory_order_relaxed) * 60 / 1000000; }
++uint64_t frame_step_game_us(void) { return atomic_load_explicit(&game_us, memory_order_relaxed); }
+ // The clock of the scripted helpers (debug_tools.c routes and free camera, bugcap.c capture replays): game time with
+ // NX2NAVI_FIXED_STEP, so they act on the same frames in every run; the host clock without it, as before.
+ uint64_t frame_step_script_ns(void) {
+diff --git a/runtime/host.h b/runtime/host.h
+index 48b8960..5570934 100644
+--- a/runtime/host.h
++++ b/runtime/host.h
+@@ -432,6 +432,7 @@ int64_t frame_step_world_us(void);                         // game time since th
+ uint64_t frame_step_ticks(void);                           // game time since the first present in 60 Hz ticks (input scripts)
+ double frame_step_fixed_s(void);                           // NX2NAVI_FIXED_STEP's step in seconds, 0 off (lab replays)
+ uint64_t frame_step_script_ns(void);                       // game time with NX2NAVI_FIXED_STEP, else plat_now_ns
++uint64_t frame_step_game_us(void);                         // game time stepped since the first present, us
+ // In-launch A/B measurement: NX2NAVI_AB=<seconds> splits the world clock (frame_step_world_us) into blocks of that much
+ // game time in the order A B B A (repeated); rt_ab() is 1 in the B blocks, 0 in A blocks, before the world clock and
+ // without NX2NAVI_AB. rt_knob(name, def) reads the switch
+diff --git a/runtime/main.c b/runtime/main.c
+index dbc1cc8..1174dac 100644
+--- a/runtime/main.c
++++ b/runtime/main.c
+@@ -42,6 +42,7 @@
+ // names the lifted function, the guest registers and the guest frame-pointer chain).
+ #include <ctype.h>
+ #include <limits.h>
++#include <stdatomic.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+@@ -251,7 +252,37 @@ static PlatScale tick_scale;
+ 
+ __attribute__((constructor)) static void tick_scale_init(void) { tick_scale = plat_scale(19200000u, plat_counter_hz()); }
+ 
+-uint64_t rt_ticks(void) { return plat_scaled(tick_scale, plat_counter()); }
++// NX2NAVI_FIXED_TICKS=1 with NX2NAVI_FIXED_STEP (lab, default off): the guest's counter (nn::os GetSystemTick, CNTPCT,
++// NVN timestamps, the steady clock built on it) counts the fixed step's game time from the first present instead of
++// the host clock, so the game's own time budgets and timers act on the same frames in every run. Each read is at least
++// one tick past the last, so a guest loop waiting for the counter to move still ends. Before the first present, and
++// without the knobs, the host counter.
++static int ticks_virtual = -1;
++static _Atomic uint64_t ticks_last, ticks_base;
++
++uint64_t rt_ticks(void) {
++    uint64_t host = plat_scaled(tick_scale, plat_counter());
++    if (__builtin_expect(ticks_virtual == 0, 1)) return host;
++    if (ticks_virtual < 0) {
++        const char *e = getenv("NX2NAVI_FIXED_TICKS");
++        if (!(e && !strcmp(e, "1") && frame_step_fixed_s() > 0)) return ticks_virtual = 0, host;
++        ticks_virtual = 1;
++        rt_log("frame step: guest ticks follow the fixed step's game time (NX2NAVI_FIXED_TICKS=1)");
++    }
++    uint64_t game = frame_step_game_us();
++    if (!game) return host;   // before the first stepped present
++    uint64_t base = atomic_load_explicit(&ticks_base, memory_order_relaxed);
++    if (!base) {
++        uint64_t want = host - game * 192 / 10;
++        atomic_compare_exchange_strong(&ticks_base, &base, want);
++        base = atomic_load_explicit(&ticks_base, memory_order_relaxed);
++    }
++    uint64_t v = base + game * 192 / 10, last = atomic_load_explicit(&ticks_last, memory_order_relaxed);
++    for (;;) {
++        uint64_t next = v > last ? v : last + 1;
++        if (atomic_compare_exchange_weak(&ticks_last, &last, next)) return next;
++    }
++}
+ 
+ // ---- crash reporter
+ typedef struct { uintptr_t host; uint64_t guest; } FnRev;
+-- 
+2.56.0
+

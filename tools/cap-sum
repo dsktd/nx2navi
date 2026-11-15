@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""cap-sum <run.log> [skip frames]: fps, 1% low, interval, replay, gpu over a capture-start run's standing window:
+"""cap-sum <run.log> [skip frames] [window frames]: fps, 1% low, interval, replay, gpu over a capture-start run's standing window:
 from the present after `capture: replay of ... ready` + skip to the last perf window. Also where Link ended up."""
 import re
 import statistics as st
@@ -7,6 +7,7 @@ import sys
 
 text = open(sys.argv[1], errors="replace").read().splitlines()
 skip = int(sys.argv[2]) if len(sys.argv) > 2 else 300
+win = int(sys.argv[3]) if len(sys.argv) > 3 else 0   # >0: only windows in [ready+skip, ready+skip+win): the same frame count every run
 frame, ready, off = 0, None, "?"
 iv, rp, gp = [], [], []
 for line in text:
@@ -18,7 +19,7 @@ for line in text:
         o = re.search(r"([0-9.]+) ?m from", line)
         off = o[1] if o else line.split(" ready: ", 1)[1][:80]
     p = re.search(r"perf: frame (\d+): (interval|gpu) avg ([\d.]+)", line)
-    if p and ready is not None and int(p[1]) >= ready + skip:
+    if p and ready is not None and int(p[1]) >= ready + skip and (not win or int(p[1]) < ready + skip + win):
         if p[2] == "gpu":
             gp.append(float(p[3]))
             continue
