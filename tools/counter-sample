@@ -37,7 +37,7 @@ def find_pid(mine):
         if not p.isdigit(): continue
         try: comm = open(f'/proc/{p}/comm').read().strip()
         except OSError: continue
-        if comm in ('nx2navi', 'nx2navi.new', 'nx2navi.prev') and (not mine or descendant(int(p))): return int(p)
+        if comm.startswith('nx2navi') and comm != 'nx2navi_xlate' and (not mine or descendant(int(p))): return int(p)
     return None
 
 def maps(pid):
