@@ -1,0 +1,66 @@
+From 4f1990178c55d15f0098823150c50a68d00d544c Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 15:53:19 -0500
+Subject: [PATCH] boot: NX2NAVI_SHOTS_CROP=x,y,w,h takes only that rectangle of
+ the shown picture at native size for NX2NAVI_SHOTS
+
+---
+ runtime/boot.c | 12 +++++++++---
+ runtime/cfg.c  |  2 +-
+ 2 files changed, 10 insertions(+), 4 deletions(-)
+
+diff --git a/runtime/boot.c b/runtime/boot.c
+index c70a540..2610276 100644
+--- a/runtime/boot.c
++++ b/runtime/boot.c
+@@ -253,7 +253,8 @@ static void save_shot(const tex_t *t, const char *path) {
+ }
+ 
+ // NX2NAVI_SHOTS=lo-hi:step [NX2NAVI_SHOTS_DIR=dir]: every step-th present in [lo, hi] saved as <dir>/f<n>.png (n the
+-// present), box-filtered to 480x270; NX2NAVI_SHOTS=w<lo>-<hi>:<step> takes them by world-clock seconds instead, the first
++// present), box-filtered to 480x270 (NX2NAVI_SHOTS_CROP=x,y,w,h: only that rectangle of the shown picture, at native
++// resolution, so a small region can be taken every present without a full-size read and PNG); NX2NAVI_SHOTS=w<lo>-<hi>:<step> takes them by world-clock seconds instead, the first
+ // present at or after each step (full size with NX2NAVI_SHOTS_FULL=1), for finding short glitches. Pipeline builds stay asynchronous, so the
+ // pictures show what a player sees.
+ // crop: the window crop the present shows (x, y, w, h; zero size for the whole image), so the picture is what a player
+@@ -265,9 +266,11 @@ static void series_shot(const tex_t *t, const int crop[4], uint64_t n) {
+     static int parsed;
+     static unsigned long long lo, hi, step, next;
+     static const char *dir;
+-    static int full, world;
++    static int full, world, sc[4];
+     if (!parsed) {
+         full = cfg_get("NX2NAVI_SHOTS_FULL") != NULL;
++        const char *c = cfg_get("NX2NAVI_SHOTS_CROP");
++        if (c && sscanf(c, "%d,%d,%d,%d", &sc[0], &sc[1], &sc[2], &sc[3]) != 4) sc[2] = 0;
+         const char *e = cfg_get("NX2NAVI_SHOTS");
+         double wl, wh, ws;
+         if (e && e[0] == 'w' && sscanf(e + 1, "%lf-%lf:%lf", &wl, &wh, &ws) == 3 && ws > 0)   // world-clock seconds
+@@ -307,7 +310,10 @@ static void series_shot(const tex_t *t, const int crop[4], uint64_t n) {
+     uint32_t w = t->d.width, h = t->d.height;
+     if (crop && crop[2] > 0 && crop[3] > 0 && (uint32_t)(crop[0] + crop[2]) <= w && (uint32_t)(crop[1] + crop[3]) <= h)
+         cx = crop[0], cy = crop[1], w = (uint32_t)crop[2], h = (uint32_t)crop[3];
+-    uint32_t ow = full || req ? w : 480, oh = full || req ? h : 270;
++    int sub = !req && sc[2] > 0 && sc[3] > 0 && sc[0] >= 0 && sc[1] >= 0 && (uint32_t)(sc[0] + sc[2]) <= w &&
++              (uint32_t)(sc[1] + sc[3]) <= h;
++    if (sub) cx += sc[0], cy += sc[1], w = (uint32_t)sc[2], h = (uint32_t)sc[3];
++    uint32_t ow = full || req || sub ? w : 480, oh = full || req || sub ? h : 270;
+     uint8_t *px = malloc(4ull * w * h), *out = malloc(4ull * ow * oh);
+     if (!px || !out) rt_fatal("boot: out of memory for a NX2NAVI_SHOTS frame");
+     view_t view;
+diff --git a/runtime/cfg.c b/runtime/cfg.c
+index 73e46ba..2270425 100644
+--- a/runtime/cfg.c
++++ b/runtime/cfg.c
+@@ -77,7 +77,7 @@ static const char *const known[] = {
+     "PRESNAP_PLACE",
+     "REPLAY_CHECK", "RESOLVE_CHECK", "RESTART_WAIT", "ROMFS", "ROMFS_INDEX", "ROMFS_MMAP", "ROMFS_MODS", "ROMFS_PATCHES",
+     "ROMFS_PROOF_DIR", "ROMFS_VERIFY", "RSTICK_DEADZONE", "RUMBLE", "RUMBLE_CURVE", "RUMBLE_HD", "RUMBLE_HD_MS", "RUMBLE_STRENGTH", "RUMBLE_TRIGGERS", "SHADER_CACHE",
+-    "SHADER_CACHE_FLUSH", "SHADER_CARRY", "SHADER_COMPRESS", "SHADER_COMPRESS_IDLE_S", "SHADER_MEMO", "SHADOW_BULK_WRITE", "SHADOW_CHECK", "SHADOW_COMPARE", "SHADOW_PCF", "SHADOW_RANGE", "SHADOW_RES", "SHADOW_SCALE", "SHADOW_TABLE_STORES", "SHARED_FONTS", "SHARPNESS", "SHOTS", "SHOTS_DIR",
++    "SHADER_CACHE_FLUSH", "SHADER_CARRY", "SHADER_COMPRESS", "SHADER_COMPRESS_IDLE_S", "SHADER_MEMO", "SHADOW_BULK_WRITE", "SHADOW_CHECK", "SHADOW_COMPARE", "SHADOW_PCF", "SHADOW_RANGE", "SHADOW_RES", "SHADOW_SCALE", "SHADOW_TABLE_STORES", "SHARED_FONTS", "SHARPNESS", "SHOTS", "SHOTS_CROP", "SHOTS_DIR",
+     "SVC_SLOW_MS",
+     "SHOTS_FULL", "SPEED_PROBE", "SPIN", "SPIN_HANDOFF_US", "SPLIT_DRAWS", "SPLIT_IDLE", "SPLIT_IN_PASS", "SPLIT_US", "SPV_MARK_TEST", "SPV_OVERRIDE", "STICK_DEADZONE", "STICK_SENS",
+     "SWKBD_ANSWER",
+-- 
+2.56.0
+

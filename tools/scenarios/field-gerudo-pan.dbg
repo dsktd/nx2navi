@@ -1,0 +1,5 @@
+# Hyrule Field at the Gerudo gate facing the field, daylight; the free camera pans slowly (camfly yaw 40 over 4000 ticks). #175 cascade re-fit.
+# base: .lab/scenarios/base-profile
+# warp: scene=HyruleField_Adult entrance=HyruleField_FrontOfGerudoValley face=-62.18 age=adult
+300:freecam 1 0 0
+1000:camfly 0 0 0 40 0 4000

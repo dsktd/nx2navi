@@ -958,4 +958,11 @@ recipe `tools/scenarios/field-gerudo-field` (face=-62.18, over the field), scn-c
 (NX2NAVI_MARK_BURST=240, 320x180 GPU-blit thumbs, 55.0-56.1 fps), `.lab/t175/band.py` (blinks in the far band y 50-95):
 x3 runs, 12 bursts, band mean 2.2-6.8 px/frame, max 20, one frame >=20 px (haze on the far mesa, no shadow): NOT
 REPRODUCED at a fixed camera in daylight. Thumbs are coarse (a distant shadow edge is ~1 px); next: same recipe with
-the camera panning slowly (cascade re-fit) or Cal's F9 mark. Scripts .lab/t175/{run,scn}.sh.
+the camera panning slowly (cascade re-fit) or Cal's F9 mark. Native-res recheck (same day, exe up012sc 4f19901 = up012 + patch 0131 `NX2NAVI_SHOTS_CROP=x,y,w,h`: NX2NAVI_SHOTS
+takes only that rectangle at native size, `runtime/boot.c` series_shot): field-gerudo-field, crop 560,60,640,360 of
+2560x1440 = the far mesa cliff, every present 4000-4600, x3: 5.5 / 7.0 / 8.0 blink px/frame, max 20-34, cliff face 0,
+blinks only in near foliage and drifting dust: NOT REPRODUCED static. Cost: ~24.5 fps in the shot window (the shot's
+`finish()` drains the async replay each present), so a timing-bound flicker may still hide. Pan variant
+(`field-gerudo-pan`; scn-cell runs only a recipe's warp + base, so its `NX2NAVI_DBG_TEST` lines go in by hand):
+`freecam 1 0 0` + `camfly 0 0 0 40 0 4000` puts the free camera inside the gate's rock wall, so the crop sees
+near rock and dust (97-114 px/frame, not shadows): invalid; needs a `camset` to a field position first. Scripts .lab/t175/{run,scn}.sh.
