@@ -67,8 +67,8 @@ config:
 # The two Python environments, from the Nix interpreters
 venvs:
     cd "{{src}}" && {{dev}} bash -c '\
-        uv venv -q --python 3.12 .venv && uv pip install -q --python {{py}} -r tools/requirements.txt zbic && \
-        uv venv -q --python 3.14 .venv-py314 && uv pip install -q --python {{py314}} -r tools/requirements-py314.txt'
+        uv venv -q --allow-existing --python 3.12 .venv && uv pip install -q --python {{py}} -r tools/requirements.txt zbic && \
+        uv venv -q --allow-existing --python 3.14 .venv-py314 && uv pip install -q --python {{py314}} -r tools/requirements-py314.txt'
 
 # hactool, patched and built from source
 hactool:
