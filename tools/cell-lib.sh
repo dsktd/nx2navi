@@ -27,4 +27,7 @@ cell_scenario() {
 }
 # cell_xlate <exe>: the translator the build was made for (builds.tsv xlate column dir), e.g. play41 -> xlate-play33
 cell_xlate() { local d; d=$(awk -F'\t' -v e=$1 '$1 == e { split($4, a, "/"); print a[1] }' $R/builds.tsv)
-  [ -n "$d" ] && [ -x $R/NX2navi/build/v111/$d/nx2navi_xlate ] && echo $R/NX2navi/build/v111/$d/nx2navi_xlate || echo $R/NX2navi/build/v111/xlate-rebase/nx2navi_xlate; }
+  # builds.tsv names translators under build/v111/ (xlate-play33) or build/ (xlate-701e7ce): before 2026-11-15 the
+  # second kind fell back to xlate-rebase (32768 pool) without a word
+  local t; for t in $R/NX2navi/build/v111/$d $R/NX2navi/build/$d; do [ -n "$d" ] && [ -x $t/nx2navi_xlate ] && { echo $t/nx2navi_xlate; return; }; done
+  echo "cell_xlate: no translator for $1 ('$d'), using xlate-rebase" >&2; echo $R/NX2navi/build/v111/xlate-rebase/nx2navi_xlate; }
