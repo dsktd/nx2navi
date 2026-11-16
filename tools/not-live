@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# not-live <dir>...: the one guard for Cal's live game profile (NX2navi/build/<ver>/profile, his saves). Exits 1 with a
+# message when a dir is that profile or inside it, so lab tools never run a game on it or write into it. Lab runs use
+# their own copy (tools/lab-run builds one in .lab/<label>/profile). NX2NAVI_LIVE_PROFILE_OK=1 overrides (Cal only).
+# 2026-11-15: lab-run's old live mode (snapshot his saves, run, restore the snapshot) put 11-12 17:13 saves back over
+# his 22:34 progress; that mode is gone.
+[ "${NX2NAVI_LIVE_PROFILE_OK:-0}" = 1 ] && exit 0
+for d in "$@"; do
+  case "$(realpath -m "$d")/" in
+    */NX2navi/build/*/profile/*) echo "not-live: $d is Cal's live profile; use a copy (NX2NAVI_PROFILE_DIR)" >&2; exit 1;;
+  esac
+done

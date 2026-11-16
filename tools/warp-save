@@ -22,12 +22,11 @@ String64/Vector3 values are offsets to the data. Keys used: 0x1d6189da current s
 + 0x960ad56a, 0xc884818d, 0x8773f02d (Vector3, all hold Link's position), Player_Rot_For_Map + 0xa4aee8cd (float
 yaw, degrees), Sequence_IsChildhood (bool).
 """
-import glob, math, os, re, struct, sys, tomllib
+import glob, math, os, re, struct, subprocess, sys, tomllib
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mm3 import mm3
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-LIVE = os.path.realpath(os.path.expanduser("~/claude/nx2navi/NX2navi/build/v111/profile"))
 K_SCENE = 0x1D6189DA
 K_POS = [mm3("Player_Pos_For_Map"), 0x960AD56A, 0xC884818D, 0x8773F02D]
 K_YAW = [mm3("Player_Rot_For_Map"), 0xA4AEE8CD]
@@ -151,7 +150,8 @@ def edit(path, scene, pos, yaw, child, gd=None, face=None):
 def main():
     if len(sys.argv) < 3: die(__doc__)
     prof = os.path.realpath(sys.argv[1])
-    if prof == LIVE: die("never edits the live profile; pass a copy")
+    if subprocess.run([os.path.join(os.path.dirname(os.path.abspath(__file__)), "not-live"), prof]).returncode:
+        die("never edits the live profile; pass a copy")
     spec = parse(sys.argv[2:])
     scenes = tomllib.load(open(os.path.join(HERE, "scenes.toml"), "rb"))["scene"]
     name = find_scene(scenes, spec["scene"], spec.get("age"))

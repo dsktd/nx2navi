@@ -116,36 +116,25 @@ if [ -n "${LAB_RENDERDOC:-}" ]; then
   envs+=("VK_ADD_IMPLICIT_LAYER_PATH=$rdoc/share/vulkan/implicit_layer.d" ENABLE_VULKAN_RENDERDOC_CAPTURE=1
     "NX2NAVI_RDOC=$LAB_RENDERDOC" "NX2NAVI_RDOC_DIR=$OUT" "NX2NAVI_RDOC_DLL=$rdoc/lib/librenderdoc.so")
 fi
-# live profile allowed (Cal, 2026-11-09): snapshot his saves first and restore them after the run
+# Cal's live profile is never used: every run gets its own copy in $OUT/profile (tools/not-live guards it; the old
+# snapshot-and-restore live mode put stale saves over Cal's progress, 2026-11-15)
 prof=""; for e in "${envs[@]}"; do [[ $e == NX2NAVI_PROFILE_DIR=* ]] && prof=${e#*=}; done
 live=$(realpath -m "$BIN/profile")
-# recording bundle: `just play` saves logs/profile-<ts>/ next to input-<ts>.txt; replay from that save in a scratch
-# profile (live profile copied for account.uid/cache, its save dirs replaced by the bundle's)
+# recording bundle: `just play` saves logs/profile-<ts>/ next to input-<ts>.txt; replay from that save in the copy
+# (live profile copied for account.uid/cache, its save dirs replaced by the bundle's)
 bundle=""; [[ ${rec##*/} =~ ^input-(.+)\.txt$ ]] && bundle=$(dirname "$rec")/profile-${BASH_REMATCH[1]}
-if [[ -z $prof && -d $bundle ]]; then
-  prof=$OUT/profile; mkdir -p "$prof"
-  cp -a "$live"/. "$prof"/ && rm -rf "$prof"/save "$prof"/save-tx "$prof"/save-backup && cp -a "$bundle"/. "$prof"/ || exit 4
-  envs+=("NX2NAVI_PROFILE_DIR=$prof"); echo "lab-run: profile from bundle ${bundle##*/}"
-elif [[ -z $prof && -n $soft ]]; then
-  # soft runs may overlap Cal's game: never snapshot/restore his live saves, run on a fresh copy
-  prof=$OUT/profile; mkdir -p "$prof"; cp -a "${LAB_PROFILE_SRC:-$live}"/. "$prof"/ || exit 4
-  envs+=("NX2NAVI_PROFILE_DIR=$prof"); echo "lab-run: soft, profile copy in $prof"
-elif [[ -z $prof && -n $warp ]]; then
+if [[ -z $prof ]]; then
   # LAB_PROFILE_SRC: a fixed base profile (tools/scenario, .lab/scenarios/base-profile) instead of the live one
   prof=$OUT/profile; mkdir -p "$prof"; cp -a "${LAB_PROFILE_SRC:-$live}"/. "$prof"/ || exit 4
-  envs+=("NX2NAVI_PROFILE_DIR=$prof"); echo "lab-run: warp, profile copy in $prof"
-elif [[ -z $prof ]]; then echo "lab-run: no bundle for ${rec##*/}; using the live profile (saves restored after)" >&2; fi
-if [[ -n $warp ]]; then
-  [[ $(realpath -m "$prof") == "$live" ]] && { echo "lab-run: --warp never edits the live profile" >&2; exit 4; }
-  eval "w=($warp)"; "$ROOT/tools/warp-save" "$prof" "${w[@]}" || exit 4
+  if [[ -d $bundle ]]; then
+    rm -rf "$prof"/save "$prof"/save-tx "$prof"/save-backup && cp -a "$bundle"/. "$prof"/ || exit 4
+    echo "lab-run: profile from bundle ${bundle##*/}"
+  else echo "lab-run: profile copy in $prof"; fi
+  envs+=("NX2NAVI_PROFILE_DIR=$prof")
 fi
-[ $dry = 1 ] && { echo "profile: ${prof:-$live}"; ls -la "${prof:-$live}"; exit 0; }
-[[ -n $soft && $(realpath -m "$prof") == "$live" ]] && { echo "lab-run: LAB_SOFT never runs on the live profile" >&2; exit 4; }
-if [[ -z $prof || $(realpath -m "$prof") == "$live" ]]; then
-  snap=$(mktemp -d "${TMPDIR:-/tmp}/nx2navi-save.XXXXXX")
-  cp -a "$live/save" "$live/save-tx" "$live/save-backup" "$snap"/ 2>/dev/null
-  restore_saves() { for d in save save-tx save-backup; do [[ -d $snap/$d ]] && { rm -rf "$live/$d"; cp -a "$snap/$d" "$live/$d"; }; done; rm -rf "$snap"; }
-else restore_saves() { :; }; fi
+"$ROOT/tools/not-live" "$prof" || exit 4
+if [[ -n $warp ]]; then eval "w=($warp)"; "$ROOT/tools/warp-save" "$prof" "${w[@]}" || exit 4; fi
+[ $dry = 1 ] && { echo "profile: $prof"; ls -la "$prof"; exit 0; }
 t0=$(date +%s.%N)
 dumpenv=(NX2NAVI_DUMP=$frame); [ -n "${LAB_NODUMP:-}" ] && dumpenv=()
 FEED=$HOME/claude/.services/screensavers/feeds/nx2navi-lab.log
@@ -158,7 +147,7 @@ pgid=$!
 # the live screensaver's job registry: the Director's jobwatch scene shows this run's progress and the game's last line
 job=nx2navi-$label; jlog=$OUT/job.log; : >"$jlog"
 command -v claude-job >/dev/null && claude-job start "$job" --log "$jlog" --progress 'frame (?P<done>[0-9]+) of (?P<total>[0-9]+)' --pid $$ >/dev/null 2>&1
-trap 'kill -- -$pgid 2>/dev/null; claude-job end "$job" >/dev/null 2>&1; sleep 1; restore_saves' EXIT
+trap 'kill -- -$pgid 2>/dev/null; claude-job end "$job" >/dev/null 2>&1; sleep 1' EXIT
 tmo=${LAB_TIMEOUT:-300}; hit=0
 for ((i=0; i<tmo*2; i++)); do sleep 0.5
   if ((i % 8 == 0)); then cur=$(grep -aoE 'kernel: frame [0-9]+' "$log" | tail -1 | grep -oE '[0-9]+$'); echo "$label: frame ${cur:-0} of $frame | $(tail -c 300 "$log" | tail -1 | cut -c1-160)" >>"$jlog"; fi

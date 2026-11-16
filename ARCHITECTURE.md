@@ -563,6 +563,15 @@ cut) and 0118 snapshots sit before any tail cut, so they are untouched by it. Tr
 - Visual pairs (2026-11-12, Cal): `tools/visual-pair A.png B.png <scenario> <A label> <B label> [ab|parent]` stores full-res + thumbs in `.lab/visual/<date>/<exe>-<scenario>-<A|B|parent|child>.png` (outside the build store: never pruned), a diff heatmap, and a `visual.tsv` row (id, date, scenario, recipe, kind, a, b, paths, score, status, note). Score (`tools/visual-score`): linear-light |A-B| over RGB, 32x32 tile means, tiles under `tools/scenarios/<name>.mask` rectangles dropped, 95th percentile tile. Status auto-same / flagged by the scenario's `threshold` line, then cal-good / cal-bad from `/results/review.html` (slider, flip, side by side, heatmap; POST `review` in `tools/results-serve`); cal-bad appends a SYMPTOMS.md row. Calibration on same-build repeat finals (`.lab/ab-*-<sc>-1` vs `-2`): field-west 6 pairs 0.0076-0.0108 -> threshold 0.016; graveyard 8 pairs 0.0171-0.0247 (flames, fog) -> 0.037; no masks yet. The suite pairs each standing shot with the parent build's; ab-cell has no per-side shot (A and B alternate within one run), so ab-cell/load-cell make no pairs yet. Nightly lists the top 3 flagged pairs of the night as `Needs Cal`.
 - Page: service `~/claude/.services/results/` (relative links, symlinks to the three files): charts per scenario/metric across builds with the build's change vs parent in the tooltip, and done-vs-open symptoms.
 
+### Cal's live profile is off limits to the lab (2026-11-15)
+`NX2navi/build/v111/profile` holds Cal's saves. Between 11-12 23:03 and 11-15 20:01 its `save` and `save-backup` were
+swapped as whole trees for 11-12 17:13 copies (mtimes kept, the newer 11-13 03:3x backups gone: a `rm -rf` + `cp -a`,
+not the game, which never deletes newer backups). The only writer of that shape was `tools/lab-run`'s live mode (no
+bundle, no `NX2NAVI_PROFILE_DIR`: snapshot save dirs, run, restore the snapshot on exit); slim-boot (11-14 10:58) ran
+that way. That mode is removed: every lab run now copies a profile into `.lab/<label>/profile`, and `tools/not-live`
+(the one guard, used by lab-run and warp-save) refuses any path at or under `NX2navi/build/*/profile` unless
+`NX2NAVI_LIVE_PROFILE_OK=1`. New tools that write a profile call it too.
+
 ### Tools: problem -> tool (2026-11-11)
 
 All upstream analysers are portable: `runtime/perf.c`, `runtime/flight.c` and `kernel.c` crit recording build on Linux (`build-linux.py` globs `runtime/*.c`, only `prof_win.c`'s sampler is Windows-only). They need their knob at run time; none of our runs set them yet. Python ones that import numpy/PIL run only inside the dev shell (`.venv`'s numpy needs the shell's libstdc++): use the just recipes.

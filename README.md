@@ -514,7 +514,8 @@ server: `tools/yakmot-fake [path] [yaw rad/s]`. Build: `build/v111/nx2navi.motio
 game starts, with the same `<ts>` as its `input-<ts>.txt`, so a recording keeps the save it started from (the newest 40
 bundles are kept). `tools/lab-run` given such a recording and no `NX2NAVI_PROFILE_DIR` builds a scratch profile in
 `.lab/<label>/profile` (a copy of the live profile with the bundle's save dirs) and replays from it, so old recordings
-replay exactly. Without a bundle it warns and falls back to the live profile, saves snapshotted and restored.
+replay exactly. Without a bundle the run gets a plain copy (of `LAB_PROFILE_SRC`, else the live profile). No lab run ever
+uses the live profile itself: `tools/not-live` refuses it in lab-run and warp-save (`NX2NAVI_LIVE_PROFILE_OK=1` overrides).
 `lab-run --dry <rec> 0 <label>` only assembles and lists the profile.
 
 ## Scenarios (regression checks)
