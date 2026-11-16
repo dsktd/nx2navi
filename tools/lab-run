@@ -29,8 +29,12 @@ rec=$1 frame=$2 label=$3; shift 3
 ROOT=$HOME/claude/nx2navi
 BIN=${LAB_BIN:-$ROOT/NX2navi/build/v111}
 OUT=$ROOT/.lab/$label; log=$OUT/run.log
-# lock shared with every other lab/investigation run (held by the game via fd 9, gone when it exits)
 soft=${LAB_SOFT:-}
+# dma-buf preflight (2026-11-15: the container lost /dev/udmabuf twice and whole A/Bs ran the shadow path unnoticed): GPU runs
+# refuse to start without a writable /dev/udmabuf, Cal's guest-memory path. LAB_SHADOW_OK=1 runs anyway (indicative only).
+[ $dry = 1 ] || [ -n "$soft" ] || [ -n "${LAB_SHADOW_OK:-}" ] || [ -w /dev/udmabuf ] || {
+  echo "lab-run: /dev/udmabuf missing or not writable: the run would use shadow storage, not Cal's dma-buf path (LAB_SHADOW_OK=1 to run anyway)" >&2; exit 12; }
+# lock shared with every other lab/investigation run (held by the game via fd 9, gone when it exits)
 [ $dry = 1 ] || [ -n "$soft" ] || {
 # Lock order (2026-11-13: a nightly cell held the lab lock for 2 h waiting for the build lock its own parent, tools/nightly,
 # holds for the whole night, so every later cell failed with no run.log): never hold the lab lock while waiting long
