@@ -1,0 +1,279 @@
+Subject: [PATCH] up012: merge upstream 0.12.0 (62cc3b1) into build: conflict resolutions (remerge-diff) + 64-bit gen fixes
+
+commit 57067546810ba6f27cd0730f2ddc5ebb58cc12ee
+Merge: 92ad6de 62cc3b1
+Author: desocketed <desocketed@users.noreply.github.com>
+Date:   Sun Nov 15 20:05:10 2026 -0500
+
+    up012: merge upstream 0.12.0 (62cc3b1) into build; drop 0126/0128/0129 for upstream 46c764a+b04e7c8, 5f9374e, 5c9e480; 6 files resolved (cfg.c, debug_tools.c, gfx_present.c exit timing taken from upstream, perf.c, vk_backend.c, vk_texture.c)
+
+diff --git a/runtime/cfg.c b/runtime/cfg.c
+remerge CONFLICT (content): Merge conflict in runtime/cfg.c
+index 4558113..73e46ba 100644
+--- a/runtime/cfg.c
++++ b/runtime/cfg.c
+@@ -171,11 +171,8 @@ static const struct { const char *key, *section; } sections[] = {
+     {"DYN_DELTA", "performance"}, {"STG_ARENA", "performance"}, {"SUBMIT_BATCH", "performance"}, {"SUBMIT_THREAD", "performance"},
+     {"BUILD_FREE_MB", "performance"}, {"BUILD_RESERVE_MB", "performance"}, {"MEM_NEED_MB", "diagnostics"},
+     {"ASTC_GPU_DESWIZZLE", "performance"}, {"ASTC_SCRATCH_KEEP", "performance"}, {"ASTC_ARENA", "performance"}, {"ASTC_BC1", "performance"}, {"POOL_CREATE_BUDGET", "performance"},
+-<<<<<<< 92ad6de (Revert "Carry upstream 46c764a + b04e7c8: NX2NAVI_SHADER_CARRY_POOL=1 (default 0) refuses carried translations whose texture pool array has the old 32768 length; log a shader of that length in use and a texture slot 32768..40959 it cannot reach (#149)")
+-    {"POOL_CREATE_MS", "performance"}, {"POOL_FINI_IDLE", "performance"}, {"FREEZE_BUDGET_US", "performance"}, {"POOL_LOAD_BACKLOG", "performance"}, {"POOL_LOAD_MS", "performance"}, {"POOL_LOAD_STEP", "performance"}, {"performance"}, {"POOL_IDLE_MS", "performance"}, {"POOL_SLOW_MS", "performance"}, {"POOL_LAZY_KINDS", "performance"}, {"SHADOW_RECYCLE_MB", "performance"},
+-=======
+     {"POOL_CREATE_MS", "performance"}, {"POOL_FINI_IDLE", "performance"}, {"FREEZE_BUDGET_US", "performance"}, {"FREEZE_QUIET_MS", "performance"}, {"FREEZE_LOAD_HOLD_MS", "performance"}, {"POOL_LOAD_BACKLOG", "performance"}, {"POOL_LOAD_MS", "performance"},
+->>>>>>> 62cc3b1 (Add release 0.12.0, the handover of installed launchers to Triforce: the source of its window, its tests and its notes.)
++    {"POOL_LOAD_STEP", "performance"}, {"POOL_IDLE_MS", "performance"}, {"POOL_SLOW_MS", "performance"}, {"POOL_LAZY_KINDS", "performance"}, {"SHADOW_RECYCLE_MB", "performance"},   // private (build branch)
+     {"TIMER_1MS", "performance"}, {"PIPE_WAIT", "performance"}, {"PIPE_SKIP", "performance"}, {"ONESHOT_BUDGET", "performance"},
+     {"PIPE_FRAME_WAIT_MS", "performance"}, {"PIPE_SKIP_STEADY", "performance"}, {"DRAW_WRITERS_WAIT", "performance"},
+     {"CACHE_DIE", "performance"}, {"ONE_PER_CORE", "performance"},
+@@ -365,13 +362,10 @@ static const CfgMeta metas[] = {
+     {"DYN_RES", "0", "0|1", LIVE}, {"DYN_RES_TARGET", "0", "0..100", LIVE}, {"DYN_RES_STEP", "45", "8..600", LIVE},
+     // the recording thread: a core of its own (auto: with 12 or more logical processors) and the highest priority
+     // (vk_exec.c rec_claim)
+-<<<<<<< 92ad6de (Revert "Carry upstream 46c764a + b04e7c8: NX2NAVI_SHADER_CARRY_POOL=1 (default 0) refuses carried translations whose texture pool array has the old 32768 length; log a shader of that length in use and a texture slot 32768..40959 it cannot reach (#149)")
+-    {"RECORDER_CORE", "0", "auto|0|1", RESTART}, {"RECORDER_PRIO", "1", "0|1", RESTART}, {"REPLAY_TIME", "0", "0|1", RESTART}, {"LOCK_TIME", "0", "0|1", RESTART}, {"POOL_CREATE_BUDGET", "16", "1..4096", RESTART}, {"POOL_CREATE_MS", "6", "0..100", RESTART}, {"POOL_FINI_IDLE", "0", "0|1", RESTART}, {"FREEZE_BUDGET_US", "1000", "0..100000", RESTART}, {"POOL_LOAD_BACKLOG", "512", "0..65536", RESTART}, {"POOL_LOAD_MS", "50", "1..1000", RESTART}, {"POOL_LOAD_STEP", "128", "0..65536", RESTART}, {"0", "0|1", RESTART}, {"POOL_IDLE_MS", "0", "0..50", RESTART}, {"POOL_SLOW_MS", "0", "0..10000", RESTART}, {"POOL_LAZY_KINDS", "0", "0|1|2", RESTART}, {"SHADOW_RECYCLE_MB", "1024", "0..16384", RESTART},
+-=======
+     {"RECORDER_CORE", "0", "auto|0|1", RESTART}, {"RECORDER_PRIO", "1", "0|1", RESTART}, {"REPLAY_TIME", "0", "0|1", RESTART}, {"LOCK_TIME", "0", "0|1", RESTART}, {"POOL_CREATE_BUDGET", "16", "1..4096", RESTART}, {"POOL_CREATE_MS", "6", "0..100", RESTART}, {"POOL_FINI_IDLE", "0", "0|1", RESTART}, {"FREEZE_BUDGET_US", "1000", "0..100000", RESTART}, {"POOL_LOAD_BACKLOG", "512", "0..65536", RESTART},
+     // vk_memory.c freeze_pass: the backoff's quiet time and the hold around area loads
+     {"FREEZE_QUIET_MS", "5000", "0..60000", RESTART}, {"FREEZE_LOAD_HOLD_MS", "3000", "0..30000", RESTART}, {"POOL_LOAD_MS", "50", "1..1000", RESTART},
+->>>>>>> 62cc3b1 (Add release 0.12.0, the handover of installed launchers to Triforce: the source of its window, its tests and its notes.)
++    {"POOL_LOAD_STEP", "128", "0..65536", RESTART}, {"POOL_IDLE_MS", "0", "0..50", RESTART}, {"POOL_SLOW_MS", "0", "0..10000", RESTART}, {"POOL_LAZY_KINDS", "0", "0|1|2", RESTART}, {"SHADOW_RECYCLE_MB", "1024", "0..16384", RESTART},   // private (build branch)
+     // held submissions handed to the queue together (vk_sync.c, submit batching)
+     {"SUBMIT_BATCH", "4", "1..16", RESTART},
+ #ifdef _WIN32
+@@ -454,12 +448,8 @@ static const CfgMeta metas[] = {
+     {"ASTC", "auto", "auto|gpu|native|cpu", RESTART}, {"MEMORY", "auto", "auto|import|mirror|verify", RESTART},
+     {"TEX_ALIAS", "1", "0|1", RESTART}, {"DEPTH_INIT_INLINE", "1", "0|1", RESTART}, {"DEPTH_ALIAS_LOG", "0", "0|1", RESTART}, {"TEX_DISUSE", "1", "0|1|2", RESTART}, {"TEX_DISUSE_EVICT", "0", "0|1", RESTART}, {"TEX_GEN_UNDO", "1", "0|1", RESTART}, {"TEX_REUSE", "1", "0|1", RESTART}, {"TEX_SPLIT_FILL", "1", "0|1|2", RESTART}, {"TEX_VRAM_PRESSURE", "80", "0..100", RESTART},
+     // vk_texture.c drop_aged: seconds a released texture is kept unused (vk_tex_release.h)
+-<<<<<<< 92ad6de (Revert "Carry upstream 46c764a + b04e7c8: NX2NAVI_SHADER_CARRY_POOL=1 (default 0) refuses carried translations whose texture pool array has the old 32768 length; log a shader of that length in use and a texture slot 32768..40959 it cannot reach (#149)")
+-    {"TEX_RELEASED_HOLD", "180", "0..900", RESTART}, {"ASTC_BC", "", "0|1", RESTART}, {"ZSTD_NATIVE", "1", "0|1", RESTART}, {"ZSTD_CHECK", "0", "0|1", RESTART},
+-    {"TEX_DESC_STRICT", "0", "0|1", RESTART}, {"TLD_CLAMP", "0", "0|1", RESTART},   // private (build branch)
+-=======
+     {"TEX_RELEASED_HOLD", "60", "0..900", RESTART}, {"ASTC_BC", "", "0|1", RESTART}, {"ZSTD_NATIVE", "1", "0|1", RESTART}, {"ZSTD_CHECK", "0", "0|1", RESTART},
+->>>>>>> 62cc3b1 (Add release 0.12.0, the handover of installed launchers to Triforce: the source of its window, its tests and its notes.)
++    {"TEX_DESC_STRICT", "0", "0|1", RESTART}, {"TLD_CLAMP", "0", "0|1", RESTART},   // private (build branch)
+     {"TEX_CLOBBER", "0", "0|1", RESTART},
+     // the switch of the low-end GPU mode, which is gone: still a known key, and it does nothing (lowend_set, below)
+     {"LOW_END_GPU", "0", "0|1", RESTART},
+diff --git a/runtime/debug_tools.c b/runtime/debug_tools.c
+remerge CONFLICT (content): Merge conflict in runtime/debug_tools.c
+index 0fbfc26..527f39e 100644
+--- a/runtime/debug_tools.c
++++ b/runtime/debug_tools.c
+@@ -1804,12 +1804,8 @@ static void facing_scan(FILE *f, float y) {
+ // <tick>:next <mode> <value>;<tick>:setfirst <value>;<tick>:holdfirst <value>;<tick>:show [<hash hex>];
+ // <tick>:warp <area> [<start position>];<tick>:event <name>;<tick>:text <game data text's name>;
+ // <tick>:freecam <0|1> <sticks 0|1> <speed>;<tick>:camavoid <0|1>;<tick>:camgo <dx> <dy> <dz> [<yaw> <pitch>];
+-<<<<<<< 92ad6de (Revert "Carry upstream 46c764a + b04e7c8: NX2NAVI_SHADER_CARRY_POOL=1 (default 0) refuses carried translations whose texture pool array has the old 32768 length; log a shader of that length in use and a texture slot 32768..40959 it cannot reach (#149)")
+-// <tick>:camreset;<tick>:campos;<tick>:camset <x> <y> <z> <yaw> <pitch>;<tick>:mark;
+-// <tick>:findf <lo> <hi>;<tick>:list <n>":
+-=======
+-// <tick>:camfly <dx> <dy> <dz> <yaw> <pitch> <ticks>;<tick>:camreset;<tick>:campos":
+->>>>>>> 62cc3b1 (Add release 0.12.0, the handover of installed launchers to Triforce: the source of its window, its tests and its notes.)
++// <tick>:camfly <dx> <dy> <dz> <yaw> <pitch> <ticks>;<tick>:camreset;<tick>:campos;<tick>:camset <x> <y> <z> <yaw> <pitch>;
++// <tick>:mark;<tick>:findf <lo> <hi>;<tick>:list <n>":
+ // the menu's requests without the menu, for test runs. Ticks count the game's pad reads from the player's first appearance.
+ // camfly moves the free camera as camgo does, in equal steps over that many ticks: a flight across an area for a run
+ // that measures what the moving view costs (video memory, frame time) without a route Link can get stuck on. A camfly
+diff --git a/runtime/gfx_present.c b/runtime/gfx_present.c
+remerge CONFLICT (content): Merge conflict in runtime/gfx_present.c
+index 5780f80..1b10d6c 100644
+--- a/runtime/gfx_present.c
++++ b/runtime/gfx_present.c
+@@ -164,29 +164,7 @@ void gfx_window_closed(void) {
+     if (!rt_exit_begin()) return;
+     int restart = plat_cas32(&g_restart, 0, 0) != 0;
+     rt_log("gfx: window closed; %s", restart ? "restarting" : "exiting");
+-<<<<<<< 92ad6de (Revert "Carry upstream 46c764a + b04e7c8: NX2NAVI_SHADER_CARRY_POOL=1 (default 0) refuses carried translations whose texture pool array has the old 32768 length; log a shader of that length in use and a texture slot 32768..40959 it cannot reach (#149)")
+-    uint64_t t[5];
+-    t[0] = plat_now_ms();
+-    cfg_save();   // a menu change saves 400 ms later on the render thread (option_rows.cpp); closing sooner kept the old file
+-    t[1] = plat_now_ms();
+-    // The window closed while the boot still built its pipelines: not the driver crash the marker is there to catch.
+-    // Left in place, the next start took it for one and every later start skipped the prebuild (vk_pipeline.c pm_skipped).
+-    vk_pipeline_prewarm_marker_clear();
+-    vk_mem_exit_log();   // the memory report's ranking of the session
+-    vk_pipeline_save_exit();
+-    t[2] = plat_now_ms();
+-    prof_write();   // plat_exit runs no atexit handlers
+-    rtss_limit_restore();   // RivaTuner Statistics Server's profile as it was
+-    input_rumble_hd_stop();   // a controller on HD rumble gets the neutral value: nothing renews or stops it after the exit
+-    t[3] = plat_now_ms();
+-    fs_save_flush();   // last: the game's threads still run until plat_exit, and a Commit after this one is refused
+-    t[4] = plat_now_ms();
+-    rt_log("gfx: exit took %llu ms: settings %llu, pipeline cache %llu, profile %llu, game saves %llu",
+-           (unsigned long long)(t[4] - t[0]), (unsigned long long)(t[1] - t[0]), (unsigned long long)(t[2] - t[1]),
+-           (unsigned long long)(t[3] - t[2]), (unsigned long long)(t[4] - t[3]));
+-=======
+     rt_exit_steps(RT_EXIT_SETTINGS);
+->>>>>>> 62cc3b1 (Add release 0.12.0, the handover of installed launchers to Triforce: the source of its window, its tests and its notes.)
+     if (restart) {
+         cfg_setenv("NX2NAVI_REEXEC", NULL);   // the new process counts its own address-space retries (memory.c)
+         if (!plat_restart()) rt_log("gfx: the restart could not start the game again");
+diff --git a/runtime/perf.c b/runtime/perf.c
+remerge CONFLICT (content): Merge conflict in runtime/perf.c
+index 46da96a..cedfdcc 100644
+--- a/runtime/perf.c
++++ b/runtime/perf.c
+@@ -11,11 +11,8 @@
+ #include "gfx.h"
+ #include "host.h"
+ #include "nvn_api.h"
+-<<<<<<< 92ad6de (Revert "Carry upstream 46c764a + b04e7c8: NX2NAVI_SHADER_CARRY_POOL=1 (default 0) refuses carried translations whose texture pool array has the old 32768 length; log a shader of that length in use and a texture slot 32768..40959 it cannot reach (#149)")
+ #include "rt_tracy.h"
+-=======
+ #include "perf_census.h"
+->>>>>>> 62cc3b1 (Add release 0.12.0, the handover of installed launchers to Triforce: the source of its window, its tests and its notes.)
+ #include "perfmon.h"
+ #include "prof.h"
+ #include "stutter_map.h"
+@@ -1117,11 +1114,8 @@ void perf_present(uint64_t frame) {
+     if (rt_trace & RT_TRACE_SCHED) kern_sched_report(frame);
+     uint64_t now = kern_now_ns(), d = last ? now - last : 0;
+     prof_sampler_frame(frame, now, last ? d : 0);
+-<<<<<<< 92ad6de (Revert "Carry upstream 46c764a + b04e7c8: NX2NAVI_SHADER_CARRY_POOL=1 (default 0) refuses carried translations whose texture pool array has the old 32768 length; log a shader of that length in use and a texture slot 32768..40959 it cannot reach (#149)")
+     RT_FRAME_MARK();
+     RT_TRACY_FRAME();
+-    uint64_t rep = ft_frame(frame, now, d);   // d is 0 on the first present: it only starts the period
+-=======
+     for (int k = 0; k < PERF_N; k++) {   // other threads' waits for this frame (perf_end_any), before its parts are read
+         int64_t a = __atomic_load_n(&any_ns[k], __ATOMIC_RELAXED) ? plat_xchg64(&any_ns[k], 0) : 0;
+         if (a <= 0) continue;
+@@ -1133,7 +1127,6 @@ void perf_present(uint64_t frame) {
+     uint64_t rep = ft_frame(frame, now, d, ft_add);   // d is 0 on the first present: it only starts the period
+     if (ft_add && __atomic_load_n(&session_due, __ATOMIC_RELAXED) && plat_xchg32(&session_due, 0)) session_report(now);
+     ft_leave();
+->>>>>>> 62cc3b1 (Add release 0.12.0, the handover of installed launchers to Triforce: the source of its window, its tests and its notes.)
+     ab_b += rt_ab();
+     cpu_placement();
+     reserve_sweep(frame);
+diff --git a/runtime/vk_backend.c b/runtime/vk_backend.c
+remerge CONFLICT (content): Merge conflict in runtime/vk_backend.c
+index 8d8bd32..6dcff61 100644
+--- a/runtime/vk_backend.c
++++ b/runtime/vk_backend.c
+@@ -120,15 +120,11 @@ static void present_main(void *arg) {
+         busy = 1;
+         plat_cond_broadcast(&pcv);
+         plat_mutex_unlock(&pl);
+-<<<<<<< 92ad6de (Revert "Carry upstream 46c764a + b04e7c8: NX2NAVI_SHADER_CARRY_POOL=1 (default 0) refuses carried translations whose texture pool array has the old 32768 length; log a shader of that length in use and a texture slot 32768..40959 it cannot reach (#149)")
+-        if (flight_on || vk_dump_white || mark_ring_on) vk_thumbs_frame(j.frame);   // NX2NAVI_DUMP_WHITE reads them too
+-=======
+         unsigned tr = rt_trace;   // read once: the stamps and both lines below follow the same flags
+         int timed = (tr & (RT_TRACE_PRESENT | RT_TRACE_PERF)) != 0;
+         uint64_t b0 = timed ? kern_now_ns() : 0;
+         if (j.owed) present_frame_closed(j.frame);   // vk_dlaa_frame's state of this frame, before anything reads it
+-        if (flight_on || vk_dump_white) vk_thumbs_frame(j.frame);   // NX2NAVI_DUMP_WHITE reads them too
+->>>>>>> 62cc3b1 (Add release 0.12.0, the handover of installed launchers to Triforce: the source of its window, its tests and its notes.)
++        if (flight_on || vk_dump_white || mark_ring_on) vk_thumbs_frame(j.frame);   // NX2NAVI_DUMP_WHITE reads them too
+         vk_dlssg_present_frame(j.frame);
+         vk_lowlat_present_frame(j.frame);   // the frame's number for the blit's submit and the present's markers
+         vk_present_blit(j.image, VK_IMAGE_LAYOUT_GENERAL, j.format, j.w, j.h, j.has_crop ? j.crop : NULL);
+diff --git a/runtime/vk_texture.c b/runtime/vk_texture.c
+remerge CONFLICT (content): Merge conflict in runtime/vk_texture.c
+index 1c03000..68878f2 100644
+--- a/runtime/vk_texture.c
++++ b/runtime/vk_texture.c
+@@ -5526,8 +5526,8 @@ void vk_texture_new_submit(void) {
+                (unsigned long long)n_hard_by[TRL_HC_INTACT], (unsigned long long)n_hard_by[TRL_HC_GPU],
+                (unsigned long long)n_hard_by[TRL_HC_LATELY], (unsigned long long)n_drop_by[DROP_REPLACED],
+                (unsigned long long)n_cpu_empty[0], (unsigned long long)n_cpu_empty[1], (unsigned long long)n_cpu_empty[2],
+-<<<<<<< 92ad6de (Revert "Carry upstream 46c764a + b04e7c8: NX2NAVI_SHADER_CARRY_POOL=1 (default 0) refuses carried translations whose texture pool array has the old 32768 length; log a shader of that length in use and a texture slot 32768..40959 it cannot reach (#149)")
+-               (unsigned long long)n_mark_empty, (unsigned long long)n_mark_none, (unsigned long long)n_drop_wb);
++               (unsigned long long)n_mark_empty, (unsigned long long)n_mark_none, (unsigned long long)n_drop_wb,
++               (unsigned long long)n_hard_calls, ns_hard / 1e6, ns_hard_max / 1e6);
+         {   // patch 0115: where the entries made came from (remade_count), and what the released entries hold
+             uint64_t now = frames_now(), rb[4] = {0, 0, 0, 0};   // intact: idle and stale, not yet; overwritten; other
+             int rn[4] = {0, 0, 0, 0};
+@@ -5562,12 +5562,7 @@ void vk_texture_new_submit(void) {
+             memset(n_again_age, 0, sizeof n_again_age), memset(n_again_backs, 0, sizeof n_again_backs);
+             memset(n_new_at, 0, sizeof n_new_at), n_cap_backs = 0;
+         }
+-        memset(n_drop_by, 0, sizeof n_drop_by), memset(n_cpu_empty, 0, sizeof n_cpu_empty);
+-=======
+-               (unsigned long long)n_mark_empty, (unsigned long long)n_mark_none, (unsigned long long)n_drop_wb,
+-               (unsigned long long)n_hard_calls, ns_hard / 1e6, ns_hard_max / 1e6);
+         memset(n_drop_by, 0, sizeof n_drop_by), memset(n_cpu_empty, 0, sizeof n_cpu_empty), memset(n_hard_by, 0, sizeof n_hard_by);
+->>>>>>> 62cc3b1 (Add release 0.12.0, the handover of installed launchers to Triforce: the source of its window, its tests and its notes.)
+         n_mark_empty = n_mark_none = n_drop_wb = 0;
+         n_hard_calls = ns_hard = ns_hard_max = 0;
+         rt_log("perf: frame %llu: texture finalizes: slots marked %llu; slots of another live texture with the same "
+From 080be8853d65c85017f86048b6934fa1a59facb1 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Sun, 15 Nov 2026 20:19:01 -0500
+Subject: [PATCH 1/2] up012: shadow page-gen readers take upstream's 64-bit gen
+ tables (vk_memory.c 0094/0095 after upstream widened gen_chunk/reg_max)
+
+---
+ runtime/vk_memory.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/runtime/vk_memory.c b/runtime/vk_memory.c
+index 1aa411d..4259a3e 100644
+--- a/runtime/vk_memory.c
++++ b/runtime/vk_memory.c
+@@ -3734,7 +3734,7 @@ static int shadow_pool_pages_clean(const PoolRec *r, uint32_t epoch, int cpu) {
+         uint64_t a = k << REG_SHIFT, b = a + (1ull << REG_SHIFT);
+         if (a < lo) a = lo;
+         if (b > hi) b = hi;
+-        const uint32_t *ch = (cpu ? cgen_chunk : gen_chunk)[a >> GEN_CHUNK_SHIFT];
++        const uint64_t *ch = (cpu ? cgen_chunk : gen_chunk)[a >> GEN_CHUNK_SHIFT];
+         if (!ch) continue;
+         for (uint64_t x = a; x < b; x += 1ull << GEN_PAGE_SHIFT)
+             if (ch[(x >> GEN_PAGE_SHIFT) & (GEN_PER_CHUNK - 1)] > r->sgen) return 0;
+@@ -3812,7 +3812,7 @@ void vk_mem_shadow_sync(uint64_t fence) {
+         uint64_t t1 = qpc(), copied0 = s_copied;
+         if (table && tab_dirty) {   // the regions stamped since the last table sync, and their shadows
+             uint32_t vis = ++stab_visit;
+-            const uint32_t *mx = cpu ? creg_max : reg_max;
++            const uint64_t *mx = cpu ? creg_max : reg_max;
+             if (tab_runs) s_queries += snap_tregs_runs(epoch);
+             else
+                 for (int i = 0; i < ntregs; i++) s_queries += snap_regions(tregs[i], tregs[i], epoch);
+-- 
+2.56.0
+
+
+From f5ee23b34c11bf953793fa8386835bcc53e3e2bf Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Sun, 15 Nov 2026 20:21:24 -0500
+Subject: [PATCH 2/2] up012: the shadow write-back stamp and the table's region
+ gens are 64-bit like upstream's gen_now
+
+---
+ runtime/vk_memory.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/runtime/vk_memory.c b/runtime/vk_memory.c
+index 4259a3e..0e69511 100644
+--- a/runtime/vk_memory.c
++++ b/runtime/vk_memory.c
+@@ -1830,7 +1830,7 @@ static int nstab, cstab;
+ // stamp has landed in its regions since. A region gets treg_gen 0 when a shadow joins it, so new shadows are visited.
+ typedef struct { PoolRec **v; int n, c; } RegShadows;
+ static RegShadows *rsh;                           // shadow_lock: SNAP_REGIONS entries, made at the first add
+-static uint32_t *treg_gen, *treg_i;               // shadow_lock: per region: gen_now after its last visit; 1 + index in tregs
++static uint64_t *treg_gen; static uint32_t *treg_i;             // shadow_lock: per region: gen_now after its last visit; 1 + index in tregs
+ static uint32_t *tregs;                           // shadow_lock: the regions that hold table shadows
+ static int ntregs, ctregs;
+ static PoolRec **sfar;                            // shadow_lock: table shadows past the snapshot regions, always visited
+@@ -2100,7 +2100,7 @@ static void copy_marked(PoolRec *r, uint64_t a, uint64_t e) {
+ // vk_pool_fini, after the pool left the index: off the touched list before its record goes.
+ static int rsh_ok(void) {
+     if (rsh) return 1;
+-    rsh = calloc(SNAP_REGIONS, sizeof *rsh), treg_gen = calloc(SNAP_REGIONS, 4), treg_i = calloc(SNAP_REGIONS, 4);
++    rsh = calloc(SNAP_REGIONS, sizeof *rsh), treg_gen = calloc(SNAP_REGIONS, sizeof *treg_gen), treg_i = calloc(SNAP_REGIONS, 4);
+     if (!rsh || !treg_gen || !treg_i) rt_fatal("vk: out of memory for the table's regions");
+     return 1;
+ }
+@@ -2462,7 +2462,7 @@ static uint64_t shadow_write_back(uint64_t addr, uint64_t size) {
+             uint64_t n = mem_written_pages(plo, phi - plo, post, npg), kept = 0;
+             if (n != UINT64_MAX && n) {
+                 plat_mutex_lock(&gen_lock);
+-                uint32_t g = ++gen_now;
++                uint64_t g = ++gen_now;
+                 for (uint64_t i = 0; i < n; i++) {
+                     uint64_t pg = post[i];
+                     int whole = pg >= r->import_lo && pg + SB_PAGE <= r->import_hi;
+-- 
+2.56.0
+

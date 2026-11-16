@@ -371,6 +371,18 @@ Bindless slots (`TexSlot`, 16 kinds x 32768) hold the game's NVN descriptors. An
 
 All are in `~/claude/nx2navi/patches/`, as local commits on `build`. Status comes from `~/claude/nx2navi/README.md`.
 
+**Upstream 0.12.0 merge 2026-11-15** (#179, patch 0130, branch `up012` / exe `up012` f5ee23b; old `build` tip tagged
+`pre-0.12-c4b2254`): base moves from 5ae55db (0.10.1) to 62cc3b1 (0.12.0). Dropped for upstream: 0126 (46c764a +
+b04e7c8, carried-translation pool-length refusal, now unconditional), 0128 (5f9374e orecord), 0129 (5c9e480 shake key);
+`git cherry` finds no other patch upstream, and none of our knobs exist there. Carried: all other live patches (6
+files conflicted, see README 0130). Ported: upstream widened the page-generation tables (`vk_memory.c` `gen_chunk`,
+`reg_max`, `cgen_chunk`, `creg_max`, `gen_now`) to 64 bits; our shadow readers (0094/0095 table-dirty/fast,
+SHADOW_WB_REARM stamp) and `treg_gen` follow. Lost: 0032's `gfx: exit took` timing line (upstream `rt_exit_steps`).
+Upstream changed `TEX_RELEASED_HOLD` default 180 -> 60 (87bb179); we take it. `tools/xlate` unchanged upstream since
+5ae55db: translator `xlate-701e7ce` stays valid. Lab tool fix with it: `tools/cell-lib.sh cell_xlate` silently fell back
+to `xlate-rebase` (pool 32768) for translators under `build/` (xlate-701e7ce), so carry1's cells before this used the
+old translator.
+
 **Upstream rebase 2026-11-11** (branch `rebase-upstream` in `.lab/wt-rebase`, 591 upstream commits on; table and
 proof per patch in `REBASE-2026-11-11.md`; becomes `build` once moved). 48 of our 85 commits stay (most adapted), 37
 are dropped because upstream now does the same natively:
