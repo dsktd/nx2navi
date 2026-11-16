@@ -921,3 +921,21 @@ All figures: entry as named, exe=nx2navi.play50 commit=15d14ce xlate=xlate-play3
 - **The Deck's offline build tree was deleted at 15:01 (not by this work) and recreated for the new base**:
   `/home/purplg/claude/nx2navi` (2.3 GB: `.lab/wt-rebase6` as a plain git snapshot, kit venv, lift cache, deck4's
   objects; no .ccache), `deckbuild.sh` points at it. Same dev shell store paths. Not test-built there.
+
+**Request files' place and the burst (2026-11-15, #225, up012 f5ee23b).** Every `*.req` (shot, dump, mark, state,
+watch, peek, buf, pick) is looked for beside the shader cache folder (`gfx_shader.c` `gfx_shader_beside_cache`: the
+cache's parent), so with Cal's `NX2NAVI_SHADER_CACHE=build/v111/shader-cache-rebase` they go in `NX2navi/build/v111/`,
+never in `NX2navi/`. `NX2NAVI_MARK_RING`/`MARK_BURST` frames are written only by a mark (`boot.c` `mark_poll`: F9,
+the chord, `mark.req`, the test script) to `build/v111/logs/burst-<present>/`; a plain `dump.req` dumps one frame and
+starts no burst (f24041 has none). For a burst plus dump, touch `mark.req` (it also writes dump.req when DUMP_REQ=1).
+
+**#225 rocks flicker at Desert Colossus after dusk (up012 f5ee23b, xlate-701e7ce, dump f24041, one frame only).**
+The plateau rocks are task/mesh draws (`ts 0cbd941424367535 ms 84509617273b1070`) in the moon-shadow cascade pass
+0166 (1600x1600 d16, six dots) and in the G-buffer passes 0143-0146; the rock fs reads the sky-SH block and the
+per-object SH records (section above). Log around 24041: texture stale/stand-in lookups 0, no pool-short note,
+pool slots 32768 registered (< VK_POOL_TEX 40960), ASYNC_HOLD active (no-mirror count frozen at 9399 from boot).
+Ranked suspects: (1) async-replay ordering of lighting data outside the held range (per-object SH bake inputs,
+probe data 0x1af9d5000, light lists) while time of day moves, same mechanism as "Actors black at night";
+(2) GPU culling of the shadow-cascade mesh draws; (3) 0.12.0 port: no evidence (no texture-path events;
+TEX_RELEASED_HOLD 60 never bites without released lookups; translator unchanged upstream since 5ae55db).
+Unverified; GPU check planned: repro the recipe at dusk on up012 vs carry1 and up012 with REPLAY_ASYNC=0, mark.req burst.
