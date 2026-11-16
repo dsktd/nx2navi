@@ -18,3 +18,6 @@ REPORT-*.md
 tools/__pycache__/
 .lab-cache/
 refs/
+__pycache__/
+*.so
+*.lock

@@ -368,3 +368,242 @@ date	entry	exe	commit	xlate	scenario	metric	mean	min	max	n	tool	source	knobs	sta
 2026-11-13	rp-p50a	play50	15d14ce	xlate-play33/e8d52df68016	cal-input-222948-full	rp_fps	92.75	58.31	240.96	225	rp.sh (lab-run)	.lab/rp-p50a	Cal play knobs; LAB_CPUS=0-7,16-23	ok		warm	
 2026-11-13	rp-p50a	play50	15d14ce	xlate-play33/e8d52df68016	cal-input-222948-full	rp_replay_ms	5.09	0.17	11.95	225	rp.sh (lab-run)	.lab/rp-p50a	Cal play knobs; LAB_CPUS=0-7,16-23	ok		warm	
 2026-11-13	rp-p50a	play50	15d14ce	xlate-play33/e8d52df68016	cal-input-222948-full	rp_gpu_ms	7.74	0.16	12.08	225	rp.sh (lab-run)	.lab/rp-p50a	Cal play knobs; LAB_CPUS=0-7,16-23	ok		warm	
+2026-11-14	cap-mid-slim-1	slim	9d3213246dfc	xlate-play33/e8d52df68016	cap-mid	fps	45.10	45.10	45.10	1	cap-cell	.lab/cap-mid-slim-1		ok	d088798f	warm	25b187c7a763
+2026-11-14	cap-ab5-field-mid-standing-play51-r1-1	play51	d2d2e64fcc9c	xlate-play33/e8d52df68016	cap-field-mid-standing	fps	38.00	38.00	38.00	1	cap-cell	.lab/cap-ab5-field-mid-standing-play51-r1-1		ok	d088798f	warm	25b187c7a763
+2026-11-14	cap-ab5-field-mid-standing-play51-r1-1	play51	d2d2e64fcc9c	xlate-play33/e8d52df68016	cap-field-mid-standing	replay_ms	16.20	16.20	16.20	1	cap-cell	.lab/cap-ab5-field-mid-standing-play51-r1-1		ok	d088798f	warm	25b187c7a763
+2026-11-14	cap-ab5-field-mid-standing-play51-r1-1	play51	d2d2e64fcc9c	xlate-play33/e8d52df68016	cap-field-mid-standing	gpu_ms	9.59	9.59	9.59	1	cap-cell	.lab/cap-ab5-field-mid-standing-play51-r1-1		ok	d088798f	warm	25b187c7a763
+2026-11-14	cap-ab5-field-mid-standing-play51-r1-1	play51	d2d2e64fcc9c	xlate-play33/e8d52df68016	cap-field-mid-standing	interval_ms	26.29	26.29	26.29	1	cap-cell	.lab/cap-ab5-field-mid-standing-play51-r1-1		ok	d088798f	warm	25b187c7a763
+2026-11-14	cap-ab5-field-mid-standing-slim2-r1-1	slim2	701e7ce8490b	xlate-play33/e8d52df68016	cap-field-mid-standing	fps	43.50	43.50	43.50	1	cap-cell	.lab/cap-ab5-field-mid-standing-slim2-r1-1		ok	d088798f	warm	25b187c7a763
+2026-11-14	cap-ab5-field-mid-standing-slim2-r1-1	slim2	701e7ce8490b	xlate-play33/e8d52df68016	cap-field-mid-standing	replay_ms	13.62	13.62	13.62	1	cap-cell	.lab/cap-ab5-field-mid-standing-slim2-r1-1		ok	d088798f	warm	25b187c7a763
+2026-11-14	cap-ab5-field-mid-standing-slim2-r1-1	slim2	701e7ce8490b	xlate-play33/e8d52df68016	cap-field-mid-standing	gpu_ms	9.36	9.36	9.36	1	cap-cell	.lab/cap-ab5-field-mid-standing-slim2-r1-1		ok	d088798f	warm	25b187c7a763
+2026-11-14	cap-ab5-field-mid-standing-slim2-r1-1	slim2	701e7ce8490b	xlate-play33/e8d52df68016	cap-field-mid-standing	interval_ms	22.97	22.97	22.97	1	cap-cell	.lab/cap-ab5-field-mid-standing-slim2-r1-1		ok	d088798f	warm	25b187c7a763
+2026-11-14	cap-ab5-f2663-play51-r1-1	play51	d2d2e64fcc9c	xlate-play33/e8d52df68016	cap-f2663	fps	37.50	37.50	37.50	1	cap-cell	.lab/cap-ab5-f2663-play51-r1-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-14	cap-ab5-f2663-play51-r1-1	play51	d2d2e64fcc9c	xlate-play33/e8d52df68016	cap-f2663	replay_ms	17.32	17.32	17.32	1	cap-cell	.lab/cap-ab5-f2663-play51-r1-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-14	cap-ab5-f2663-play51-r1-1	play51	d2d2e64fcc9c	xlate-play33/e8d52df68016	cap-f2663	gpu_ms	10.82	10.82	10.82	1	cap-cell	.lab/cap-ab5-f2663-play51-r1-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-14	cap-ab5-f2663-play51-r1-1	play51	d2d2e64fcc9c	xlate-play33/e8d52df68016	cap-f2663	interval_ms	26.68	26.68	26.68	1	cap-cell	.lab/cap-ab5-f2663-play51-r1-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-14	cap-ab5-f2663-slim2-r1-1	slim2	701e7ce8490b	xlate-play33/e8d52df68016	cap-f2663	fps	34.10	34.10	34.10	1	cap-cell	.lab/cap-ab5-f2663-slim2-r1-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-14	cap-ab5-f2663-slim2-r1-1	slim2	701e7ce8490b	xlate-play33/e8d52df68016	cap-f2663	replay_ms	19.17	19.17	19.17	1	cap-cell	.lab/cap-ab5-f2663-slim2-r1-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-14	cap-ab5-f2663-slim2-r1-1	slim2	701e7ce8490b	xlate-play33/e8d52df68016	cap-f2663	gpu_ms	10.93	10.93	10.93	1	cap-cell	.lab/cap-ab5-f2663-slim2-r1-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-14	cap-ab5-f2663-slim2-r1-1	slim2	701e7ce8490b	xlate-play33/e8d52df68016	cap-f2663	interval_ms	29.34	29.34	29.34	1	cap-cell	.lab/cap-ab5-f2663-slim2-r1-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-14	cap-ab5-field-mid-standing-play51-r2-1	play51	d2d2e64fcc9c	xlate-play33/e8d52df68016	cap-field-mid-standing	fps	43.60	43.60	43.60	1	cap-cell	.lab/cap-ab5-field-mid-standing-play51-r2-1		ok	d088798f	warm	25b187c7a763
+2026-11-14	cap-ab5-field-mid-standing-play51-r2-1	play51	d2d2e64fcc9c	xlate-play33/e8d52df68016	cap-field-mid-standing	replay_ms	13.56	13.56	13.56	1	cap-cell	.lab/cap-ab5-field-mid-standing-play51-r2-1		ok	d088798f	warm	25b187c7a763
+2026-11-14	cap-ab5-field-mid-standing-play51-r2-1	play51	d2d2e64fcc9c	xlate-play33/e8d52df68016	cap-field-mid-standing	gpu_ms	9.40	9.40	9.40	1	cap-cell	.lab/cap-ab5-field-mid-standing-play51-r2-1		ok	d088798f	warm	25b187c7a763
+2026-11-14	cap-ab5-field-mid-standing-play51-r2-1	play51	d2d2e64fcc9c	xlate-play33/e8d52df68016	cap-field-mid-standing	interval_ms	22.91	22.91	22.91	1	cap-cell	.lab/cap-ab5-field-mid-standing-play51-r2-1		ok	d088798f	warm	25b187c7a763
+2026-11-14	cap-ab5-field-mid-standing-slim2-r2-1	slim2	701e7ce8490b	xlate-play33/e8d52df68016	cap-field-mid-standing	fps	43.80	43.80	43.80	1	cap-cell	.lab/cap-ab5-field-mid-standing-slim2-r2-1		ok	d088798f	warm	25b187c7a763
+2026-11-14	cap-ab5-field-mid-standing-slim2-r2-1	slim2	701e7ce8490b	xlate-play33/e8d52df68016	cap-field-mid-standing	replay_ms	13.59	13.59	13.59	1	cap-cell	.lab/cap-ab5-field-mid-standing-slim2-r2-1		ok	d088798f	warm	25b187c7a763
+2026-11-14	cap-ab5-field-mid-standing-slim2-r2-1	slim2	701e7ce8490b	xlate-play33/e8d52df68016	cap-field-mid-standing	gpu_ms	9.39	9.39	9.39	1	cap-cell	.lab/cap-ab5-field-mid-standing-slim2-r2-1		ok	d088798f	warm	25b187c7a763
+2026-11-14	cap-ab5-field-mid-standing-slim2-r2-1	slim2	701e7ce8490b	xlate-play33/e8d52df68016	cap-field-mid-standing	interval_ms	22.81	22.81	22.81	1	cap-cell	.lab/cap-ab5-field-mid-standing-slim2-r2-1		ok	d088798f	warm	25b187c7a763
+2026-11-14	cap-ab5-f2663-play51-r2-1	play51	d2d2e64fcc9c	xlate-play33/e8d52df68016	cap-f2663	fps	32.30	32.30	32.30	1	cap-cell	.lab/cap-ab5-f2663-play51-r2-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-14	cap-ab5-f2663-play51-r2-1	play51	d2d2e64fcc9c	xlate-play33/e8d52df68016	cap-f2663	replay_ms	20.79	20.79	20.79	1	cap-cell	.lab/cap-ab5-f2663-play51-r2-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-14	cap-ab5-f2663-play51-r2-1	play51	d2d2e64fcc9c	xlate-play33/e8d52df68016	cap-f2663	gpu_ms	11.06	11.06	11.06	1	cap-cell	.lab/cap-ab5-f2663-play51-r2-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-14	cap-ab5-f2663-play51-r2-1	play51	d2d2e64fcc9c	xlate-play33/e8d52df68016	cap-f2663	interval_ms	30.98	30.98	30.98	1	cap-cell	.lab/cap-ab5-f2663-play51-r2-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-14	cap-ab5-f2663-slim2-r2-1	slim2	701e7ce8490b	xlate-play33/e8d52df68016	cap-f2663	fps	37.80	37.80	37.80	1	cap-cell	.lab/cap-ab5-f2663-slim2-r2-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-14	cap-ab5-f2663-slim2-r2-1	slim2	701e7ce8490b	xlate-play33/e8d52df68016	cap-f2663	replay_ms	16.96	16.96	16.96	1	cap-cell	.lab/cap-ab5-f2663-slim2-r2-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-14	cap-ab5-f2663-slim2-r2-1	slim2	701e7ce8490b	xlate-play33/e8d52df68016	cap-f2663	gpu_ms	10.77	10.77	10.77	1	cap-cell	.lab/cap-ab5-f2663-slim2-r2-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-14	cap-ab5-f2663-slim2-r2-1	slim2	701e7ce8490b	xlate-play33/e8d52df68016	cap-f2663	interval_ms	26.45	26.45	26.45	1	cap-cell	.lab/cap-ab5-f2663-slim2-r2-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-14	cap-ab5-field-mid-standing-play51-r3-1	play51	d2d2e64fcc9c	xlate-play33/e8d52df68016	cap-field-mid-standing	fps	37.80	37.80	37.80	1	cap-cell	.lab/cap-ab5-field-mid-standing-play51-r3-1		ok	d088798f	warm	25b187c7a763
+2026-11-14	cap-ab5-field-mid-standing-play51-r3-1	play51	d2d2e64fcc9c	xlate-play33/e8d52df68016	cap-field-mid-standing	replay_ms	15.99	15.99	15.99	1	cap-cell	.lab/cap-ab5-field-mid-standing-play51-r3-1		ok	d088798f	warm	25b187c7a763
+2026-11-14	cap-ab5-field-mid-standing-play51-r3-1	play51	d2d2e64fcc9c	xlate-play33/e8d52df68016	cap-field-mid-standing	gpu_ms	9.40	9.40	9.40	1	cap-cell	.lab/cap-ab5-field-mid-standing-play51-r3-1		ok	d088798f	warm	25b187c7a763
+2026-11-14	cap-ab5-field-mid-standing-play51-r3-1	play51	d2d2e64fcc9c	xlate-play33/e8d52df68016	cap-field-mid-standing	interval_ms	26.45	26.45	26.45	1	cap-cell	.lab/cap-ab5-field-mid-standing-play51-r3-1		ok	d088798f	warm	25b187c7a763
+2026-11-14	cap-ab5-field-mid-standing-slim2-r3-1	slim2	701e7ce8490b	xlate-play33/e8d52df68016	cap-field-mid-standing	fps	43.70	43.70	43.70	1	cap-cell	.lab/cap-ab5-field-mid-standing-slim2-r3-1		ok	d088798f	warm	25b187c7a763
+2026-11-14	cap-ab5-field-mid-standing-slim2-r3-1	slim2	701e7ce8490b	xlate-play33/e8d52df68016	cap-field-mid-standing	replay_ms	13.46	13.46	13.46	1	cap-cell	.lab/cap-ab5-field-mid-standing-slim2-r3-1		ok	d088798f	warm	25b187c7a763
+2026-11-14	cap-ab5-field-mid-standing-slim2-r3-1	slim2	701e7ce8490b	xlate-play33/e8d52df68016	cap-field-mid-standing	gpu_ms	9.39	9.39	9.39	1	cap-cell	.lab/cap-ab5-field-mid-standing-slim2-r3-1		ok	d088798f	warm	25b187c7a763
+2026-11-14	cap-ab5-field-mid-standing-slim2-r3-1	slim2	701e7ce8490b	xlate-play33/e8d52df68016	cap-field-mid-standing	interval_ms	22.88	22.88	22.88	1	cap-cell	.lab/cap-ab5-field-mid-standing-slim2-r3-1		ok	d088798f	warm	25b187c7a763
+2026-11-14	cap-ab5-f2663-play51-r3-1	play51	d2d2e64fcc9c	xlate-play33/e8d52df68016	cap-f2663	fps	34.70	34.70	34.70	1	cap-cell	.lab/cap-ab5-f2663-play51-r3-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-14	cap-ab5-f2663-play51-r3-1	play51	d2d2e64fcc9c	xlate-play33/e8d52df68016	cap-f2663	replay_ms	19.07	19.07	19.07	1	cap-cell	.lab/cap-ab5-f2663-play51-r3-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-14	cap-ab5-f2663-play51-r3-1	play51	d2d2e64fcc9c	xlate-play33/e8d52df68016	cap-f2663	gpu_ms	11.04	11.04	11.04	1	cap-cell	.lab/cap-ab5-f2663-play51-r3-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-14	cap-ab5-f2663-play51-r3-1	play51	d2d2e64fcc9c	xlate-play33/e8d52df68016	cap-f2663	interval_ms	28.85	28.85	28.85	1	cap-cell	.lab/cap-ab5-f2663-play51-r3-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-14	cap-ab5-f2663-slim2-r3-1	slim2	701e7ce8490b	xlate-play33/e8d52df68016	cap-f2663	fps	34.90	34.90	34.90	1	cap-cell	.lab/cap-ab5-f2663-slim2-r3-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-14	cap-ab5-f2663-slim2-r3-1	slim2	701e7ce8490b	xlate-play33/e8d52df68016	cap-f2663	replay_ms	18.66	18.66	18.66	1	cap-cell	.lab/cap-ab5-f2663-slim2-r3-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-14	cap-ab5-f2663-slim2-r3-1	slim2	701e7ce8490b	xlate-play33/e8d52df68016	cap-f2663	gpu_ms	10.73	10.73	10.73	1	cap-cell	.lab/cap-ab5-f2663-slim2-r3-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-14	cap-ab5-f2663-slim2-r3-1	slim2	701e7ce8490b	xlate-play33/e8d52df68016	cap-f2663	interval_ms	28.62	28.62	28.62	1	cap-cell	.lab/cap-ab5-f2663-slim2-r3-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-14	cap-rc2-k-1	rcache2	78123671e93c	xlate-play33/e8d52df68016	cap-f2663	fps	36.30	36.30	36.30	1	cap-cell	.lab/cap-rc2-k-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-14	cap-rc2-k-1	rcache2	78123671e93c	xlate-play33/e8d52df68016	cap-f2663	replay_ms	17.77	17.77	17.77	1	cap-cell	.lab/cap-rc2-k-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-14	cap-rc2-k-1	rcache2	78123671e93c	xlate-play33/e8d52df68016	cap-f2663	gpu_ms	10.63	10.63	10.63	1	cap-cell	.lab/cap-rc2-k-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-14	cap-rc2-k-1	rcache2	78123671e93c	xlate-play33/e8d52df68016	cap-f2663	interval_ms	27.51	27.51	27.51	1	cap-cell	.lab/cap-rc2-k-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-14	cap-rc2-on1-1	rcache2	78123671e93c	xlate-play33/e8d52df68016	cap-f2663	fps	39.30	39.30	39.30	1	cap-cell	.lab/cap-rc2-on1-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-14	cap-rc2-on1-1	rcache2	78123671e93c	xlate-play33/e8d52df68016	cap-f2663	replay_ms	16.30	16.30	16.30	1	cap-cell	.lab/cap-rc2-on1-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-14	cap-rc2-on1-1	rcache2	78123671e93c	xlate-play33/e8d52df68016	cap-f2663	gpu_ms	10.71	10.71	10.71	1	cap-cell	.lab/cap-rc2-on1-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-14	cap-rc2-on1-1	rcache2	78123671e93c	xlate-play33/e8d52df68016	cap-f2663	interval_ms	25.46	25.46	25.46	1	cap-cell	.lab/cap-rc2-on1-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-14	cap-rc2-off1-1	rcache2	78123671e93c	xlate-play33/e8d52df68016	cap-f2663	fps	40.60	40.60	40.60	1	cap-cell	.lab/cap-rc2-off1-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-14	cap-rc2-off1-1	rcache2	78123671e93c	xlate-play33/e8d52df68016	cap-f2663	replay_ms	15.64	15.64	15.64	1	cap-cell	.lab/cap-rc2-off1-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-14	cap-rc2-off1-1	rcache2	78123671e93c	xlate-play33/e8d52df68016	cap-f2663	gpu_ms	10.60	10.60	10.60	1	cap-cell	.lab/cap-rc2-off1-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-14	cap-rc2-off1-1	rcache2	78123671e93c	xlate-play33/e8d52df68016	cap-f2663	interval_ms	24.63	24.63	24.63	1	cap-cell	.lab/cap-rc2-off1-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-14	cap-rc2-off2-1	rcache2	78123671e93c	xlate-play33/e8d52df68016	cap-f2663	fps	26.10	26.10	26.10	1	cap-cell	.lab/cap-rc2-off2-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-14	cap-rc2-off2-1	rcache2	78123671e93c	xlate-play33/e8d52df68016	cap-f2663	replay_ms	21.82	21.82	21.82	1	cap-cell	.lab/cap-rc2-off2-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-14	cap-rc2-off2-1	rcache2	78123671e93c	xlate-play33/e8d52df68016	cap-f2663	gpu_ms	10.84	10.84	10.84	1	cap-cell	.lab/cap-rc2-off2-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-14	cap-rc2-off2-1	rcache2	78123671e93c	xlate-play33/e8d52df68016	cap-f2663	interval_ms	38.24	38.24	38.24	1	cap-cell	.lab/cap-rc2-off2-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-14	cap-rc2-on2-1	rcache2	78123671e93c	xlate-play33/e8d52df68016	cap-f2663	fps	40.80	40.80	40.80	1	cap-cell	.lab/cap-rc2-on2-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-14	cap-rc2-on2-1	rcache2	78123671e93c	xlate-play33/e8d52df68016	cap-f2663	replay_ms	15.57	15.57	15.57	1	cap-cell	.lab/cap-rc2-on2-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-14	cap-rc2-on2-1	rcache2	78123671e93c	xlate-play33/e8d52df68016	cap-f2663	gpu_ms	10.62	10.62	10.62	1	cap-cell	.lab/cap-rc2-on2-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-14	cap-rc2-on2-1	rcache2	78123671e93c	xlate-play33/e8d52df68016	cap-f2663	interval_ms	24.54	24.54	24.54	1	cap-cell	.lab/cap-rc2-on2-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-14	cap-rc2-on3-1	rcache2	78123671e93c	xlate-play33/e8d52df68016	cap-f2663	fps	40.80	40.80	40.80	1	cap-cell	.lab/cap-rc2-on3-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-14	cap-rc2-on3-1	rcache2	78123671e93c	xlate-play33/e8d52df68016	cap-f2663	replay_ms	15.49	15.49	15.49	1	cap-cell	.lab/cap-rc2-on3-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-14	cap-rc2-on3-1	rcache2	78123671e93c	xlate-play33/e8d52df68016	cap-f2663	gpu_ms	10.62	10.62	10.62	1	cap-cell	.lab/cap-rc2-on3-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-14	cap-rc2-on3-1	rcache2	78123671e93c	xlate-play33/e8d52df68016	cap-f2663	interval_ms	24.53	24.53	24.53	1	cap-cell	.lab/cap-rc2-on3-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-14	cap-rc2-off3-1	rcache2	78123671e93c	xlate-play33/e8d52df68016	cap-f2663	fps	40.60	40.60	40.60	1	cap-cell	.lab/cap-rc2-off3-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-14	cap-rc2-off3-1	rcache2	78123671e93c	xlate-play33/e8d52df68016	cap-f2663	replay_ms	15.53	15.53	15.53	1	cap-cell	.lab/cap-rc2-off3-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-14	cap-rc2-off3-1	rcache2	78123671e93c	xlate-play33/e8d52df68016	cap-f2663	gpu_ms	10.62	10.62	10.62	1	cap-cell	.lab/cap-rc2-off3-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-14	cap-rc2-off3-1	rcache2	78123671e93c	xlate-play33/e8d52df68016	cap-f2663	interval_ms	24.64	24.64	24.64	1	cap-cell	.lab/cap-rc2-off3-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-15	cap-pde-prof-1	slim2	701e7ce8490b	xlate-play33/e8d52df68016	cap-f2663	fps	40.10	40.10	40.10	1	cap-cell	.lab/cap-pde-prof-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-15	cap-pde-prof-1	slim2	701e7ce8490b	xlate-play33/e8d52df68016	cap-f2663	replay_ms	16.04	16.04	16.04	1	cap-cell	.lab/cap-pde-prof-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-15	cap-pde-prof-1	slim2	701e7ce8490b	xlate-play33/e8d52df68016	cap-f2663	gpu_ms	10.63	10.63	10.63	1	cap-cell	.lab/cap-pde-prof-1		ok	2c682741	warm	6fff9cf71e37
+2026-11-15	cap-pde-prof-1	slim2	701e7ce8490b	xlate-play33/e8d52df68016	cap-f2663	interval_ms	24.97	24.97	24.97	1	cap-cell	.lab/cap-pde-prof-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-15	cap-pde-on1-1	pde1	701e7ce8490b-dirty	xlate-play33/e8d52df68016	cap-f2663	fps	54.40	54.40	54.40	1	cap-cell	.lab/cap-pde-on1-1	POOL_GROUP_TAKE=1	ok	d088798f	warm	6fff9cf71e37
+2026-11-15	cap-pde-on1-1	pde1	701e7ce8490b-dirty	xlate-play33/e8d52df68016	cap-f2663	replay_ms	13.63	13.63	13.63	1	cap-cell	.lab/cap-pde-on1-1	POOL_GROUP_TAKE=1	ok	d088798f	warm	6fff9cf71e37
+2026-11-15	cap-pde-on1-1	pde1	701e7ce8490b-dirty	xlate-play33/e8d52df68016	cap-f2663	gpu_ms	10.99	10.99	10.99	1	cap-cell	.lab/cap-pde-on1-1	POOL_GROUP_TAKE=1	ok	d088798f	warm	6fff9cf71e37
+2026-11-15	cap-pde-on1-1	pde1	701e7ce8490b-dirty	xlate-play33/e8d52df68016	cap-f2663	interval_ms	18.39	18.39	18.39	1	cap-cell	.lab/cap-pde-on1-1	POOL_GROUP_TAKE=1	ok	d088798f	warm	6fff9cf71e37
+2026-11-15	cap-pde-off1-1	pde1	701e7ce8490b-dirty	xlate-play33/e8d52df68016	cap-f2663	fps	56.50	56.50	56.50	1	cap-cell	.lab/cap-pde-off1-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-15	cap-pde-off1-1	pde1	701e7ce8490b-dirty	xlate-play33/e8d52df68016	cap-f2663	replay_ms	12.83	12.83	12.83	1	cap-cell	.lab/cap-pde-off1-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-15	cap-pde-off1-1	pde1	701e7ce8490b-dirty	xlate-play33/e8d52df68016	cap-f2663	gpu_ms	10.83	10.83	10.83	1	cap-cell	.lab/cap-pde-off1-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-15	cap-pde-off1-1	pde1	701e7ce8490b-dirty	xlate-play33/e8d52df68016	cap-f2663	interval_ms	17.71	17.71	17.71	1	cap-cell	.lab/cap-pde-off1-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-15	cap-pde-off2-1	pde1	701e7ce8490b-dirty	xlate-play33/e8d52df68016	cap-f2663	fps	54.10	54.10	54.10	1	cap-cell	.lab/cap-pde-off2-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-15	cap-pde-off2-1	pde1	701e7ce8490b-dirty	xlate-play33/e8d52df68016	cap-f2663	replay_ms	13.40	13.40	13.40	1	cap-cell	.lab/cap-pde-off2-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-15	cap-pde-off2-1	pde1	701e7ce8490b-dirty	xlate-play33/e8d52df68016	cap-f2663	gpu_ms	10.94	10.94	10.94	1	cap-cell	.lab/cap-pde-off2-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-15	cap-pde-off2-1	pde1	701e7ce8490b-dirty	xlate-play33/e8d52df68016	cap-f2663	interval_ms	18.49	18.49	18.49	1	cap-cell	.lab/cap-pde-off2-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-15	cap-pde-on2-1	pde1	701e7ce8490b-dirty	xlate-play33/e8d52df68016	cap-f2663	fps	56.10	56.10	56.10	1	cap-cell	.lab/cap-pde-on2-1	POOL_GROUP_TAKE=1	ok	d088798f	warm	6fff9cf71e37
+2026-11-15	cap-pde-on2-1	pde1	701e7ce8490b-dirty	xlate-play33/e8d52df68016	cap-f2663	replay_ms	12.54	12.54	12.54	1	cap-cell	.lab/cap-pde-on2-1	POOL_GROUP_TAKE=1	ok	d088798f	warm	6fff9cf71e37
+2026-11-15	cap-pde-on2-1	pde1	701e7ce8490b-dirty	xlate-play33/e8d52df68016	cap-f2663	gpu_ms	10.85	10.85	10.85	1	cap-cell	.lab/cap-pde-on2-1	POOL_GROUP_TAKE=1	ok	d088798f	warm	6fff9cf71e37
+2026-11-15	cap-pde-on2-1	pde1	701e7ce8490b-dirty	xlate-play33/e8d52df68016	cap-f2663	interval_ms	17.84	17.84	17.84	1	cap-cell	.lab/cap-pde-on2-1	POOL_GROUP_TAKE=1	ok	d088798f	warm	6fff9cf71e37
+2026-11-15	cap-pde-on3-1	pde1	701e7ce8490b-dirty	xlate-play33/e8d52df68016	cap-f2663	fps	58.00	58.00	58.00	1	cap-cell	.lab/cap-pde-on3-1	POOL_GROUP_TAKE=1	ok	d088798f	warm	6fff9cf71e37
+2026-11-15	cap-pde-on3-1	pde1	701e7ce8490b-dirty	xlate-play33/e8d52df68016	cap-f2663	replay_ms	12.26	12.26	12.26	1	cap-cell	.lab/cap-pde-on3-1	POOL_GROUP_TAKE=1	ok	d088798f	warm	6fff9cf71e37
+2026-11-15	cap-pde-on3-1	pde1	701e7ce8490b-dirty	xlate-play33/e8d52df68016	cap-f2663	gpu_ms	10.84	10.84	10.84	1	cap-cell	.lab/cap-pde-on3-1	POOL_GROUP_TAKE=1	ok	d088798f	warm	6fff9cf71e37
+2026-11-15	cap-pde-on3-1	pde1	701e7ce8490b-dirty	xlate-play33/e8d52df68016	cap-f2663	interval_ms	17.25	17.25	17.25	1	cap-cell	.lab/cap-pde-on3-1	POOL_GROUP_TAKE=1	ok	d088798f	warm	6fff9cf71e37
+2026-11-15	cap-pde-off3-1	pde1	701e7ce8490b-dirty	xlate-play33/e8d52df68016	cap-f2663	fps	57.30	57.30	57.30	1	cap-cell	.lab/cap-pde-off3-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-15	cap-pde-off3-1	pde1	701e7ce8490b-dirty	xlate-play33/e8d52df68016	cap-f2663	replay_ms	12.82	12.82	12.82	1	cap-cell	.lab/cap-pde-off3-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-15	cap-pde-off3-1	pde1	701e7ce8490b-dirty	xlate-play33/e8d52df68016	cap-f2663	gpu_ms	10.57	10.57	10.57	1	cap-cell	.lab/cap-pde-off3-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-15	cap-pde-off3-1	pde1	701e7ce8490b-dirty	xlate-play33/e8d52df68016	cap-f2663	interval_ms	17.45	17.45	17.45	1	cap-cell	.lab/cap-pde-off3-1		ok	d088798f	warm	6fff9cf71e37
+2026-11-15	cap-fs-off1-1	fstep	ef9a7a8a587c	xlate-play33/e8d52df68016	cap-f2663	fps	49.50	49.50	49.50	1	cap-cell	.lab/cap-fs-off1-1	SHOTS=3000-5400:600 SPEED_PROBE=1	ok	d088798f	warm	6fff9cf71e37
+2026-11-15	cap-fs-off1-1	fstep	ef9a7a8a587c	xlate-play33/e8d52df68016	cap-f2663	replay_ms	14.08	14.08	14.08	1	cap-cell	.lab/cap-fs-off1-1	SHOTS=3000-5400:600 SPEED_PROBE=1	ok	d088798f	warm	6fff9cf71e37
+2026-11-15	cap-fs-off1-1	fstep	ef9a7a8a587c	xlate-play33/e8d52df68016	cap-f2663	gpu_ms	10.78	10.78	10.78	1	cap-cell	.lab/cap-fs-off1-1	SHOTS=3000-5400:600 SPEED_PROBE=1	ok	d088798f	warm	6fff9cf71e37
+2026-11-15	cap-fs-off1-1	fstep	ef9a7a8a587c	xlate-play33/e8d52df68016	cap-f2663	interval_ms	20.18	20.18	20.18	1	cap-cell	.lab/cap-fs-off1-1	SHOTS=3000-5400:600 SPEED_PROBE=1	ok	d088798f	warm	6fff9cf71e37
+2026-11-15	cap-fs-on1-1	fstep	ef9a7a8a587c	xlate-play33/e8d52df68016	cap-f2663	fps	49.20	49.20	49.20	1	cap-cell	.lab/cap-fs-on1-1	FIXED_STEP=60 SHOTS=3000-5400:600 SPEED_PROBE=1	ok	d088798f	warm	6fff9cf71e37
+2026-11-15	cap-fs-on1-1	fstep	ef9a7a8a587c	xlate-play33/e8d52df68016	cap-f2663	replay_ms	14.11	14.11	14.11	1	cap-cell	.lab/cap-fs-on1-1	FIXED_STEP=60 SHOTS=3000-5400:600 SPEED_PROBE=1	ok	d088798f	warm	6fff9cf71e37
+2026-11-15	cap-fs-on1-1	fstep	ef9a7a8a587c	xlate-play33/e8d52df68016	cap-f2663	gpu_ms	10.87	10.87	10.87	1	cap-cell	.lab/cap-fs-on1-1	FIXED_STEP=60 SHOTS=3000-5400:600 SPEED_PROBE=1	ok	d088798f	warm	6fff9cf71e37
+2026-11-15	cap-fs-on1-1	fstep	ef9a7a8a587c	xlate-play33/e8d52df68016	cap-f2663	interval_ms	20.33	20.33	20.33	1	cap-cell	.lab/cap-fs-on1-1	FIXED_STEP=60 SHOTS=3000-5400:600 SPEED_PROBE=1	ok	d088798f	warm	6fff9cf71e37
+2026-11-15	cap-fs-off2-1	fstep	ef9a7a8a587c	xlate-play33/e8d52df68016	cap-f2663	fps	53.10	53.10	53.10	1	cap-cell	.lab/cap-fs-off2-1	SHOTS=3000-5400:600 SPEED_PROBE=1	ok	d088798f	warm	6fff9cf71e37
+2026-11-15	cap-fs-off2-1	fstep	ef9a7a8a587c	xlate-play33/e8d52df68016	cap-f2663	replay_ms	13.35	13.35	13.35	1	cap-cell	.lab/cap-fs-off2-1	SHOTS=3000-5400:600 SPEED_PROBE=1	ok	d088798f	warm	6fff9cf71e37
+2026-11-15	cap-fs-off2-1	fstep	ef9a7a8a587c	xlate-play33/e8d52df68016	cap-f2663	gpu_ms	10.98	10.98	10.98	1	cap-cell	.lab/cap-fs-off2-1	SHOTS=3000-5400:600 SPEED_PROBE=1	ok	d088798f	warm	6fff9cf71e37
+2026-11-15	cap-fs-off2-1	fstep	ef9a7a8a587c	xlate-play33/e8d52df68016	cap-f2663	interval_ms	18.82	18.82	18.82	1	cap-cell	.lab/cap-fs-off2-1	SHOTS=3000-5400:600 SPEED_PROBE=1	ok	d088798f	warm	6fff9cf71e37
+2026-11-15	cap-fs-on2-1	fstep	ef9a7a8a587c	xlate-play33/e8d52df68016	cap-f2663	fps	45.30	45.30	45.30	1	cap-cell	.lab/cap-fs-on2-1	FIXED_STEP=60 SHOTS=3000-5400:600 SPEED_PROBE=1	ok	d088798f	warm	6fff9cf71e37
+2026-11-15	cap-fs-on2-1	fstep	ef9a7a8a587c	xlate-play33/e8d52df68016	cap-f2663	replay_ms	15.44	15.44	15.44	1	cap-cell	.lab/cap-fs-on2-1	FIXED_STEP=60 SHOTS=3000-5400:600 SPEED_PROBE=1	ok	d088798f	warm	6fff9cf71e37
+2026-11-15	cap-fs-on2-1	fstep	ef9a7a8a587c	xlate-play33/e8d52df68016	cap-f2663	gpu_ms	10.96	10.96	10.96	1	cap-cell	.lab/cap-fs-on2-1	FIXED_STEP=60 SHOTS=3000-5400:600 SPEED_PROBE=1	ok	d088798f	warm	6fff9cf71e37
+2026-11-15	cap-fs-on2-1	fstep	ef9a7a8a587c	xlate-play33/e8d52df68016	cap-f2663	interval_ms	22.06	22.06	22.06	1	cap-cell	.lab/cap-fs-on2-1	FIXED_STEP=60 SHOTS=3000-5400:600 SPEED_PROBE=1	ok	d088798f	warm	6fff9cf71e37
+2026-11-15	cap-fs-off3-1	fstep	ef9a7a8a587c	xlate-play33/e8d52df68016	cap-f2663	fps	46.70	46.70	46.70	1	cap-cell	.lab/cap-fs-off3-1	SHOTS=3000-5400:600 SPEED_PROBE=1	ok	d088798f	warm	6fff9cf71e37
+2026-11-15	cap-fs-off3-1	fstep	ef9a7a8a587c	xlate-play33/e8d52df68016	cap-f2663	replay_ms	14.31	14.31	14.31	1	cap-cell	.lab/cap-fs-off3-1	SHOTS=3000-5400:600 SPEED_PROBE=1	ok	d088798f	warm	6fff9cf71e37
+2026-11-15	cap-fs-off3-1	fstep	ef9a7a8a587c	xlate-play33/e8d52df68016	cap-f2663	gpu_ms	10.87	10.87	10.87	1	cap-cell	.lab/cap-fs-off3-1	SHOTS=3000-5400:600 SPEED_PROBE=1	ok	d088798f	warm	6fff9cf71e37
+2026-11-15	cap-fs-off3-1	fstep	ef9a7a8a587c	xlate-play33/e8d52df68016	cap-f2663	interval_ms	21.40	21.40	21.40	1	cap-cell	.lab/cap-fs-off3-1	SHOTS=3000-5400:600 SPEED_PROBE=1	ok	d088798f	warm	6fff9cf71e37
+2026-11-15	cap-fs-on3-1	fstep	ef9a7a8a587c	xlate-play33/e8d52df68016	cap-f2663	fps	46.30	46.30	46.30	1	cap-cell	.lab/cap-fs-on3-1	FIXED_STEP=60 SHOTS=3000-5400:600 SPEED_PROBE=1	ok	d088798f	warm	6fff9cf71e37
+2026-11-15	cap-fs-on3-1	fstep	ef9a7a8a587c	xlate-play33/e8d52df68016	cap-f2663	replay_ms	14.27	14.27	14.27	1	cap-cell	.lab/cap-fs-on3-1	FIXED_STEP=60 SHOTS=3000-5400:600 SPEED_PROBE=1	ok	d088798f	warm	6fff9cf71e37
+2026-11-15	cap-fs-on3-1	fstep	ef9a7a8a587c	xlate-play33/e8d52df68016	cap-f2663	gpu_ms	10.93	10.93	10.93	1	cap-cell	.lab/cap-fs-on3-1	FIXED_STEP=60 SHOTS=3000-5400:600 SPEED_PROBE=1	ok	d088798f	warm	6fff9cf71e37
+2026-11-15	cap-fs-on3-1	fstep	ef9a7a8a587c	xlate-play33/e8d52df68016	cap-f2663	interval_ms	21.59	21.59	21.59	1	cap-cell	.lab/cap-fs-on3-1	FIXED_STEP=60 SHOTS=3000-5400:600 SPEED_PROBE=1	ok	d088798f	warm	6fff9cf71e37
+2026-11-15	lc-t160a	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load DeathMountainTrail_Adult	load_longest_ms	115	115	115	1	load-cell	.lab/lc-t160a	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160a	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load DeathMountainTrail_Adult	load_lost_ms	98.11	98.11	98.11	1	load-cell	.lab/lc-t160a	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160a	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load Market_Adult	load_longest_ms	315	114	1937	29	load-cell	.lab/lc-t160a	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160a	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load Market_Adult	load_lost_ms	2581	377	35133	29	load-cell	.lab/lc-t160a	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160a	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load KakarikoVillage_Adult_Alternative	load_longest_ms	310	114	498	6	load-cell	.lab/lc-t160a	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160a	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load KakarikoVillage_Adult_Alternative	load_lost_ms	475	97.04	906	6	load-cell	.lab/lc-t160a	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160a	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load KakarikoVillage_Adult	load_longest_ms	300	222	427	5	load-cell	.lab/lc-t160a	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160a	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load KakarikoVillage_Adult	load_lost_ms	767	373	1862	5	load-cell	.lab/lc-t160a	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160a	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load ZoraDomain_Adult_Alternative	load_longest_ms	254	230	297	5	load-cell	.lab/lc-t160a	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160a	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load ZoraDomain_Adult_Alternative	load_lost_ms	443	317	574	5	load-cell	.lab/lc-t160a	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160a	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load ZoraDomain_Adult	load_longest_ms	181	180	182	4	load-cell	.lab/lc-t160a	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160a	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load ZoraDomain_Adult	load_lost_ms	223	185	268	4	load-cell	.lab/lc-t160a	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160a	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load ZoraFountain_Adult	load_longest_ms	168	157	179	5	load-cell	.lab/lc-t160a	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160a	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load ZoraFountain_Adult	load_lost_ms	234	203	267	5	load-cell	.lab/lc-t160a	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160a	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load GerudoValley_Adult	load_longest_ms	285	196	426	4	load-cell	.lab/lc-t160a	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160a	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load GerudoValley_Adult	load_lost_ms	539	354	783	4	load-cell	.lab/lc-t160a	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160a	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load SacredForestMeadow_Adult	load_longest_ms	450	396	502	4	load-cell	.lab/lc-t160a	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160a	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load SacredForestMeadow_Adult	load_lost_ms	491	438	543	4	load-cell	.lab/lc-t160a	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-x149new0	xl149	0c4f2104b2d2-dirty	xlate-701e7ce/7b7bde78ece9	load DeathMountainTrail_Adult	load_longest_ms	121	121	121	1	load-cell	.lab/lc-x149new0	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-x149new0	xl149	0c4f2104b2d2-dirty	xlate-701e7ce/7b7bde78ece9	load DeathMountainTrail_Adult	load_lost_ms	104	104	104	1	load-cell	.lab/lc-x149new0	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-x149new0	xl149	0c4f2104b2d2-dirty	xlate-701e7ce/7b7bde78ece9	load Market_Adult	load_longest_ms	1088	468	2406	4	load-cell	.lab/lc-x149new0	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-x149new0	xl149	0c4f2104b2d2-dirty	xlate-701e7ce/7b7bde78ece9	load Market_Adult	load_lost_ms	2320	842	4504	4	load-cell	.lab/lc-x149new0	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-x149new0	xl149	0c4f2104b2d2-dirty	xlate-701e7ce/7b7bde78ece9	load KakarikoVillage_Adult_Alternative	load_longest_ms	266	109	425	4	load-cell	.lab/lc-x149new0	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-x149new0	xl149	0c4f2104b2d2-dirty	xlate-701e7ce/7b7bde78ece9	load KakarikoVillage_Adult_Alternative	load_lost_ms	854	261	1665	4	load-cell	.lab/lc-x149new0	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160b	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load DeathMountainTrail_Adult	load_longest_ms	115	115	115	1	load-cell	.lab/lc-t160b	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160b	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load DeathMountainTrail_Adult	load_lost_ms	98.51	98.51	98.51	1	load-cell	.lab/lc-t160b	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160b	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load Market_Adult	load_longest_ms	591	118	2245	12	load-cell	.lab/lc-t160b	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160b	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load Market_Adult	load_lost_ms	3508	125	11646	12	load-cell	.lab/lc-t160b	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160b	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load KakarikoVillage_Adult_Alternative	load_longest_ms	322	181	371	5	load-cell	.lab/lc-t160b	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160b	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load KakarikoVillage_Adult_Alternative	load_lost_ms	480	244	565	5	load-cell	.lab/lc-t160b	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160b	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load KakarikoVillage_Adult	load_longest_ms	275	234	330	5	load-cell	.lab/lc-t160b	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160b	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load KakarikoVillage_Adult	load_lost_ms	650	353	1132	5	load-cell	.lab/lc-t160b	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160b	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load ZoraDomain_Adult_Alternative	load_longest_ms	267	222	416	5	load-cell	.lab/lc-t160b	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160b	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load ZoraDomain_Adult_Alternative	load_lost_ms	620	261	1877	5	load-cell	.lab/lc-t160b	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160b	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load ZoraDomain_Adult	load_longest_ms	206	181	246	5	load-cell	.lab/lc-t160b	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160b	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load ZoraDomain_Adult	load_lost_ms	411	220	901	5	load-cell	.lab/lc-t160b	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160b	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load ZoraFountain_Adult	load_longest_ms	176	100	227	6	load-cell	.lab/lc-t160b	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160b	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load ZoraFountain_Adult	load_lost_ms	262	83.49	502	6	load-cell	.lab/lc-t160b	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160b	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load GerudoValley_Adult	load_longest_ms	293	245	344	4	load-cell	.lab/lc-t160b	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160b	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load GerudoValley_Adult	load_lost_ms	637	468	820	4	load-cell	.lab/lc-t160b	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160b	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load SacredForestMeadow_Adult	load_longest_ms	435	409	509	4	load-cell	.lab/lc-t160b	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160b	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load SacredForestMeadow_Adult	load_lost_ms	518	489	561	4	load-cell	.lab/lc-t160b	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-x149old1	xl149	0c4f2104b2d2-dirty	xlate-play33/e8d52df68016	load DeathMountainTrail_Adult	load_longest_ms	122	122	122	1	load-cell	.lab/lc-x149old1	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-x149old1	xl149	0c4f2104b2d2-dirty	xlate-play33/e8d52df68016	load DeathMountainTrail_Adult	load_lost_ms	126	126	126	1	load-cell	.lab/lc-x149old1	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-x149old1	xl149	0c4f2104b2d2-dirty	xlate-play33/e8d52df68016	load Market_Adult	load_longest_ms	570	311	1153	4	load-cell	.lab/lc-x149old1	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-x149old1	xl149	0c4f2104b2d2-dirty	xlate-play33/e8d52df68016	load Market_Adult	load_lost_ms	877	626	1252	4	load-cell	.lab/lc-x149old1	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-x149old1	xl149	0c4f2104b2d2-dirty	xlate-play33/e8d52df68016	load KakarikoVillage_Adult_Alternative	load_longest_ms	281	191	389	3	load-cell	.lab/lc-x149old1	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-x149old1	xl149	0c4f2104b2d2-dirty	xlate-play33/e8d52df68016	load KakarikoVillage_Adult_Alternative	load_lost_ms	1271	271	3196	3	load-cell	.lab/lc-x149old1	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160c	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load DeathMountainTrail_Adult	load_longest_ms	123	123	123	1	load-cell	.lab/lc-t160c	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160c	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load DeathMountainTrail_Adult	load_lost_ms	106	106	106	1	load-cell	.lab/lc-t160c	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160c	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load Market_Adult	load_longest_ms	677	103	1553	8	load-cell	.lab/lc-t160c	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160c	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load Market_Adult	load_lost_ms	1513	107	4732	8	load-cell	.lab/lc-t160c	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160c	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load KakarikoVillage_Adult_Alternative	load_longest_ms	271	105	348	7	load-cell	.lab/lc-t160c	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160c	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load KakarikoVillage_Adult_Alternative	load_lost_ms	424	106	597	7	load-cell	.lab/lc-t160c	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160c	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load KakarikoVillage_Adult	load_longest_ms	260	126	355	6	load-cell	.lab/lc-t160c	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160c	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load KakarikoVillage_Adult	load_lost_ms	750	235	2202	6	load-cell	.lab/lc-t160c	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160c	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load ZoraDomain_Adult_Alternative	load_longest_ms	290	241	433	5	load-cell	.lab/lc-t160c	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160c	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load ZoraDomain_Adult_Alternative	load_lost_ms	665	354	1708	5	load-cell	.lab/lc-t160c	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160c	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load ZoraDomain_Adult	load_longest_ms	204	179	226	5	load-cell	.lab/lc-t160c	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160c	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load ZoraDomain_Adult	load_lost_ms	312	227	380	5	load-cell	.lab/lc-t160c	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160c	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load ZoraFountain_Adult	load_longest_ms	180	160	192	5	load-cell	.lab/lc-t160c	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160c	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load ZoraFountain_Adult	load_lost_ms	293	198	478	5	load-cell	.lab/lc-t160c	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160c	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load GerudoValley_Adult	load_longest_ms	293	213	345	4	load-cell	.lab/lc-t160c	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160c	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load GerudoValley_Adult	load_lost_ms	613	338	1166	4	load-cell	.lab/lc-t160c	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160c	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load SacredForestMeadow_Adult	load_longest_ms	418	371	469	4	load-cell	.lab/lc-t160c	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160c	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load SacredForestMeadow_Adult	load_lost_ms	481	415	537	4	load-cell	.lab/lc-t160c	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160c	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load HyruleField_Adult	load_longest_ms	131	131	131	1	load-cell	.lab/lc-t160c	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-t160c	slim2	701e7ce8490b	xlate-play33/e8d52df68016	load HyruleField_Adult	load_lost_ms	827	827	827	1	load-cell	.lab/lc-t160c	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-x149new1	xl149	0c4f2104b2d2-dirty	xlate-701e7ce/7b7bde78ece9	load DeathMountainTrail_Adult	load_longest_ms	125	125	125	1	load-cell	.lab/lc-x149new1	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-x149new1	xl149	0c4f2104b2d2-dirty	xlate-701e7ce/7b7bde78ece9	load DeathMountainTrail_Adult	load_lost_ms	108	108	108	1	load-cell	.lab/lc-x149new1	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-x149new1	xl149	0c4f2104b2d2-dirty	xlate-701e7ce/7b7bde78ece9	load Market_Adult	load_longest_ms	558	298	1161	4	load-cell	.lab/lc-x149new1	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-x149new1	xl149	0c4f2104b2d2-dirty	xlate-701e7ce/7b7bde78ece9	load Market_Adult	load_lost_ms	802	553	1292	4	load-cell	.lab/lc-x149new1	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-x149new1	xl149	0c4f2104b2d2-dirty	xlate-701e7ce/7b7bde78ece9	load KakarikoVillage_Adult_Alternative	load_longest_ms	225	193	278	3	load-cell	.lab/lc-x149new1	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-x149new1	xl149	0c4f2104b2d2-dirty	xlate-701e7ce/7b7bde78ece9	load KakarikoVillage_Adult_Alternative	load_lost_ms	395	279	508	3	load-cell	.lab/lc-x149new1	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-x149old2	xl149	0c4f2104b2d2-dirty	xlate-play33/e8d52df68016	load DeathMountainTrail_Adult	load_longest_ms	116	116	116	1	load-cell	.lab/lc-x149old2	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-x149old2	xl149	0c4f2104b2d2-dirty	xlate-play33/e8d52df68016	load DeathMountainTrail_Adult	load_lost_ms	118	118	118	1	load-cell	.lab/lc-x149old2	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-x149old2	xl149	0c4f2104b2d2-dirty	xlate-play33/e8d52df68016	load Market_Adult	load_longest_ms	476	323	913	4	load-cell	.lab/lc-x149old2	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-x149old2	xl149	0c4f2104b2d2-dirty	xlate-play33/e8d52df68016	load Market_Adult	load_lost_ms	636	446	1017	4	load-cell	.lab/lc-x149old2	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-x149old2	xl149	0c4f2104b2d2-dirty	xlate-play33/e8d52df68016	load KakarikoVillage_Adult_Alternative	load_longest_ms	203	185	217	3	load-cell	.lab/lc-x149old2	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-x149old2	xl149	0c4f2104b2d2-dirty	xlate-play33/e8d52df68016	load KakarikoVillage_Adult_Alternative	load_lost_ms	285	231	373	3	load-cell	.lab/lc-x149old2	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-x149new2	xl149	0c4f2104b2d2-dirty	xlate-701e7ce/7b7bde78ece9	load DeathMountainTrail_Adult	load_longest_ms	124	124	124	1	load-cell	.lab/lc-x149new2	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-x149new2	xl149	0c4f2104b2d2-dirty	xlate-701e7ce/7b7bde78ece9	load DeathMountainTrail_Adult	load_lost_ms	134	134	134	1	load-cell	.lab/lc-x149new2	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-x149new2	xl149	0c4f2104b2d2-dirty	xlate-701e7ce/7b7bde78ece9	load Market_Adult	load_longest_ms	745	386	1309	4	load-cell	.lab/lc-x149new2	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-x149new2	xl149	0c4f2104b2d2-dirty	xlate-701e7ce/7b7bde78ece9	load Market_Adult	load_lost_ms	1333	735	1627	4	load-cell	.lab/lc-x149new2	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-x149new2	xl149	0c4f2104b2d2-dirty	xlate-701e7ce/7b7bde78ece9	load KakarikoVillage_Adult_Alternative	load_longest_ms	291	120	411	4	load-cell	.lab/lc-x149new2	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-x149new2	xl149	0c4f2104b2d2-dirty	xlate-701e7ce/7b7bde78ece9	load KakarikoVillage_Adult_Alternative	load_lost_ms	467	136	667	4	load-cell	.lab/lc-x149new2	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-x149old3	xl149	0c4f2104b2d2-dirty	xlate-play33/e8d52df68016	load DeathMountainTrail_Adult	load_longest_ms	122	122	122	1	load-cell	.lab/lc-x149old3	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-x149old3	xl149	0c4f2104b2d2-dirty	xlate-play33/e8d52df68016	load DeathMountainTrail_Adult	load_lost_ms	132	132	132	1	load-cell	.lab/lc-x149old3	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-x149old3	xl149	0c4f2104b2d2-dirty	xlate-play33/e8d52df68016	load Market_Adult	load_longest_ms	573	318	1317	4	load-cell	.lab/lc-x149old3	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-x149old3	xl149	0c4f2104b2d2-dirty	xlate-play33/e8d52df68016	load Market_Adult	load_lost_ms	884	520	1498	4	load-cell	.lab/lc-x149old3	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-x149old3	xl149	0c4f2104b2d2-dirty	xlate-play33/e8d52df68016	load KakarikoVillage_Adult_Alternative	load_longest_ms	246	215	262	3	load-cell	.lab/lc-x149old3	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-x149old3	xl149	0c4f2104b2d2-dirty	xlate-play33/e8d52df68016	load KakarikoVillage_Adult_Alternative	load_lost_ms	395	369	442	3	load-cell	.lab/lc-x149old3	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-x149new3	xl149	0c4f2104b2d2-dirty	xlate-701e7ce/7b7bde78ece9	load DeathMountainTrail_Adult	load_longest_ms	137	137	137	1	load-cell	.lab/lc-x149new3	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-x149new3	xl149	0c4f2104b2d2-dirty	xlate-701e7ce/7b7bde78ece9	load DeathMountainTrail_Adult	load_lost_ms	146	146	146	1	load-cell	.lab/lc-x149new3	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-x149new3	xl149	0c4f2104b2d2-dirty	xlate-701e7ce/7b7bde78ece9	load Market_Adult	load_longest_ms	816	352	2152	4	load-cell	.lab/lc-x149new3	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-x149new3	xl149	0c4f2104b2d2-dirty	xlate-701e7ce/7b7bde78ece9	load Market_Adult	load_lost_ms	1088	545	2270	4	load-cell	.lab/lc-x149new3	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-x149new3	xl149	0c4f2104b2d2-dirty	xlate-701e7ce/7b7bde78ece9	load KakarikoVillage_Adult_Alternative	load_longest_ms	273	190	391	3	load-cell	.lab/lc-x149new3	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	lc-x149new3	xl149	0c4f2104b2d2-dirty	xlate-701e7ce/7b7bde78ece9	load KakarikoVillage_Adult_Alternative	load_lost_ms	422	289	586	3	load-cell	.lab/lc-x149new3	DBG_TEST=600:warp	ok	d088798f	warm	
+2026-11-15	cap-carry240-1	carry1	c4b22549b82b	xlate-rebase/53afad07286c	cap-field-mid-standing	fps	58.40	58.40	58.40	1	cap-cell	.lab/cap-carry240-1	FPS_LIMIT=240	ok	2c682741	warm	25b187c7a763
+2026-11-15	cap-carry240-1	carry1	c4b22549b82b	xlate-rebase/53afad07286c	cap-field-mid-standing	replay_ms	11.72	11.72	11.72	1	cap-cell	.lab/cap-carry240-1	FPS_LIMIT=240	ok	2c682741	warm	25b187c7a763
+2026-11-15	cap-carry240-1	carry1	c4b22549b82b	xlate-rebase/53afad07286c	cap-field-mid-standing	gpu_ms	9.50	9.50	9.50	1	cap-cell	.lab/cap-carry240-1	FPS_LIMIT=240	ok	d088798f	warm	25b187c7a763
+2026-11-15	cap-carry240-1	carry1	c4b22549b82b	xlate-rebase/53afad07286c	cap-field-mid-standing	interval_ms	17.13	17.13	17.13	1	cap-cell	.lab/cap-carry240-1	FPS_LIMIT=240	ok	2c682741	warm	25b187c7a763
+2026-11-15	cap-carry240-2	carry1	c4b22549b82b	xlate-rebase/53afad07286c	cap-field-mid-standing	fps	56.90	56.90	56.90	1	cap-cell	.lab/cap-carry240-2	FPS_LIMIT=240	ok	d088798f	warm	25b187c7a763
+2026-11-15	cap-carry240-2	carry1	c4b22549b82b	xlate-rebase/53afad07286c	cap-field-mid-standing	replay_ms	11.38	11.38	11.38	1	cap-cell	.lab/cap-carry240-2	FPS_LIMIT=240	ok	d088798f	warm	25b187c7a763
+2026-11-15	cap-carry240-2	carry1	c4b22549b82b	xlate-rebase/53afad07286c	cap-field-mid-standing	gpu_ms	9.47	9.47	9.47	1	cap-cell	.lab/cap-carry240-2	FPS_LIMIT=240	ok	d088798f	warm	25b187c7a763
+2026-11-15	cap-carry240-2	carry1	c4b22549b82b	xlate-rebase/53afad07286c	cap-field-mid-standing	interval_ms	17.57	17.57	17.57	1	cap-cell	.lab/cap-carry240-2	FPS_LIMIT=240	ok	d088798f	warm	25b187c7a763
+2026-11-15	cap-carry240-3	carry1	c4b22549b82b	xlate-rebase/53afad07286c	cap-field-mid-standing	fps	56.90	56.90	56.90	1	cap-cell	.lab/cap-carry240-3	FPS_LIMIT=240	ok	d088798f	warm	25b187c7a763
+2026-11-15	cap-carry240-3	carry1	c4b22549b82b	xlate-rebase/53afad07286c	cap-field-mid-standing	replay_ms	11.58	11.58	11.58	1	cap-cell	.lab/cap-carry240-3	FPS_LIMIT=240	ok	d088798f	warm	25b187c7a763
+2026-11-15	cap-carry240-3	carry1	c4b22549b82b	xlate-rebase/53afad07286c	cap-field-mid-standing	gpu_ms	9.44	9.44	9.44	1	cap-cell	.lab/cap-carry240-3	FPS_LIMIT=240	ok	d088798f	warm	25b187c7a763
+2026-11-15	cap-carry240-3	carry1	c4b22549b82b	xlate-rebase/53afad07286c	cap-field-mid-standing	interval_ms	17.56	17.56	17.56	1	cap-cell	.lab/cap-carry240-3	FPS_LIMIT=240	ok	d088798f	warm	25b187c7a763
