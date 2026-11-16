@@ -939,3 +939,10 @@ probe data 0x1af9d5000, light lists) while time of day moves, same mechanism as 
 (2) GPU culling of the shadow-cascade mesh draws; (3) 0.12.0 port: no evidence (no texture-path events;
 TEX_RELEASED_HOLD 60 never bites without released lookups; translator unchanged upstream since 5ae55db).
 Unverified; GPU check planned: repro the recipe at dusk on up012 vs carry1 and up012 with REPLAY_ASYNC=0, mark.req burst.
+GPU check (2026-11-16, `.lab/t225/run.sh` + `all.sh` + `blink.py`, dma-buf every run): Cal's own recording
+`logs/input-20261115-204807.txt` (bundle profile) replayed to the plateau, which reaches dusk in the lab too (Link idle
+world ~120-330 s); mark.req every 20 s from present 8000 (12 bursts x 240 thumbs a run), metric = per-pixel one-frame
+blinks (differs >24 from both neighbours that agree). up012 / carry1 / up012 REPLAY_ASYNC=0, x3 each: blink mean per
+burst 4.8-39.5 / 3.3-49.4 / 24.1-43.7; every high burst is a Guay attacking Link (replay drift: bird + camera), and the
+rocks blink in no arm (thumb views checked). NOT REPRODUCED at 320x180: async ordering not shown, no hold extended.
+Next: Cal's own mark (F9 / mark.req) at the moment he sees it, with NX2NAVI_DUMP_REQ=1, on the knobs of his run.
