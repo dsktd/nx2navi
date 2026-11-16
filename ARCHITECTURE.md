@@ -953,7 +953,9 @@ xlate-701e7ce, dma-buf, x1 each, 3 attempts).** Metric: `NX2NAVI_SHOTS=lo-hi:1` 
 presents 3000-3600: 1.4 blink px/frame, max 11, only Link/Navi; the save's time is rainy dusk, so no sun shadows
 to flicker. (2) scn-cell field-west-standing: 2.1 px/frame, camera faces the Market wall at night. (3) stream-cell
 (right stick held) 3000-3600 is still Zora's Domain/Fountain, not the field: ~1400 px/frame median of edge blinks
-from the turning camera's uneven steps plus warp fades, no shadow signal. Every lab save/scenario we have puts the
-field at dusk or night (no daylight sun cascades), so a repro needs a daytime field save or Cal's mark (F9 with
-NX2NAVI_DUMP_REQ=1) when he sees it. Shot series cost fps (8.7-12 fps with per-frame shots): timing-bound flicker
-may hide; prefer MARK_BURST thumbs (GPU blit) for a timing-faithful look. Scripts .lab/t175/{run,scn}.sh.
+from the turning camera's uneven steps plus warp fades, no shadow signal. Correction (same day): the base save IS daylight in Hyrule Field at the Gerudo gate (no time= needed):
+recipe `tools/scenarios/field-gerudo-field` (face=-62.18, over the field), scn-cell + 4 `mark.req` bursts per run
+(NX2NAVI_MARK_BURST=240, 320x180 GPU-blit thumbs, 55.0-56.1 fps), `.lab/t175/band.py` (blinks in the far band y 50-95):
+x3 runs, 12 bursts, band mean 2.2-6.8 px/frame, max 20, one frame >=20 px (haze on the far mesa, no shadow): NOT
+REPRODUCED at a fixed camera in daylight. Thumbs are coarse (a distant shadow edge is ~1 px); next: same recipe with
+the camera panning slowly (cascade re-fit) or Cal's F9 mark. Scripts .lab/t175/{run,scn}.sh.

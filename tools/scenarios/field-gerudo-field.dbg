@@ -1,0 +1,3 @@
+# Hyrule Field at the Gerudo Valley gate, adult, facing back over the field (daylight in the base save); standing. #175 distant shadows.
+# base: .lab/scenarios/base-profile
+# warp: scene=HyruleField_Adult entrance=HyruleField_FrontOfGerudoValley face=-62.18 age=adult
