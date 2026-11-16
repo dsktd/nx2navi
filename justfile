@@ -170,6 +170,10 @@ play-text NAME="" *args:
 play *args:
     #!/usr/bin/env bash
     set -euo pipefail
+    # `just play <name> [args]`: a run script runs/<name>.sh (its knobs), else build/<ver>/nx2navi.<name>
+    set -- {{args}}
+    if [ $# -gt 0 ] && [ -f "{{justfile_directory()}}/runs/$1.sh" ]; then n=$1; shift; exec sh "{{justfile_directory()}}/runs/$n.sh" "$@"; fi
+    if [ $# -gt 0 ] && [ -x "{{src}}/build/{{ver}}/nx2navi.$1" ]; then export NX2NAVI_EXE=$1; shift; fi
     cd "{{src}}"
     mkdir -p "build/{{ver}}/logs"
     # live dumps (dump.req) beside the logs, not in the checkout's root (the runtime's default "dump" is cwd-relative)
@@ -197,7 +201,7 @@ play *args:
     if [ "$cpus" != off ] && command -v taskset >/dev/null; then
         taskset -pc "$cpus" $$ >/dev/null && echo "cpus: pinned to $cpus (NX2NAVI_CPUS=off to disable)"
     fi
-    {{dev}} env {{radv}} ${NX2NAVI_HDR:+NX2NAVI_HDR=$NX2NAVI_HDR} NX2NAVI_REPLAY_ASYNC=${NX2NAVI_REPLAY_ASYNC:-1} NX2NAVI_VK_RECORDER=${NX2NAVI_VK_RECORDER:-1} NX2NAVI_TEX_RELEASED_MIB=${NX2NAVI_TEX_RELEASED_MIB:-3072} NX2NAVI_GPU_WAIT=${NX2NAVI_GPU_WAIT:-0} NX2NAVI_INPUT_RECORD="build/{{ver}}/logs/input-$ts.txt" {{wrapper}} "build/{{ver}}/nx2navi${NX2NAVI_EXE:+.$NX2NAVI_EXE}" {{args}} 2>&1 | tee "$log" | grep -a -v -E "no such proc|preparation progress|PushComputeConstants"
+    {{dev}} env {{radv}} ${NX2NAVI_HDR:+NX2NAVI_HDR=$NX2NAVI_HDR} NX2NAVI_REPLAY_ASYNC=${NX2NAVI_REPLAY_ASYNC:-1} NX2NAVI_VK_RECORDER=${NX2NAVI_VK_RECORDER:-1} NX2NAVI_TEX_RELEASED_MIB=${NX2NAVI_TEX_RELEASED_MIB:-3072} NX2NAVI_GPU_WAIT=${NX2NAVI_GPU_WAIT:-0} NX2NAVI_INPUT_RECORD="build/{{ver}}/logs/input-$ts.txt" {{wrapper}} "build/{{ver}}/nx2navi${NX2NAVI_EXE:+.$NX2NAVI_EXE}" "$@" 2>&1 | tee "$log" | grep -a -v -E "no such proc|preparation progress|PushComputeConstants"
 
 # Play under gdb like `debug`, and record every input to NX2navi/build/{{ver}}/logs/input-<time>.txt: the recording
 # replays with `just replay <file>` (Tally runs it from the container to reproduce a crash)
