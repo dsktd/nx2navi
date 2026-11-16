@@ -946,3 +946,14 @@ blinks (differs >24 from both neighbours that agree). up012 / carry1 / up012 REP
 burst 4.8-39.5 / 3.3-49.4 / 24.1-43.7; every high burst is a Guay attacking Link (replay drift: bird + camera), and the
 rocks blink in no arm (thumb views checked). NOT REPRODUCED at 320x180: async ordering not shown, no hold extended.
 Next: Cal's own mark (F9 / mark.req) at the moment he sees it, with NX2NAVI_DUMP_REQ=1, on the knobs of his run.
+
+**#175 distant shadows flicker in Hyrule Field: NOT REPRODUCED (2026-11-16, up012 f5ee23b, exe nx2navi.up012,
+xlate-701e7ce, dma-buf, x1 each, 3 attempts).** Metric: `NX2NAVI_SHOTS=lo-hi:1` (every present, 480x270) and
+`.lab/t175/blink.py` (pixel off by >16 from both neighbours that agree): (1) cap-cell field-mid-standing capture,
+presents 3000-3600: 1.4 blink px/frame, max 11, only Link/Navi; the save's time is rainy dusk, so no sun shadows
+to flicker. (2) scn-cell field-west-standing: 2.1 px/frame, camera faces the Market wall at night. (3) stream-cell
+(right stick held) 3000-3600 is still Zora's Domain/Fountain, not the field: ~1400 px/frame median of edge blinks
+from the turning camera's uneven steps plus warp fades, no shadow signal. Every lab save/scenario we have puts the
+field at dusk or night (no daylight sun cascades), so a repro needs a daytime field save or Cal's mark (F9 with
+NX2NAVI_DUMP_REQ=1) when he sees it. Shot series cost fps (8.7-12 fps with per-frame shots): timing-bound flicker
+may hide; prefer MARK_BURST thumbs (GPU blit) for a timing-faithful look. Scripts .lab/t175/{run,scn}.sh.
