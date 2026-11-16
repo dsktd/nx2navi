@@ -535,6 +535,22 @@ shadow storage, on with #730 dma-bufs), native mesh shaders, and no dump; a tail
 N+ draws too small to cut goes whole to one worker. 0109 GATE, 0114 HOLD (prologue of the first part, before the tail's
 cut) and 0118 snapshots sit before any tail cut, so they are untouched by it. Translator sources unchanged: xlate-play33.
 
+### Upstream: Triforce (checked 2026-11-16)
+
+NX2navi upstream (`origin`, tangerineturtle1/NX2navi, MIT) is frozen: after 0.12.0 (62cc3b1, a launcher that hands
+over to Triforce Setup) only README commits (to 5256959) say NX2navi "merged into" Triforce.
+Triforce: https://git.triforceproject.com/triforce/source (self-hosted Gitea, owner `triforce`, author
+`ruckus7382sfgsgdf`), GPL-3.0+, 18 commits 2026-11-10..15 (v0.3.x -> v0.4.0), Windows + Linux. Not a multi-game
+framework: "Hookshot (oot-recomp)", the same OoT Switch 2 game, but a separate codebase forked from mkw-recomp
+(Mario Kart World): `nx2/` Python lifter (AArch64 -> C), `host/` HLE runtime, `gpu/vk` C++ Vulkan back end with
+Eden/suyu's SM86 recompiler, `builder/HookshotBuilder`. No NX2navi code or history (no common commit with `build`;
+no `runtime/*.c`, no `NX2NAVI_` knobs); NX2navi appears only in credits and Convert saves. Remote `triforce` is
+added in the worktree for reading.
+Consequence: none of patches/01xx applies; each would be a re-implementation in a different design (C++,
+suyu translator instead of AmpereLowering.cs, other memory/sync model), and this lab's knowledge (shadow sync,
+pool, texture cache, timing) does not transfer. Stay on `build`; treat Triforce as a separate project to evaluate
+by playing it, not a rebase target.
+
 ## 11. Working rules and tooling
 
 - **cfg rule.** Every key read with `cfg_value`/`cfg_bool`/`cfg_int`/`cfg_double` needs a row in the settings table in `runtime/cfg.c`, or the game stops at start with `cfg: X has no row in the settings table` (play6, fixed by 0069). `cfg_get` alone does not need one.
