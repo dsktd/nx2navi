@@ -44,7 +44,7 @@ wrapper := if gpu == "nvidia" { "nixVulkanNvidia" } else { "nixVulkanIntel" }
 # (NX2NAVI_FIX_C0=0 avoids the mesh-stage c0 overflow crash, upstream-issue-c0-mesh.md, but the picture goes black:
 # the shaders read zeros for their driver constants. Not usable; the fix has to land upstream.)
 radv := "SDL_VIDEODRIVER=" + env("SDL_VIDEODRIVER", "wayland") + " SDL_JOYSTICK_HIDAPI_STEAM=0 " + (if mesa == "stable" { "" } else { "RADV_DEBUG=nogpl " }) + "NX2NAVI_PIPE_SKIP=" + pipeskip
-dev := "NX2NAVI_NVIDIA=" + (if gpu == "nvidia" { "1" } else { "0" }) + " nix develop " + impure + " " + flake + shellname + " --command"
+dev := "env NX2NAVI_NVIDIA=" + (if gpu == "nvidia" { "1" } else { "0" }) + " nix develop " + impure + " " + flake + shellname + " --command"
 py := ".venv/bin/python"
 py314 := ".venv-py314/bin/python"
 
