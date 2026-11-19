@@ -173,7 +173,7 @@ play() {
     export SDL_JOYSTICK_HIDAPI_STEAM=${SDL_JOYSTICK_HIDAPI_STEAM:-0}
     export NX2NAVI_PIPE_SKIP=${NX2NAVI_PIPE_SKIP:-any}
     export NX2NAVI_HDR=${NX2NAVI_HDR:-native}
-    export NX2NAVI_REPLAY_ASYNC=${NX2NAVI_REPLAY_ASYNC:-1}
+    export NX2NAVI_REPLAY_ASYNC=${NX2NAVI_REPLAY_ASYNC:-0}
     export NX2NAVI_VK_RECORDER=${NX2NAVI_VK_RECORDER:-1}
     exec "$OUT/nx2navi" "$@" > >(tee -a "$WORK/logs/play-$(date +%Y%m%d-%H%M%S).log") 2>&1
 }

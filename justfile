@@ -166,7 +166,7 @@ play-text NAME="" *args:
 # Play casually with everything Tally needs if something goes wrong, at no measurable cost: no debugger, the log
 # teed to NX2navi/build/{{ver}}/logs/play-<time>.log, every input recorded beside it (replayable with `just replay`),
 # core dumps on, and the run registered as a job so the error watch and the screensaver see it.
-# Defaults (#132): async replay and the Vulkan recorder thread on, about 5% more fps on the haze scene; set either to 0 to override.
+# Defaults: async replay off (Cal 2026-11-18: it flickers; set NX2NAVI_REPLAY_ASYNC=1 to turn it back on), the Vulkan recorder thread on.
 play *args:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -201,7 +201,7 @@ play *args:
     if [ "$cpus" != off ] && command -v taskset >/dev/null; then
         taskset -pc "$cpus" $$ >/dev/null && echo "cpus: pinned to $cpus (NX2NAVI_CPUS=off to disable)"
     fi
-    {{dev}} env {{radv}} ${NX2NAVI_HDR:+NX2NAVI_HDR=$NX2NAVI_HDR} NX2NAVI_REPLAY_ASYNC=${NX2NAVI_REPLAY_ASYNC:-1} NX2NAVI_VK_RECORDER=${NX2NAVI_VK_RECORDER:-1} NX2NAVI_TEX_RELEASED_MIB=${NX2NAVI_TEX_RELEASED_MIB:-3072} NX2NAVI_GPU_WAIT=${NX2NAVI_GPU_WAIT:-0} NX2NAVI_INPUT_RECORD="build/{{ver}}/logs/input-$ts.txt" {{wrapper}} "build/{{ver}}/nx2navi${NX2NAVI_EXE:+.$NX2NAVI_EXE}" "$@" 2>&1 | tee "$log" | grep -a -v -E "no such proc|preparation progress|PushComputeConstants"
+    {{dev}} env {{radv}} ${NX2NAVI_HDR:+NX2NAVI_HDR=$NX2NAVI_HDR} NX2NAVI_REPLAY_ASYNC=${NX2NAVI_REPLAY_ASYNC:-0} NX2NAVI_VK_RECORDER=${NX2NAVI_VK_RECORDER:-1} NX2NAVI_TEX_RELEASED_MIB=${NX2NAVI_TEX_RELEASED_MIB:-3072} NX2NAVI_GPU_WAIT=${NX2NAVI_GPU_WAIT:-0} NX2NAVI_INPUT_RECORD="build/{{ver}}/logs/input-$ts.txt" {{wrapper}} "build/{{ver}}/nx2navi${NX2NAVI_EXE:+.$NX2NAVI_EXE}" "$@" 2>&1 | tee "$log" | grep -a -v -E "no such proc|preparation progress|PushComputeConstants"
 
 # Play under gdb like `debug`, and record every input to NX2navi/build/{{ver}}/logs/input-<time>.txt: the recording
 # replays with `just replay <file>` (Tally runs it from the container to reproduce a crash)
