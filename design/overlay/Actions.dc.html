@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Per-draw actions</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&amp;family=JetBrains+Mono:wght@400;600&amp;display=swap">
+<style>body{margin:0}a{color:#7cb8ff}a:hover{color:#a9d0ff}.m{font-family:'JetBrains Mono',monospace}</style>
+</helmet>
+<div style="width:900px;height:540px;box-sizing:border-box;padding:28px;background:#0b0d10;font-family:Inter,sans-serif;color:#e6e8eb;font-size:13px;display:flex;gap:20px">
+  <div style="width:380px;display:flex;flex-direction:column;gap:8px">
+    <h2 style="margin:0 0 6px;font-size:20px">Draw 41 actions</h2>
+    <sc-for list="{{acts}}" as="a" hint-placeholder-count="8">
+      <div style="display:flex;gap:10px;align-items:center;padding:9px 12px;background:{{a.bg}};border:1px solid #2a2f38;border-radius:6px">
+        <strong style="width:110px;color:{{a.fg}}">{{a.n}}</strong><span style="color:#9aa3ad;font-size:12px">{{a.d}}</span>
+      </div>
+    </sc-for>
+  </div>
+  <div style="flex:1;display:flex;flex-direction:column;gap:14px">
+    <div style="background:#14171c;border:1px solid #2a2f38;border-radius:8px;padding:14px;display:flex;flex-direction:column;gap:10px">
+      <span style="color:#9aa3ad;font-size:11px">FREEZE FRAME</span>
+      <div style="display:flex;gap:6px"><span style="padding:6px 10px;border-radius:6px;background:#1e3a5c;color:#cfe4ff">GPU frozen, game runs</span><span style="padding:6px 10px;border-radius:6px;background:#23272e">Both paused</span></div>
+    </div>
+    <div style="background:#14171c;border:1px solid #2a2f38;border-radius:8px;padding:14px;display:flex;flex-direction:column;gap:8px">
+      <span style="color:#9aa3ad;font-size:11px">PEEK cb3 · last 120 frames</span>
+      <sc-for list="{{peek}}" as="p" hint-placeholder-count="4">
+        <div class="m" style="display:flex;align-items:center;gap:10px;font-size:12px">
+          <span style="width:48px;color:#9aa3ad">{{p.o}}</span><span style="width:70px">{{p.v}}</span>
+          <svg width="160" height="20" aria-hidden="true"><polyline points="{{p.pts}}" fill="none" stroke="{{p.c}}" stroke-width="1.5"></polyline></svg>
+        </div>
+      </sc-for>
+    </div>
+    <div style="background:#14171c;border:1px solid #2a2f38;border-radius:8px;padding:14px;display:flex;flex-direction:column;gap:6px">
+      <span style="color:#9aa3ad;font-size:11px">SEND TO TALLY</span>
+      <span class="m" style="font-size:12px">draw 41 + filters + peek + screenshot + note</span>
+      <span style="color:#6f7782;font-size:12px">one bundle, written to disk, Tally notified</span>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":900,"height":540}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const acts = [
+      ['Hide','skip this draw'],['Isolate','only this draw'],['Wireframe','lines over scene'],['Highlight','outline + tint'],
+      ['Freeze frame','hold the GPU frame'],['Peek buffer','live values + sparkline'],['Watch writes','arm tracer on its buffers'],['Send to Tally','hand off the selection']
+    ].map(([n,d],i) => ({ n, d, bg: i === 7 ? '#1e3a5c' : '#14171c', fg: i === 7 ? '#cfe4ff' : '#e6e8eb' }));
+    const wave = (f, a) => Array.from({length:32}, (_, i) => `${i*5},${(10 - a*Math.sin(i*f)).toFixed(1)}`).join(' ');
+    const peek = [
+      { o:'+0x00', v:'1.000', pts: wave(0, 0), c:'#6f7782' },
+      { o:'+0x10', v:'0.42', pts: wave(.4, 3), c:'#4ea1ff' },
+      { o:'+0x20', v:'37.9', pts: wave(.9, 9), c:'#ffa54e' },
+      { o:'+0x30', v:'0.000', pts: wave(0, 0), c:'#6f7782' }
+    ];
+    return { acts, peek };
+  }
+}
+</script>
+</body>
+</html>

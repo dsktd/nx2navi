@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Overlay overview</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&amp;family=JetBrains+Mono:wght@400;600&amp;display=swap">
+<style>
+body{margin:0}
+a{color:#7cb8ff}a:hover{color:#a9d0ff}
+.m{font-family:'JetBrains Mono',monospace}
+</style>
+</helmet>
+<div style="width:1440px;height:810px;position:relative;overflow:hidden;background:#07080a;font-family:Inter,sans-serif;color:#e6e8eb;font-size:13px">
+  <div aria-hidden="true" style="position:absolute;inset:0;background:radial-gradient(ellipse at 55% 60%,#2a1d24 0%,#14101a 45%,#07080a 100%)"></div>
+  <div aria-hidden="true" style="position:absolute;left:300px;top:470px;width:840px;height:260px;background:#3a2530;border-radius:50% 50% 0 0/40% 40% 0 0;opacity:.7"></div>
+  <div aria-hidden="true" style="position:absolute;left:180px;top:190px;width:200px;height:420px;background:#2c1c26;border-radius:40%;opacity:.7"></div>
+  <div aria-hidden="true" style="position:absolute;left:1060px;top:170px;width:220px;height:460px;background:#2c1c26;border-radius:40%;opacity:.7"></div>
+  <div style="position:absolute;left:520px;top:520px;width:380px;height:150px;border:2px solid #4ea1ff;background:rgba(78,161,255,.18);border-radius:8px"></div>
+  <div class="m" style="position:absolute;left:520px;top:496px;font-size:11px;color:#a9d0ff">pass 3 · draw 41 · flesh floor</div>
+  <div aria-hidden="true" style="position:absolute;left:712px;top:397px;width:16px;height:16px">
+    <div style="position:absolute;left:7px;top:0;width:2px;height:16px;background:#fff"></div>
+    <div style="position:absolute;left:0;top:7px;width:16px;height:2px;background:#fff"></div>
+  </div>
+  <div class="m" style="position:absolute;right:16px;bottom:12px;font-size:11px;color:#6f7782">game frame placeholder · 2560x1440 HDR</div>
+
+  <div style="position:absolute;left:16px;right:16px;top:16px;height:44px;display:flex;align-items:center;gap:8px;padding:0 12px;background:rgba(16,18,22,.86);border:1px solid #2a2f38;border-radius:8px">
+    <strong style="font-size:13px;margin-right:8px">NX2navi debug</strong>
+    <span style="padding:4px 10px;border-radius:999px;background:#1e3a5c;color:#cfe4ff">vs ~ 9f3a</span>
+    <span style="padding:4px 10px;border-radius:999px;background:#1e3a5c;color:#cfe4ff">pass 2–4</span>
+    <span style="padding:4px 10px;border-radius:999px;background:#4a3214;color:#ffd7a8">changed &gt; 2%</span>
+    <span style="padding:4px 10px;border-radius:999px;border:1px dashed #3a414c;color:#9aa3ad">+ filter</span>
+    <span style="flex:1"></span>
+    <span class="m" style="color:#9aa3ad">12 of 318 draws · frame 48211</span>
+    <span style="padding:4px 10px;border-radius:6px;background:#23272e">LB Draws</span>
+    <span style="padding:4px 10px;border-radius:6px;background:#23272e">Buffers</span>
+    <span style="padding:4px 10px;border-radius:6px;background:#23272e">RB Marks</span>
+  </div>
+
+  <div style="position:absolute;left:16px;top:72px;width:420px;bottom:16px;background:rgba(16,18,22,.86);border:1px solid #2a2f38;border-radius:8px;display:flex;flex-direction:column">
+    <div class="m" style="display:grid;grid-template-columns:36px 44px 1fr 64px 84px 16px;gap:6px;padding:10px 12px;color:#9aa3ad;font-size:11px;border-bottom:1px solid #2a2f38">
+      <span>pass</span><span>draw</span><span>vs/fs</span><span>prims</span><span>target</span><span></span>
+    </div>
+    <sc-for list="{{rows}}" as="r" hint-placeholder-count="12">
+      <div class="m" style="display:grid;grid-template-columns:36px 44px 1fr 64px 84px 16px;gap:6px;padding:8px 12px;font-size:12px;align-items:center;background:{{r.bg}};border-left:3px solid {{r.edge}}">
+        <span>{{r.p}}</span><span>{{r.d}}</span><span>{{r.h}}</span><span>{{r.n}}</span><span style="color:#9aa3ad">{{r.t}}</span>
+        <span style="width:8px;height:8px;border-radius:50%;background:{{r.dot}}"></span>
+      </div>
+    </sc-for>
+    <div style="flex:1"></div>
+    <div style="padding:10px 12px;border-top:1px solid #2a2f38;color:#9aa3ad;font-size:11px;display:flex;gap:12px;align-items:center"><span style="width:8px;height:8px;border-radius:50%;background:#ffa54e"></span>changed since last frame <span style="flex:1"></span>A select · B back</div>
+  </div>
+
+  <div style="position:absolute;right:16px;top:72px;width:440px;bottom:16px;background:rgba(16,18,22,.86);border:1px solid #2a2f38;border-radius:8px;padding:14px;box-sizing:border-box;display:flex;flex-direction:column;gap:12px;overflow:hidden">
+    <div style="display:flex;align-items:baseline;gap:8px"><strong style="font-size:15px">Draw 41</strong><span class="m" style="color:#9aa3ad">pass 3 · 2 184 verts · 728 tris</span></div>
+    <div style="display:flex;flex-direction:column;gap:4px">
+      <div style="color:#9aa3ad;font-size:11px;text-transform:uppercase;letter-spacing:.06em">Shaders</div>
+      <div class="m" style="font-size:12px">vs 9f3a12c0 <span style="color:#6f7782">cache/vs_9f3a12c0.spv</span></div>
+      <div class="m" style="font-size:12px">fs 51be07d4 <span style="color:#6f7782">cache/fs_51be07d4.spv</span></div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:4px">
+      <div style="color:#9aa3ad;font-size:11px;text-transform:uppercase;letter-spacing:.06em">Textures</div>
+      <div class="m" style="font-size:12px">t0 BC7_UNORM 512x512</div>
+      <div class="m" style="font-size:12px">t1 BC5_UNORM 256x256</div>
+      <div class="m" style="font-size:12px">t2 R16G16B16A16F 64x64</div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:4px">
+      <div style="color:#9aa3ad;font-size:11px;text-transform:uppercase;letter-spacing:.06em">Constant banks</div>
+      <div class="m" style="font-size:12px">cb0 0x8_0412_3a00 256 B</div>
+      <div class="m" style="font-size:12px;color:#ffd7a8">cb3 0x8_0412_7c40 64 B · changed</div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:4px">
+      <div style="color:#9aa3ad;font-size:11px;text-transform:uppercase;letter-spacing:.06em">Storage buffers</div>
+      <div class="m" style="font-size:12px">sb0 0x8_1a00_0000 34 KB (skin)</div>
+    </div>
+    <div style="flex:1"></div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px">
+      <button style="font:inherit;color:#e6e8eb;background:#23272e;border:1px solid #3a414c;border-radius:6px;padding:8px 12px">Hide</button>
+      <button style="font:inherit;color:#e6e8eb;background:#23272e;border:1px solid #3a414c;border-radius:6px;padding:8px 12px">Isolate</button>
+      <button style="font:inherit;color:#e6e8eb;background:#23272e;border:1px solid #3a414c;border-radius:6px;padding:8px 12px">Wireframe</button>
+      <button style="font:inherit;color:#e6e8eb;background:#23272e;border:1px solid #3a414c;border-radius:6px;padding:8px 12px">Peek cb3</button>
+      <button style="font:inherit;color:#07080a;background:#4ea1ff;border:0;border-radius:6px;padding:8px 12px;font-weight:600">Send to Tally</button>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":810}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const raw = [
+      [2,12,'9f3a/51be',728,'RGBA16F',1],[2,13,'9f3a/51be',512,'RGBA16F',1],[2,17,'0c11/e2a9',96,'RGBA16F',0],
+      [3,38,'9f3a/51be',640,'RGBA16F',1],[3,41,'9f3a/51be',728,'RGBA16F',1],[3,42,'9f3a/51be',728,'RGBA16F',1],
+      [3,47,'77d0/51be',1204,'RGBA16F',0],[3,52,'9f3a/a031',88,'R11G11B10',1],[4,60,'9f3a/a031',88,'R11G11B10',0],
+      [4,61,'9f3a/a031',120,'R11G11B10',0],[4,66,'0c11/e2a9',2,'RGBA8',0],[4,70,'9f3a/51be',412,'D32',1]
+    ];
+    const rows = raw.map(([p,d,h,n,t,c]) => {
+      const sel = d === 41;
+      return { p, d, h, n, t, dot: c ? '#ffa54e' : 'transparent', bg: sel ? 'rgba(78,161,255,.18)' : 'transparent', edge: sel ? '#4ea1ff' : 'transparent' };
+    });
+    return { rows };
+  }
+}
+</script>
+</body>
+</html>

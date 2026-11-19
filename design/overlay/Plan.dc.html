@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Build plan</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&amp;family=JetBrains+Mono:wght@400;600&amp;display=swap">
+<style>body{margin:0}a{color:#7cb8ff}a:hover{color:#a9d0ff}.m{font-family:'JetBrains Mono',monospace}</style>
+</helmet>
+<div style="width:1100px;height:620px;box-sizing:border-box;padding:28px;background:#0b0d10;font-family:Inter,sans-serif;color:#e6e8eb;font-size:13px;display:flex;flex-direction:column;gap:16px">
+  <div style="display:flex;align-items:baseline;gap:12px"><h2 style="margin:0;font-size:20px">Build order</h2><span class="m" style="color:#9aa3ad">0 of 6 done · 2 in progress</span></div>
+  <div style="display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px">
+    <sc-for list="{{steps}}" as="s" hint-placeholder-count="6">
+      <div style="background:#14171c;border:1px solid {{s.bd}};border-radius:8px;padding:12px;display:flex;flex-direction:column;gap:8px;min-height:96px">
+        <span class="m" style="font-size:11px;color:{{s.fg}}">{{s.st}}</span>
+        <strong style="font-size:13px">{{s.n}}</strong>
+        <div style="height:4px;background:#2a2f38;border-radius:2px"><div style="height:4px;width:{{s.w}};background:{{s.fg}};border-radius:2px"></div></div>
+      </div>
+    </sc-for>
+  </div>
+
+  <h3 style="margin:6px 0 0;font-size:15px">Hot-reload architecture</h3>
+  <div style="display:flex;gap:12px;align-items:stretch">
+    <div style="flex:1;background:#14171c;border:1px solid #2a2f38;border-radius:8px;padding:14px;display:flex;flex-direction:column;gap:6px">
+      <span style="color:#9aa3ad;font-size:11px">GAME (rebuild for new data/actions)</span>
+      <span>Vulkan renders ImGui draw data</span>
+      <span>Per-draw recording + pick</span>
+      <span>Actions: hide, isolate, freeze, peek…</span>
+      <span>Owns ImGui context: panels and filters survive reload</span>
+    </div>
+    <div style="width:170px;background:#1e3a5c;border-radius:8px;padding:14px;display:flex;flex-direction:column;justify-content:center;gap:6px;text-align:center">
+      <strong class="m" style="color:#cfe4ff">overlay C API v1</strong>
+      <span style="color:#cfe4ff;font-size:12px">small, versioned; mismatch = refuse load</span>
+    </div>
+    <div style="flex:1;background:#14171c;border:1px solid #ffa54e;border-radius:8px;padding:14px;display:flex;flex-direction:column;gap:6px">
+      <span style="color:#ffd7a8;font-size:11px">OVERLAY UI .so (live)</span>
+      <span>Draw list, filters, details, actions UI</span>
+      <span>Rebuilt → swapped between frames</span>
+      <span>UI changes live, game keeps running</span>
+    </div>
+  </div>
+
+  <div style="display:flex;gap:12px">
+    <div style="flex:1;background:#14171c;border:1px solid #2a2f38;border-radius:8px;padding:12px"><strong>Closed</strong> <span style="color:#9aa3ad">no per-frame cost beyond chord polling</span></div>
+    <div style="flex:1;background:#14171c;border:1px solid #2a2f38;border-radius:8px;padding:12px"><strong>Open</strong> <span style="color:#9aa3ad">per-draw recording on (cost while open)</span></div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1100,"height":620}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const S = { prog:['IN PROGRESS','#4ea1ff','50%'], next:['NEXT','#ffa54e','0%'], later:['LATER','#9aa3ad','0%'] };
+    const steps = [
+      ['#165 per-draw recording + pick','prog'],['Keys + always-on play build','prog'],['Overlay shell + draw list (hot-reload .so)','next'],
+      ['Filters','next'],['Actions','later'],['Send-to-Tally hand-off','later']
+    ].map(([n,k]) => ({ n, st:S[k][0], fg:S[k][1], w:S[k][2], bd: k === 'prog' ? '#4ea1ff' : '#2a2f38' }));
+    return { steps };
+  }
+}
+</script>
+</body>
+</html>
