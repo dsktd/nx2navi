@@ -17,7 +17,7 @@ Subject: [PATCH] xlate: NX2NAVI_TLD_CLAMP=1 (default 0) clamps every texel
  create mode 100644 tools/xlate/patches/0041-texel-fetch-clamp.patch
 
 diff --git a/runtime/cfg.c b/runtime/cfg.c
-index 9953e39..07226ca 100644
+index 9953e393..07226ca0 100644
 --- a/runtime/cfg.c
 +++ b/runtime/cfg.c
 @@ -98,6 +98,7 @@ static const char *const known[] = {
@@ -47,7 +47,7 @@ index 9953e39..07226ca 100644
      {"LOW_END_GPU", "0", "0|1", RESTART},   // LOWEND below
      {"STG_ARENA", "1", "0|1", RESTART}, {"ASTC_GPU_DESWIZZLE", "1", "0|1", RESTART},
 diff --git a/runtime/gfx_shader.c b/runtime/gfx_shader.c
-index 11482fe..3e9c602 100644
+index 11482fe5..3e9c6021 100644
 --- a/runtime/gfx_shader.c
 +++ b/runtime/gfx_shader.c
 @@ -164,7 +164,7 @@ static char cache_dir[PATH_CAP];
@@ -94,7 +94,7 @@ index 11482fe..3e9c602 100644
      if (magic == 0x98761234u) {   // NVN2_CONTROL_MAGIC, below
 diff --git a/tests/tld_clamp_check.py b/tests/tld_clamp_check.py
 new file mode 100644
-index 0000000..490ecca
+index 00000000..490ecca6
 --- /dev/null
 +++ b/tests/tld_clamp_check.py
 @@ -0,0 +1,82 @@
@@ -181,7 +181,7 @@ index 0000000..490ecca
 +if __name__ == "__main__":
 +    sys.exit(main())
 diff --git a/tools/xlate/Program.cs b/tools/xlate/Program.cs
-index 8360dc9..4bbae45 100644
+index 8360dc9e..4bbae45f 100644
 --- a/tools/xlate/Program.cs
 +++ b/tools/xlate/Program.cs
 @@ -12,7 +12,7 @@
@@ -204,7 +204,7 @@ index 8360dc9..4bbae45 100644
                  byte[] code = File.ReadAllBytes((string)job["code"]);
 diff --git a/tools/xlate/patches/0041-texel-fetch-clamp.patch b/tools/xlate/patches/0041-texel-fetch-clamp.patch
 new file mode 100644
-index 0000000..5212d10
+index 00000000..5212d10f
 --- /dev/null
 +++ b/tools/xlate/patches/0041-texel-fetch-clamp.patch
 @@ -0,0 +1,58 @@
@@ -266,6 +266,3 @@ index 0000000..5212d10
 ++        public static bool TldClamp;
 ++    }
 ++}
--- 
-2.56.0
-

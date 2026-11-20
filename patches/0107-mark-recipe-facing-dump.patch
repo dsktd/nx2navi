@@ -12,7 +12,7 @@ Subject: [PATCH] debug_tools: a mark's recipe gives Link's facing (the actor's
  2 files changed, 60 insertions(+), 4 deletions(-)
 
 diff --git a/runtime/debug_tools.c b/runtime/debug_tools.c
-index 6e9dcc7..6b96198 100644
+index 6e9dcc72..6b961989 100644
 --- a/runtime/debug_tools.c
 +++ b/runtime/debug_tools.c
 @@ -1098,11 +1098,16 @@ static int gd_write(FILE *f) {
@@ -106,7 +106,7 @@ index 6e9dcc7..6b96198 100644
  // <tick>:next <mode> <value>;<tick>:setfirst <value>;<tick>:holdfirst <value>;<tick>:show [<hash hex>];
  // <tick>:warp <area> [<start position>];<tick>:event <name>;<tick>:text <game data text's name>;
 diff --git a/runtime/vk_dump.c b/runtime/vk_dump.c
-index 6cdb5b6..25f21aa 100644
+index 6cdb5b62..25f21aad 100644
 --- a/runtime/vk_dump.c
 +++ b/runtime/vk_dump.c
 @@ -39,6 +39,7 @@
@@ -131,6 +131,3 @@ index 6cdb5b6..25f21aa 100644
          return;
      }
      if (frame != dump_frame) return;
--- 
-2.56.0
-

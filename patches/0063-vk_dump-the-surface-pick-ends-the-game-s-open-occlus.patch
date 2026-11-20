@@ -11,7 +11,7 @@ Subject: [PATCH] vk_dump: the surface pick ends the game's open occlusion
  1 file changed, 28 insertions(+), 6 deletions(-)
 
 diff --git a/runtime/vk_dump.c b/runtime/vk_dump.c
-index 7c4d0ef..a2bd8dc 100644
+index 7c4d0ef7..a2bd8dc0 100644
 --- a/runtime/vk_dump.c
 +++ b/runtime/vk_dump.c
 @@ -1583,8 +1583,10 @@ void vk_dump_present(uint64_t frame) {
@@ -103,6 +103,3 @@ index 7c4d0ef..a2bd8dc 100644
      ex->recorded += 2;
 +    if (pick_resumed) vk_exec_oq_draw(ex), pick_resumed = 0;
  }
--- 
-2.56.0
-

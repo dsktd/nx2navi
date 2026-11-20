@@ -10,7 +10,7 @@ Subject: [PATCH] vk_memory: NX2NAVI_SHADOW_TAB_RUNS=1 (0: one query per
  1 file changed, 41 insertions(+), 2 deletions(-)
 
 diff --git a/runtime/vk_memory.c b/runtime/vk_memory.c
-index 11f1d5d..a5f41b5 100644
+index 11f1d5d1..a5f41b5f 100644
 --- a/runtime/vk_memory.c
 +++ b/runtime/vk_memory.c
 @@ -1415,6 +1415,10 @@ static int ntregs, ctregs;
@@ -96,6 +96,3 @@ index 11f1d5d..a5f41b5 100644
              s_tab_regs += (uint64_t)ntregs;
              for (int i = 0; i < ntregs + nsfar; i++) {
                  uint32_t k = i < ntregs ? tregs[i] : 0;
--- 
-2.56.0
-

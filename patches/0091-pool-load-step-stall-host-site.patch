@@ -14,7 +14,7 @@ Subject: [PATCH] vk_exec_draw: NX2NAVI_POOL_LOAD_STEP=128 (0: old) caps a
  3 files changed, 32 insertions(+), 7 deletions(-)
 
 diff --git a/runtime/cfg.c b/runtime/cfg.c
-index 2cc8b8c..d439a7a 100644
+index 2cc8b8ca..d439a7a4 100644
 --- a/runtime/cfg.c
 +++ b/runtime/cfg.c
 @@ -78,7 +78,7 @@ static const char *const known[] = {
@@ -45,7 +45,7 @@ index 2cc8b8c..d439a7a 100644
      {"SUBMIT_BATCH", "4", "1..16", RESTART},
  #ifdef _WIN32
 diff --git a/runtime/kernel.c b/runtime/kernel.c
-index 524c3b6..aa85d6d 100644
+index 524c3b64..aa85d6db 100644
 --- a/runtime/kernel.c
 +++ b/runtime/kernel.c
 @@ -87,6 +87,8 @@ struct RtThread {
@@ -114,7 +114,7 @@ index 524c3b6..aa85d6d 100644
  }
  
 diff --git a/runtime/vk_exec_draw.c b/runtime/vk_exec_draw.c
-index 6000c70..c29dc91 100644
+index 6000c706..c29dc91a 100644
 --- a/runtime/vk_exec_draw.c
 +++ b/runtime/vk_exec_draw.c
 @@ -2223,13 +2223,20 @@ static int pool_load_backlog(void) {
@@ -140,6 +140,3 @@ index 6000c70..c29dc91 100644
  }
  
  // The refresh runs before every draw that binds the pools, not once per submission, so the count above held for each
--- 
-2.56.0
-

@@ -12,7 +12,7 @@ extension is neither required nor enabled. Inert without NX2NAVI_RDOC.
  1 file changed, 8 insertions(+), 2 deletions(-)
 
 diff --git a/runtime/vk_device.c b/runtime/vk_device.c
-index 6ad94c8..867aea2 100644
+index 6ad94c89..867aea2c 100644
 --- a/runtime/vk_device.c
 +++ b/runtime/vk_device.c
 @@ -213,6 +213,11 @@ static const char *const k_required_ext[] = {
@@ -46,6 +46,3 @@ index 6ad94c8..867aea2 100644
  
      FeatureChain *c = calloc(1, sizeof *c);
      void **tail = &c->f2.pNext;
--- 
-2.56.0
-

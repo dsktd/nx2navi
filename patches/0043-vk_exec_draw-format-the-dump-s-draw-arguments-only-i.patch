@@ -13,7 +13,7 @@ about 2% of the replay thread in lab replays.
  3 files changed, 3 insertions(+), 1 deletion(-)
 
 diff --git a/runtime/vk_dump.c b/runtime/vk_dump.c
-index d740a52..0142e87 100644
+index d740a526..0142e875 100644
 --- a/runtime/vk_dump.c
 +++ b/runtime/vk_dump.c
 @@ -482,6 +482,7 @@ static int active(void) {   // passes_f is NULL before a dump that opens its fil
@@ -25,7 +25,7 @@ index d740a52..0142e87 100644
  
  // A draw can be rejected before it opens a render pass. Count it against the captured frame as a whole.
 diff --git a/runtime/vk_exec.h b/runtime/vk_exec.h
-index 795bd3f..6130852 100644
+index 795bd3fd..61308521 100644
 --- a/runtime/vk_exec.h
 +++ b/runtime/vk_exec.h
 @@ -256,6 +256,7 @@ int vk_exec_pool_loading(void);
@@ -37,7 +37,7 @@ index 795bd3f..6130852 100644
  void vk_dump_pass_end(VkExec *ex);       // after vkCmdEndRendering
  // after a draw's binds; mesh: a mesh draw (s->vs is its mesh stage, s->ts its task stage or NULL)
 diff --git a/runtime/vk_exec_draw.c b/runtime/vk_exec_draw.c
-index 1670209..bc20c5e 100644
+index 16702099..bc20c5ee 100644
 --- a/runtime/vk_exec_draw.c
 +++ b/runtime/vk_exec_draw.c
 @@ -6555,7 +6555,7 @@ static void bind_index(VkExec *ex, const void *data, uint64_t bytes, VkIndexType
@@ -49,6 +49,3 @@ index 1670209..bc20c5e 100644
  
  static void op_draw(VkExec *ex, const p_draw *d) {
      ex->dc->c0_binst = (uint32_t)d->base_instance;
--- 
-2.56.0
-

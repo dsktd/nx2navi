@@ -15,7 +15,7 @@ Subject: [PATCH] vk_dump: buf.req (<addr>:<size>[:<frames>[:<pass>]], polled
  5 files changed, 134 insertions(+), 16 deletions(-)
 
 diff --git a/runtime/boot.c b/runtime/boot.c
-index 72ff018..3f50fca 100644
+index 72ff0188..3f50fcac 100644
 --- a/runtime/boot.c
 +++ b/runtime/boot.c
 @@ -408,7 +408,8 @@ static int mark_knob(const char *name) {
@@ -62,7 +62,7 @@ index 72ff018..3f50fca 100644
          plat_file_delete(preq);
          char *t = malloc(sz + 1);
 diff --git a/runtime/vk.h b/runtime/vk.h
-index 8eb894d..5a57f40 100644
+index 8eb894d6..5a57f405 100644
 --- a/runtime/vk.h
 +++ b/runtime/vk.h
 @@ -767,6 +767,8 @@ int vk_sampler_params(int id, samp_par *out);       // parameters of a sampler s
@@ -75,7 +75,7 @@ index 8eb894d..5a57f40 100644
  // ---- submission, synchronisation, completion (vk_sync.c, vk_backend.c)
  // Fence values are ctx->timeline values: each submission signals the next one, in submit order. A value counts as done
 diff --git a/runtime/vk_dump.c b/runtime/vk_dump.c
-index 0142e87..5d70f34 100644
+index 0142e875..5d70f34c 100644
 --- a/runtime/vk_dump.c
 +++ b/runtime/vk_dump.c
 @@ -443,23 +443,103 @@ static void buf_done(void *arg) {
@@ -233,7 +233,7 @@ index 0142e87..5d70f34 100644
  
  static int active(void) {   // passes_f is NULL before a dump that opens its files when it starts (open_files)
 diff --git a/runtime/vk_exec.c b/runtime/vk_exec.c
-index 7b5ce35..7727c6c 100644
+index 7b5ce354..7727c6c1 100644
 --- a/runtime/vk_exec.c
 +++ b/runtime/vk_exec.c
 @@ -899,6 +899,7 @@ void vk_exec_pass_end(VkExec *ex) {
@@ -245,7 +245,7 @@ index 7b5ce35..7727c6c 100644
      // The targets are marked written outside tfr_lock: vk_texture_gpu_written takes the texture lock, and a chunk that
      // holds the texture lock can end its pass here (a lookup's alias copy, vk_exec_inline_begin) and then wait for
 diff --git a/runtime/vk_exec.h b/runtime/vk_exec.h
-index 6130852..eb7a8b3 100644
+index 61308521..eb7a8b37 100644
 --- a/runtime/vk_exec.h
 +++ b/runtime/vk_exec.h
 @@ -257,6 +257,8 @@ int vk_exec_pool_loading(void);
@@ -257,6 +257,3 @@ index 6130852..eb7a8b3 100644
  void vk_dump_init(void);                 // reads the environment; vk_exec_record's first call
  void vk_dump_pass_end(VkExec *ex);       // after vkCmdEndRendering
  // after a draw's binds; mesh: a mesh draw (s->vs is its mesh stage, s->ts its task stage or NULL)
--- 
-2.56.0
-

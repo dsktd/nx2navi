@@ -10,7 +10,7 @@ Subject: [PATCH] platform/linux: the crash report names what the thread was
  1 file changed, 7 insertions(+), 1 deletion(-)
 
 diff --git a/runtime/platform/linux.c b/runtime/platform/linux.c
-index 38760f2..de4b4ae 100644
+index 38760f23..de4b4ae6 100644
 --- a/runtime/platform/linux.c
 +++ b/runtime/platform/linux.c
 @@ -1241,6 +1241,7 @@ uint64_t plat_mem_written(uint64_t addr, uint64_t n, uint64_t *pages, uint64_t m
@@ -43,6 +43,3 @@ index 38760f2..de4b4ae 100644
  int plat_crash_filter_reassert(char *who, size_t n) { (void)who, (void)n; return 0; }   // Windows only
  const char *plat_crash_context_get(void) { return NULL; }
  
--- 
-2.56.0
-

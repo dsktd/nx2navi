@@ -11,7 +11,7 @@ Subject: [PATCH] Screenshots take the window crop the present shows, not the
  3 files changed, 13 insertions(+), 7 deletions(-)
 
 diff --git a/runtime/boot.c b/runtime/boot.c
-index 9d0122e..19925c9 100644
+index 9d0122e7..19925c98 100644
 --- a/runtime/boot.c
 +++ b/runtime/boot.c
 @@ -251,7 +251,9 @@ static void save_shot(const tex_t *t, const char *path) {
@@ -57,7 +57,7 @@ index 9d0122e..19925c9 100644
      if (w < 0 || (double)w < cfg->seconds * 1e6) return;
      if (cfg->shot) save_shot(t, cfg->shot);
 diff --git a/runtime/gfx.h b/runtime/gfx.h
-index 7a99a01..e112d5b 100644
+index 7a99a01f..e112d5b5 100644
 --- a/runtime/gfx.h
 +++ b/runtime/gfx.h
 @@ -197,7 +197,7 @@ uint64_t nvn_proc_address(const char *name);               // synthetic host add
@@ -70,7 +70,7 @@ index 7a99a01..e112d5b 100644
  
  // Movie overlay (ov_movie2.c -> gfx_present.c): the latest decoded movie frame, RGBA8, shown over the game image
 diff --git a/runtime/nvn_api_obj.c b/runtime/nvn_api_obj.c
-index 30193af..992838f 100644
+index 30193af2..992838ff 100644
 --- a/runtime/nvn_api_obj.c
 +++ b/runtime/nvn_api_obj.c
 @@ -901,6 +901,6 @@ NVN_API(nvnQueuePresentTexture) {
@@ -81,6 +81,3 @@ index 30193af..992838f 100644
 +    rt_frame_presented(t, o->crop, o->presents);
      nvn_call_note(1, (uintptr_t)arg_p(c, 0), 0);
  }
--- 
-2.56.0
-

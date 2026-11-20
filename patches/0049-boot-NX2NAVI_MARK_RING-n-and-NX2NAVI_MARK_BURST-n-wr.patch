@@ -12,7 +12,7 @@ Subject: [PATCH] boot: NX2NAVI_MARK_RING=<n> and NX2NAVI_MARK_BURST=<n> write
  3 files changed, 71 insertions(+), 25 deletions(-)
 
 diff --git a/runtime/boot.c b/runtime/boot.c
-index 253b91e..451c77e 100644
+index 253b91e7..451c77e2 100644
 --- a/runtime/boot.c
 +++ b/runtime/boot.c
 @@ -343,27 +343,67 @@ static void series_shot(const tex_t *t, const int crop[4], uint64_t n) {
@@ -144,7 +144,7 @@ index 253b91e..451c77e 100644
  }
  
 diff --git a/runtime/cfg.c b/runtime/cfg.c
-index 5a65db4..4a0bac7 100644
+index 5a65db43..4a0bac7f 100644
 --- a/runtime/cfg.c
 +++ b/runtime/cfg.c
 @@ -94,6 +94,7 @@ static const char *const known[] = {
@@ -156,7 +156,7 @@ index 5a65db4..4a0bac7 100644
  
  // The nx2navi.ini section a key cfg_set may write goes to when the file lacks it (nx2navi.ini.example's sections).
 diff --git a/runtime/flight.h b/runtime/flight.h
-index 41bf2f1..34c5d69 100644
+index 41bf2f18..34c5d69f 100644
 --- a/runtime/flight.h
 +++ b/runtime/flight.h
 @@ -53,5 +53,5 @@ void vk_thumbs_frame(uint64_t frame);    // the present thread names the frame o
@@ -166,6 +166,3 @@ index 41bf2f1..34c5d69 100644
 -// NX2NAVI_MARK_RING=1 (boot.c): the thumbnail ring also runs for marks, which write its last frames out.
 +// NX2NAVI_MARK_RING / NX2NAVI_MARK_BURST (boot.c): the thumbnail ring also runs for marks, which write frames around them.
  extern int mark_ring_on;
--- 
-2.56.0
-

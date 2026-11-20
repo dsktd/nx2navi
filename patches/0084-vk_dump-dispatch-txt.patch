@@ -13,7 +13,7 @@ Subject: [PATCH] vk_dump: dispatch.txt holds each indirect dispatch's {x, y,
  3 files changed, 44 insertions(+), 1 deletion(-)
 
 diff --git a/runtime/vk_dump.c b/runtime/vk_dump.c
-index 0b25cff..092f8d6 100644
+index 0b25cff1..092f8d67 100644
 --- a/runtime/vk_dump.c
 +++ b/runtime/vk_dump.c
 @@ -11,6 +11,7 @@
@@ -88,7 +88,7 @@ index 0b25cff..092f8d6 100644
      fclose(passes_f);
      passes_f = NULL;
 diff --git a/runtime/vk_exec.h b/runtime/vk_exec.h
-index 0173298..b74d044 100644
+index 0173298d..b74d044b 100644
 --- a/runtime/vk_exec.h
 +++ b/runtime/vk_exec.h
 @@ -272,6 +272,7 @@ void vk_dump_draw_skipped(const VkExec *ex, int mesh, int why);
@@ -100,7 +100,7 @@ index 0173298..b74d044 100644
  void vk_dump_dispatch(VkExec *ex, const GfxShader *cs, VkPipeline p, const VkPipeInfo *info, const p_dispatch *d);
  void vk_dump_copy(VkExec *ex, uint32_t op, const void *payload);   // before a copy or texture clear is replayed
 diff --git a/runtime/vk_exec_draw.c b/runtime/vk_exec_draw.c
-index 0c326d3..3739818 100644
+index 0c326d33..37398185 100644
 --- a/runtime/vk_exec_draw.c
 +++ b/runtime/vk_exec_draw.c
 @@ -7287,6 +7287,7 @@ static void op_dispatch_ind(VkExec *ex, const p_dispatch_ind *d) {
@@ -111,6 +111,3 @@ index 0c326d3..3739818 100644
      VkPassMark *m = dispatch_mark(ex, cs, 0, 0, 0);
      vkCmdDispatchIndirect(ex->cb, ip.buffer, ip.offset);
      vk_pass_mark_end(ex->cb, m);
--- 
-2.56.0
-

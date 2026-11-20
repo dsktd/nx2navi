@@ -12,7 +12,7 @@ A file dump.req beside the shader cache asks for a dump of the next frame into
  2 files changed, 18 insertions(+), 3 deletions(-)
 
 diff --git a/runtime/cfg.c b/runtime/cfg.c
-index 8b15569..dd4758b 100644
+index 8b155697..dd4758bc 100644
 --- a/runtime/cfg.c
 +++ b/runtime/cfg.c
 @@ -87,6 +87,7 @@ static const char *const known[] = {
@@ -24,7 +24,7 @@ index 8b15569..dd4758b 100644
  
  // The nx2navi.ini section a key cfg_set may write goes to when the file lacks it (nx2navi.ini.example's sections).
 diff --git a/runtime/vk_dump.c b/runtime/vk_dump.c
-index b43263a..ed026d4 100644
+index b43263ad..ed026d45 100644
 --- a/runtime/vk_dump.c
 +++ b/runtime/vk_dump.c
 @@ -68,6 +68,8 @@ static uint64_t dump_after;             // NX2NAVI_DUMP_AFTER
@@ -82,6 +82,3 @@ index b43263a..ed026d4 100644
          if (dump_white) white_last = frame;
          plat_mutex_lock(&rec_lock);
          seq = copied = 0, last_targets = 0, pass_skip = NULL, png_bytes = 0;
--- 
-2.56.0
-

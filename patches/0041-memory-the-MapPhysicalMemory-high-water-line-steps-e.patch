@@ -9,7 +9,7 @@ Subject: [PATCH] memory: the MapPhysicalMemory high-water line steps every 16
  1 file changed, 7 insertions(+), 3 deletions(-)
 
 diff --git a/runtime/memory.c b/runtime/memory.c
-index 46e5255..16c5d21 100644
+index 46e5255d..16c5d21e 100644
 --- a/runtime/memory.c
 +++ b/runtime/memory.c
 @@ -1498,6 +1498,7 @@ static uint32_t alias_map(int unmap, uint64_t a, uint64_t n) {
@@ -43,6 +43,3 @@ index 46e5255..16c5d21 100644
      if (again_n)   // how long the game went without new memory: the time a streamed asset can be late by
          rt_log("mem: MapPhysicalMemory %#llx+%#llx succeeds %llu ms after the first of %llu refusals (%llu MiB unmapped "
                 "meanwhile)", (unsigned long long)a, (unsigned long long)n, (unsigned long long)again_ms,
--- 
-2.56.0
-

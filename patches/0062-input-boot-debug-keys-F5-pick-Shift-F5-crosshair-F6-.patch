@@ -13,7 +13,7 @@ Subject: [PATCH] input, boot: debug keys F5 pick, Shift+F5 crosshair, F6 shot,
  4 files changed, 34 insertions(+), 1 deletion(-)
 
 diff --git a/runtime/boot.c b/runtime/boot.c
-index f36c3fd..6f52d2f 100644
+index f36c3fd0..6f52d2fa 100644
 --- a/runtime/boot.c
 +++ b/runtime/boot.c
 @@ -509,6 +509,22 @@ static void watch_req_poll(uint64_t n) {
@@ -49,7 +49,7 @@ index f36c3fd..6f52d2f 100644
      if (!why && mark_req[0] && n % 4 == 0 && plat_file_exists(mark_req)) why = "mark.req", plat_file_delete(mark_req);
      if (!why) return;
 diff --git a/runtime/input.h b/runtime/input.h
-index 5ba0348..dd05e06 100644
+index 5ba03480..dd05e06c 100644
 --- a/runtime/input.h
 +++ b/runtime/input.h
 @@ -77,6 +77,12 @@ int input_dump_key(void);
@@ -66,7 +66,7 @@ index 5ba0348..dd05e06 100644
  
  // Mouse camera and cursor (input_win.c, Win32 window thread). The window procedure calls input_window_msg first for raw
 diff --git a/runtime/input_sdl.c b/runtime/input_sdl.c
-index 5207916..da90a12 100644
+index 5207916f..da90a122 100644
 --- a/runtime/input_sdl.c
 +++ b/runtime/input_sdl.c
 @@ -20,7 +20,7 @@
@@ -101,7 +101,7 @@ index 5207916..da90a12 100644
          if (k) key_held[k] = (uint8_t)down;
          break;
 diff --git a/runtime/input_win.c b/runtime/input_win.c
-index ff622d3..7c46ac6 100644
+index ff622d39..7c46ac6c 100644
 --- a/runtime/input_win.c
 +++ b/runtime/input_win.c
 @@ -196,6 +196,7 @@ int input_flight_key(void) {
@@ -112,6 +112,3 @@ index ff622d3..7c46ac6 100644
  
  int input_mark_key(void) {   // F9's press, once
      static int was;
--- 
-2.56.0
-

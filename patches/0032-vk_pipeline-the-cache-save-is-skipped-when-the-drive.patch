@@ -11,7 +11,7 @@ The exit save of a 4.3 GB cache (copy, write, fsync) took about 23 s although th
  1 file changed, 9 insertions(+)
 
 diff --git a/runtime/gfx_present.c b/runtime/gfx_present.c
-index 2db8a46..d8072f8 100644
+index 2db8a46e..d8072f8b 100644
 --- a/runtime/gfx_present.c
 +++ b/runtime/gfx_present.c
 @@ -82,15 +82,24 @@ void gfx_window_focus_changed(int in) {
@@ -39,6 +39,3 @@ index 2db8a46..d8072f8 100644
      if (restart) {
          cfg_setenv("NX2NAVI_REEXEC", NULL);   // the new process counts its own address-space retries (memory.c)
          if (!plat_restart()) rt_log("gfx: the restart could not start the game again");
--- 
-2.56.0
-

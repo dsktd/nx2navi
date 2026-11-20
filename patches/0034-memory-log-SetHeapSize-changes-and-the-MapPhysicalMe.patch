@@ -10,7 +10,7 @@ Subject: [PATCH] memory: log SetHeapSize changes and the MapPhysicalMemory
  1 file changed, 9 insertions(+)
 
 diff --git a/runtime/memory.c b/runtime/memory.c
-index 6ce3cf2..5dd7ade 100644
+index 6ce3cf29..5dd7adea 100644
 --- a/runtime/memory.c
 +++ b/runtime/memory.c
 @@ -53,6 +53,7 @@ static uint64_t heap_size, alias_bytes;
@@ -55,6 +55,3 @@ index 6ce3cf2..5dd7ade 100644
      if (r) rt_log("%sMapPhysicalMemory %#llx+%#llx failed %#x (alias %#llx used, heap %#llx)", unmap ? "Un" : "",
                    (unsigned long long)a, (unsigned long long)n, r, (unsigned long long)alias_bytes,
                    (unsigned long long)heap_size);
--- 
-2.56.0
-

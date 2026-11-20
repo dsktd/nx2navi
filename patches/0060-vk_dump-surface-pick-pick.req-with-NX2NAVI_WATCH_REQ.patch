@@ -23,7 +23,7 @@ Subject: [PATCH] vk_dump: surface pick (pick.req with NX2NAVI_WATCH_REQ=1):
  12 files changed, 240 insertions(+), 12 deletions(-)
 
 diff --git a/runtime/boot.c b/runtime/boot.c
-index 3f50fca..f36c3fd 100644
+index 3f50fcac..f36c3fd0 100644
 --- a/runtime/boot.c
 +++ b/runtime/boot.c
 @@ -409,7 +409,8 @@ static int mark_knob(const char *name) {
@@ -67,7 +67,7 @@ index 3f50fca..f36c3fd 100644
          plat_file_delete(breq);
          char t[128];
 diff --git a/runtime/gfx.h b/runtime/gfx.h
-index e112d5b..46e9af0 100644
+index e112d5b5..46e9af09 100644
 --- a/runtime/gfx.h
 +++ b/runtime/gfx.h
 @@ -110,6 +110,7 @@ int gfx_shader_reload_start(void);                                     // NX2NAV
@@ -79,7 +79,7 @@ index e112d5b..46e9af0 100644
  // A shader of the runtime's own (SPIR-V and a .res.json text as the translator writes them), outside the cache and
  // never freed; its key is the sha256 of both. NULL when the SPIR-V is malformed.
 diff --git a/runtime/gfx_shader.c b/runtime/gfx_shader.c
-index 20a90ba..11482fe 100644
+index 20a90ba1..11482fe5 100644
 --- a/runtime/gfx_shader.c
 +++ b/runtime/gfx_shader.c
 @@ -2689,6 +2689,12 @@ int gfx_shader_beside_cache(const char *name, char *out, size_t n) {
@@ -96,7 +96,7 @@ index 20a90ba..11482fe 100644
      char hex[65];
      key_hex(s->key, hex);
 diff --git a/runtime/ui/menu.cpp b/runtime/ui/menu.cpp
-index e7dc2a0..08ee756 100644
+index e7dc2a03..08ee756e 100644
 --- a/runtime/ui/menu.cpp
 +++ b/runtime/ui/menu.cpp
 @@ -2051,6 +2051,25 @@ static void perf_draw(const MenuTarget *t, float scale) {
@@ -143,7 +143,7 @@ index e7dc2a0..08ee756 100644
      if (open) g_save_pending = opt_save_tick(0);
      g_cost_ns += plat_now_ns() - t0;
 diff --git a/runtime/ui/menu.h b/runtime/ui/menu.h
-index cbcf2f4..e78d678 100644
+index cbcf2f47..e78d6784 100644
 --- a/runtime/ui/menu.h
 +++ b/runtime/ui/menu.h
 @@ -26,6 +26,7 @@ extern "C" {
@@ -155,7 +155,7 @@ index cbcf2f4..e78d678 100644
  // ---- events from the window adapter, used only while the menu is open. key: an ImGuiKey; coordinates in pixels of the
  // window's client area, which is the swapchain image.
 diff --git a/runtime/vk.h b/runtime/vk.h
-index 5a57f40..3dc0f96 100644
+index 5a57f405..3dc0f969 100644
 --- a/runtime/vk.h
 +++ b/runtime/vk.h
 @@ -769,6 +769,7 @@ int vk_sampler_params(int id, samp_par *out);       // parameters of a sampler s
@@ -167,7 +167,7 @@ index 5a57f40..3dc0f96 100644
  // ---- submission, synchronisation, completion (vk_sync.c, vk_backend.c)
  // Fence values are ctx->timeline values: each submission signals the next one, in submit order. A value counts as done
 diff --git a/runtime/vk_backend.c b/runtime/vk_backend.c
-index 56b1d2a..e71ec49 100644
+index 56b1d2aa..e71ec49b 100644
 --- a/runtime/vk_backend.c
 +++ b/runtime/vk_backend.c
 @@ -228,6 +228,7 @@ static void present_image(const tex_t *t, const int crop[4], uint64_t at_ns, uin
@@ -179,7 +179,7 @@ index 56b1d2a..e71ec49 100644
      __atomic_store_n(&gfx_counters.validation_errors, (uint64_t)vk_validation_errors_total(), __ATOMIC_RELAXED);
      const VkTexImage *img = vk_texture_get(t);
 diff --git a/runtime/vk_dump.c b/runtime/vk_dump.c
-index f7ddc50..93f5d30 100644
+index f7ddc507..93f5d30a 100644
 --- a/runtime/vk_dump.c
 +++ b/runtime/vk_dump.c
 @@ -1553,3 +1553,177 @@ void vk_dump_present(uint64_t frame) {
@@ -361,7 +361,7 @@ index f7ddc50..93f5d30 100644
 +    ex->recorded += 2;
 +}
 diff --git a/runtime/vk_exec.c b/runtime/vk_exec.c
-index 7727c6c..28218a8 100644
+index 7727c6c1..28218a8a 100644
 --- a/runtime/vk_exec.c
 +++ b/runtime/vk_exec.c
 @@ -899,6 +899,7 @@ void vk_exec_pass_end(VkExec *ex) {
@@ -373,7 +373,7 @@ index 7727c6c..28218a8 100644
      uint64_t stamp = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1;
      // The targets are marked written outside tfr_lock: vk_texture_gpu_written takes the texture lock, and a chunk that
 diff --git a/runtime/vk_exec.h b/runtime/vk_exec.h
-index eb7a8b3..6764c88 100644
+index eb7a8b37..6764c88b 100644
 --- a/runtime/vk_exec.h
 +++ b/runtime/vk_exec.h
 @@ -345,3 +345,13 @@ int vk_contact_pending(void);   // a contact shadows' pass waits for the next tr
@@ -391,7 +391,7 @@ index eb7a8b3..6764c88 100644
 +void vk_pick_present(uint64_t frame);
 +#define VK_PICK(ex, call) do { if (__atomic_load_n(&vk_pick_armed, __ATOMIC_RELAXED) && vk_pick_pre(ex)) { call; vk_pick_post(ex); } call; } while (0)
 diff --git a/runtime/vk_exec_draw.c b/runtime/vk_exec_draw.c
-index aae458d..ef14a2a 100644
+index aae458d8..ef14a2ac 100644
 --- a/runtime/vk_exec_draw.c
 +++ b/runtime/vk_exec_draw.c
 @@ -4699,6 +4699,7 @@ static int prepare_draw_ex(VkExec *ex, int prim, int32_t count, int restart, int
@@ -478,7 +478,7 @@ index aae458d..ef14a2a 100644
  
  static void op_update_ub(VkExec *ex, const p_update_ub *u) {
 diff --git a/runtime/vk_exec_xfer.c b/runtime/vk_exec_xfer.c
-index ce2e7ff..754d4ab 100644
+index ce2e7ff5..754d4abb 100644
 --- a/runtime/vk_exec_xfer.c
 +++ b/runtime/vk_exec_xfer.c
 @@ -426,6 +426,7 @@ void vk_exec_oq_draw(VkExec *ex) {
@@ -489,6 +489,3 @@ index ce2e7ff..754d4ab 100644
  
  static void oq_batch_drop(void);   // the results kept by the completion thread (oq_take)
  
--- 
-2.56.0
-

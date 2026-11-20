@@ -9,7 +9,7 @@ Subject: [PATCH] memory: at the first refused MapPhysicalMemory of a burst,
  1 file changed, 21 insertions(+), 1 deletion(-)
 
 diff --git a/runtime/memory.c b/runtime/memory.c
-index cc855ac..46e5255 100644
+index cc855ac1..46e5255d 100644
 --- a/runtime/memory.c
 +++ b/runtime/memory.c
 @@ -1497,6 +1497,8 @@ static uint32_t alias_map(int unmap, uint64_t a, uint64_t n) {
@@ -58,6 +58,3 @@ index cc855ac..46e5255 100644
      if (high)   // the high-water mark of MapPhysicalMemory, every 256 MiB: how much the game takes when the pool allows it
          rt_log("mem: MapPhysicalMemory high-water %llu MiB (heap %llu MiB, pool %llu MiB)", (unsigned long long)(high >> 20),
                 (unsigned long long)(heap_size >> 20), (unsigned long long)(L.pool >> 20));
--- 
-2.56.0
-

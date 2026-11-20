@@ -23,7 +23,7 @@ full size to logs/shot-<n>.png there and is deleted.
  8 files changed, 223 insertions(+), 6 deletions(-)
 
 diff --git a/runtime/boot.c b/runtime/boot.c
-index 9acf751..9d0122e 100644
+index 9acf7512..9d0122e7 100644
 --- a/runtime/boot.c
 +++ b/runtime/boot.c
 @@ -268,7 +268,16 @@ static void series_shot(const tex_t *t, uint64_t n) {
@@ -68,7 +68,7 @@ index 9acf751..9d0122e 100644
      free(px);
  }
 diff --git a/runtime/cfg.c b/runtime/cfg.c
-index 6eeac1c..8b15569 100644
+index 6eeac1c4..8b155697 100644
 --- a/runtime/cfg.c
 +++ b/runtime/cfg.c
 @@ -67,7 +67,7 @@ static const char *const known[] = {
@@ -81,7 +81,7 @@ index 6eeac1c..8b15569 100644
      "SHOTS_FULL", "SPEED_PROBE", "SPIN", "SPIN_HANDOFF_US", "SPLIT_DRAWS", "SPLIT_IDLE", "SPLIT_IN_PASS", "SPLIT_US", "SPV_MARK_TEST", "SPV_OVERRIDE", "STICK_DEADZONE", "STICK_SENS",
      "SWKBD_ANSWER",
 diff --git a/runtime/gfx.h b/runtime/gfx.h
-index 8a71bf3..7a99a01 100644
+index 8a71bf3a..7a99a01f 100644
 --- a/runtime/gfx.h
 +++ b/runtime/gfx.h
 @@ -106,6 +106,11 @@ void gfx_shader_release_private(const GfxShader *s);
@@ -97,7 +97,7 @@ index 8a71bf3..7a99a01 100644
  // never freed; its key is the sha256 of both. NULL when the SPIR-V is malformed.
  const GfxShader *gfx_shader_own(const uint32_t *spirv, uint64_t words, const char *res_json);
 diff --git a/runtime/gfx_shader.c b/runtime/gfx_shader.c
-index 7fd3bdf..20a90ba 100644
+index 7fd3bdf5..20a90ba1 100644
 --- a/runtime/gfx_shader.c
 +++ b/runtime/gfx_shader.c
 @@ -2635,6 +2635,71 @@ int gfx_shader_write_code(const GfxShader *s, const char *path) {
@@ -173,7 +173,7 @@ index 7fd3bdf..20a90ba 100644
  
  int gfx_shader_resources(const GfxShader *s, int kind, const GfxShaderRes **res) {
 diff --git a/runtime/vk.h b/runtime/vk.h
-index d85ac1c..2c6c1af 100644
+index d85ac1c7..2c6c1af3 100644
 --- a/runtime/vk.h
 +++ b/runtime/vk.h
 @@ -1019,6 +1019,8 @@ void vk_pipeline_save(void);               // writes the VkPipelineCache to pipe
@@ -186,7 +186,7 @@ index d85ac1c..2c6c1af 100644
                                             // cache; before vk_shutdown
  int vk_pipeline_selftest(void);            // one graphics and one compute pipeline from census shaders; 0 on success
 diff --git a/runtime/vk_backend.c b/runtime/vk_backend.c
-index d80d6cd..3332c10 100644
+index d80d6cdb..3332c107 100644
 --- a/runtime/vk_backend.c
 +++ b/runtime/vk_backend.c
 @@ -228,6 +228,7 @@ static void present_image(const tex_t *t, const int crop[4], uint64_t at_ns, uin
@@ -198,7 +198,7 @@ index d80d6cd..3332c10 100644
      const VkTexImage *img = vk_texture_get(t);
      int held = frame_hold(vk_exec_pending_draws_take(), vk_dlaa_resized_take(), frame);
 diff --git a/runtime/vk_exec_draw.c b/runtime/vk_exec_draw.c
-index f5819e4..7a8ae07 100644
+index f5819e42..7a8ae07f 100644
 --- a/runtime/vk_exec_draw.c
 +++ b/runtime/vk_exec_draw.c
 @@ -291,7 +291,7 @@ typedef struct DrawCtx {
@@ -239,7 +239,7 @@ index f5819e4..7a8ae07 100644
      if (plast >= 0 && pmemo[plast].used && !memcmp(&pmemo[plast].st, &ms, sizeof ms)) {
          pi = (uint32_t)plast;
 diff --git a/runtime/vk_pipeline.c b/runtime/vk_pipeline.c
-index 37f5981..eb39907 100644
+index 37f59814..eb39907c 100644
 --- a/runtime/vk_pipeline.c
 +++ b/runtime/vk_pipeline.c
 @@ -8045,3 +8045,130 @@ void vk_pipeline_sizes(PerfSizes *s) {
@@ -373,6 +373,3 @@ index 37f5981..eb39907 100644
 +    }
 +    plat_mutex_unlock(&P.lock);
 +}
--- 
-2.56.0
-

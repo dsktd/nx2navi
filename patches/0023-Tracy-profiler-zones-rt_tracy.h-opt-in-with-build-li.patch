@@ -21,7 +21,7 @@ plat_fault_reinstall puts the runtime's back for 300 presents after each connect
  create mode 100644 runtime/rt_tracy.h
 
 diff --git a/runtime/audio_mixer.c b/runtime/audio_mixer.c
-index bb0c266..818b0a4 100644
+index bb0c2665..818b0a48 100644
 --- a/runtime/audio_mixer.c
 +++ b/runtime/audio_mixer.c
 @@ -31,6 +31,7 @@
@@ -48,7 +48,7 @@ index bb0c266..818b0a4 100644
      const int frames = m->frame, mc = r->param.submix_count + 1;
      memset(m->buf, 0, (size_t)m->nbuf * (size_t)frames * sizeof(float));
 diff --git a/runtime/nvn_api_core.c b/runtime/nvn_api_core.c
-index e62c4cf..c2d63e0 100644
+index e62c4cfb..c2d63e0d 100644
 --- a/runtime/nvn_api_core.c
 +++ b/runtime/nvn_api_core.c
 @@ -13,6 +13,7 @@
@@ -87,7 +87,7 @@ index e62c4cf..c2d63e0 100644
      }
      nvn_call_note(0, (uintptr_t)q, 0);
 diff --git a/runtime/perf.c b/runtime/perf.c
-index 459e29c..fb0d0c8 100644
+index 459e29c2..fb0d0c8d 100644
 --- a/runtime/perf.c
 +++ b/runtime/perf.c
 @@ -10,6 +10,7 @@
@@ -108,7 +108,7 @@ index 459e29c..fb0d0c8 100644
      uint64_t rep = ft_frame(frame, now, d);   // d is 0 on the first present: it only starts the period
      ab_b += rt_ab();
 diff --git a/runtime/platform/linux.c b/runtime/platform/linux.c
-index 8ffa3b4..38760f2 100644
+index 8ffa3b4e..38760f23 100644
 --- a/runtime/platform/linux.c
 +++ b/runtime/platform/linux.c
 @@ -1269,11 +1269,7 @@ static void fault_handler(int sig, siginfo_t *si, void *uc) {
@@ -147,7 +147,7 @@ index 8ffa3b4..38760f2 100644
      fault_install();
 diff --git a/runtime/rt_tracy.h b/runtime/rt_tracy.h
 new file mode 100644
-index 0000000..03f1763
+index 00000000..03f1763a
 --- /dev/null
 +++ b/runtime/rt_tracy.h
 @@ -0,0 +1,34 @@
@@ -186,7 +186,7 @@ index 0000000..03f1763
 +#define RT_PLOT(name, v) ((void)0)
 +#endif
 diff --git a/runtime/vk_exec_draw.c b/runtime/vk_exec_draw.c
-index 220c6ff..1670209 100644
+index 220c6ff5..16702099 100644
 --- a/runtime/vk_exec_draw.c
 +++ b/runtime/vk_exec_draw.c
 @@ -21,6 +21,7 @@
@@ -208,7 +208,7 @@ index 220c6ff..1670209 100644
      cx->B.pipe[k] = p;
      if (!k) cx->B.st_valid = 0;
 diff --git a/runtime/vk_memory.c b/runtime/vk_memory.c
-index 1d23714..116a3ab 100644
+index 1d237143..116a3abd 100644
 --- a/runtime/vk_memory.c
 +++ b/runtime/vk_memory.c
 @@ -15,6 +15,7 @@
@@ -254,7 +254,7 @@ index 1d23714..116a3ab 100644
  
  // The replay workers (vk_exec.c) bind and write from several threads at once: while a chunk records, a mirror's first
 diff --git a/runtime/vk_texture.c b/runtime/vk_texture.c
-index 0005213..3f9af1b 100644
+index 00052131..3f9af1b1 100644
 --- a/runtime/vk_texture.c
 +++ b/runtime/vk_texture.c
 @@ -20,6 +20,7 @@
@@ -296,6 +296,3 @@ index 0005213..3f9af1b 100644
      static volatile int32_t n_bad, n_undecoded, n_split;
      int no_mem = 0;   // a part's ASTC decode had no memory: the texture is uploaded again later
      const tex_t *t = &e->t;
--- 
-2.56.0
-

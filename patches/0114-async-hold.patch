@@ -17,7 +17,7 @@ ranges out. Default empty: off.
  3 files changed, 163 insertions(+), 4 deletions(-)
 
 diff --git a/runtime/vk.h b/runtime/vk.h
-index bf1e991..4df4ed4 100644
+index bf1e9913..4df4ed4c 100644
 --- a/runtime/vk.h
 +++ b/runtime/vk.h
 @@ -345,6 +345,13 @@ void vk_usnap_begin(const uint64_t *handles, int n, uint64_t fence);
@@ -35,7 +35,7 @@ index bf1e991..4df4ed4 100644
  int vk_usnap_find(uint64_t addr, uint64_t n, uint64_t align, VkDescriptorBufferInfo *out);
  const uint8_t *vk_usnap_map(void);   // a host copy of the current arena, at the offsets vk_usnap_find gives
 diff --git a/runtime/vk_memory.c b/runtime/vk_memory.c
-index 73c1d2e..9557e92 100644
+index 73c1d2ef..9557e92b 100644
 --- a/runtime/vk_memory.c
 +++ b/runtime/vk_memory.c
 @@ -2886,6 +2886,145 @@ static void range_add(MRange **a, int *n, int *cap, PoolRec *r, uint64_t off, ui
@@ -234,7 +234,7 @@ index 73c1d2e..9557e92 100644
          if (npend) mbarrier(cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
                              VK_ACCESS_2_TRANSFER_READ_BIT);
 diff --git a/runtime/vk_usnap.c b/runtime/vk_usnap.c
-index 9507f05..521d45b 100644
+index 9507f05e..521d45be 100644
 --- a/runtime/vk_usnap.c
 +++ b/runtime/vk_usnap.c
 @@ -79,6 +79,7 @@ static PlatMutex gather_lock = PLAT_MUTEX_INIT;
@@ -270,6 +270,3 @@ index 9507f05..521d45b 100644
      if (!t) return 0;
      U.refused += t->refused;
      if (t->arena) {
--- 
-2.56.0
-

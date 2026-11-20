@@ -12,7 +12,7 @@ Subject: [PATCH] platform: plat_write_trace replaces the traced range on a
  3 files changed, 25 insertions(+), 8 deletions(-)
 
 diff --git a/runtime/boot.c b/runtime/boot.c
-index f11fc36..72ff018 100644
+index f11fc369..72ff0188 100644
 --- a/runtime/boot.c
 +++ b/runtime/boot.c
 @@ -405,8 +405,8 @@ static int mark_knob(const char *name) {
@@ -52,7 +52,7 @@ index f11fc36..72ff018 100644
                     (unsigned long long)len, (unsigned long long)n);
              plat_write_trace(a, len);
 diff --git a/runtime/platform/linux.c b/runtime/platform/linux.c
-index fbe7fc3..72b636c 100644
+index fbe7fc3c..72b636c2 100644
 --- a/runtime/platform/linux.c
 +++ b/runtime/platform/linux.c
 @@ -1427,8 +1427,21 @@ __attribute__((noinline)) int plat_frame_capture(PlatJmp *out, int (*want)(uintp
@@ -79,7 +79,7 @@ index fbe7fc3..72b636c 100644
      wt_opened = 1;
      plat_write_trace_rearm();
 diff --git a/runtime/platform/platform.h b/runtime/platform/platform.h
-index 8807d30..0ffbf9f 100644
+index 8807d302..0ffbf9f3 100644
 --- a/runtime/platform/platform.h
 +++ b/runtime/platform/platform.h
 @@ -267,7 +267,8 @@ void plat_mem_fault_hook(int (*fn)(uint64_t addr));
@@ -92,6 +92,3 @@ index 8807d30..0ffbf9f 100644
  void plat_write_trace(uint64_t addr, uint64_t n);
  void plat_write_trace_rearm(void);
  // Starts this program again with the same arguments and ends this process with the new one's exit code (Windows), or
--- 
-2.56.0
-

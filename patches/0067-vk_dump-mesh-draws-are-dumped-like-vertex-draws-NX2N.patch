@@ -14,7 +14,7 @@ Subject: [PATCH] vk_dump: mesh draws are dumped like vertex draws
  3 files changed, 66 insertions(+), 8 deletions(-)
 
 diff --git a/runtime/vk_dump.c b/runtime/vk_dump.c
-index a2bd8dc..3753ea7 100644
+index a2bd8dc0..3753ea7e 100644
 --- a/runtime/vk_dump.c
 +++ b/runtime/vk_dump.c
 @@ -9,6 +9,8 @@
@@ -157,7 +157,7 @@ index a2bd8dc..3753ea7 100644
      r->text = b.s;
      pick_sc = sc, pick_q = pick_n++;
 diff --git a/runtime/vk_exec.h b/runtime/vk_exec.h
-index 6764c88..0173298 100644
+index 6764c88b..0173298d 100644
 --- a/runtime/vk_exec.h
 +++ b/runtime/vk_exec.h
 @@ -271,6 +271,8 @@ void vk_dump_draw_skipped(const VkExec *ex, int mesh, int why);
@@ -170,7 +170,7 @@ index 6764c88..0173298 100644
  void vk_dump_copy(VkExec *ex, uint32_t op, const void *payload);   // before a copy or texture clear is replayed
  void vk_dump_present(uint64_t frame);    // vk_be_present: waits for the dump frame's copies and closes the logs
 diff --git a/runtime/vk_exec_draw.c b/runtime/vk_exec_draw.c
-index d0a48ec..0c326d3 100644
+index d0a48eca..0c326d33 100644
 --- a/runtime/vk_exec_draw.c
 +++ b/runtime/vk_exec_draw.c
 @@ -4698,7 +4698,7 @@ static int prepare_draw_ex(VkExec *ex, int prim, int32_t count, int restart, int
@@ -190,6 +190,3 @@ index d0a48ec..0c326d3 100644
      if (!prepare_draw_ex(ex, NVN_DRAW_PRIMITIVE_TRIANGLES, 0x7fffffff, 0, 1)) return;
      vk_exec_frame.draws++;
      static uint32_t n_logged;
--- 
-2.56.0
-

@@ -10,7 +10,7 @@ Subject: [PATCH] vk_memory: NX2NAVI_SHADOW_NT=1 (0: old memcpy) streams shadow
  1 file changed, 36 insertions(+), 1 deletion(-)
 
 diff --git a/runtime/vk_memory.c b/runtime/vk_memory.c
-index c1bc51e..84cdb50 100644
+index c1bc51e4..84cdb508 100644
 --- a/runtime/vk_memory.c
 +++ b/runtime/vk_memory.c
 @@ -11,6 +11,9 @@
@@ -81,6 +81,3 @@ index c1bc51e..84cdb50 100644
  }
  
  // shadow_lock and gen_lock held: stamps the pool's written pages and copies those newer than its shadow. The pool's
--- 
-2.56.0
-

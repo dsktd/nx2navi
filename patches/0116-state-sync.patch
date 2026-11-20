@@ -13,7 +13,7 @@ Subject: [PATCH] NX2NAVI_STATE_PUB / NX2NAVI_STATE_FOLLOW: a game publishes
  3 files changed, 504 insertions(+), 16 deletions(-)
 
 diff --git a/runtime/boot.c b/runtime/boot.c
-index b6d9b7a..8cefec0 100644
+index b6d9b7ae..8cefec08 100644
 --- a/runtime/boot.c
 +++ b/runtime/boot.c
 @@ -12,6 +12,9 @@
@@ -121,7 +121,7 @@ index b6d9b7a..8cefec0 100644
      int keys = input_debug_keys();
      if (keys) debug_keys(keys, n, dump_req ? dump_path : NULL);
 diff --git a/runtime/debug_tools.c b/runtime/debug_tools.c
-index 1dd939f..5556234 100644
+index 1dd939fb..55562344 100644
 --- a/runtime/debug_tools.c
 +++ b/runtime/debug_tools.c
 @@ -77,6 +77,7 @@ int dbg_player_pos(float xyz[3]) {
@@ -662,7 +662,7 @@ index 1dd939f..5556234 100644
      int n;
      plat_mutex_lock(&q_lock);
 diff --git a/runtime/debug_tools.h b/runtime/debug_tools.h
-index fb9032e..8e68250 100644
+index fb9032e5..8e682505 100644
 --- a/runtime/debug_tools.h
 +++ b/runtime/debug_tools.h
 @@ -73,9 +73,13 @@ int dbg_frozen_count(void);
@@ -680,6 +680,3 @@ index fb9032e..8e68250 100644
  #ifdef __cplusplus
  }
  #endif
--- 
-2.56.0
-

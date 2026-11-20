@@ -20,7 +20,7 @@ Subject: [PATCH] provenance: the first log line names the build (entry, exe,
  create mode 100644 runtime/provenance.c
 
 diff --git a/runtime/boot.c b/runtime/boot.c
-index 1976163..2b00a3d 100644
+index 1976163f..2b00a3d0 100644
 --- a/runtime/boot.c
 +++ b/runtime/boot.c
 @@ -272,7 +272,7 @@ static void series_shot(const tex_t *t, const int crop[4], uint64_t n) {
@@ -53,7 +53,7 @@ index 1976163..2b00a3d 100644
          uint8_t *px = all + one * (size_t)(g - m->first);
          if (!px[3]) continue;
 diff --git a/runtime/flight.c b/runtime/flight.c
-index aaaffb7..6980954 100644
+index aaaffb79..6980954e 100644
 --- a/runtime/flight.c
 +++ b/runtime/flight.c
 @@ -350,6 +350,7 @@ static void dump_main(void *arg) {
@@ -65,7 +65,7 @@ index aaaffb7..6980954 100644
      uint8_t *have = calloc((size_t)j->n, 1);
      int n_thumbs = 0;
 diff --git a/runtime/host.h b/runtime/host.h
-index 50d193a..8a2df2e 100644
+index 50d193a0..8a2df2e6 100644
 --- a/runtime/host.h
 +++ b/runtime/host.h
 @@ -22,6 +22,11 @@ void rt_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));   // "[
@@ -81,7 +81,7 @@ index 50d193a..8a2df2e 100644
  void rt_log_sync(void);                         // writes the queued log lines now; later lines are written as they are made
  enum { RT_TRACE_SVC = 1, RT_TRACE_HOSTCALL = 2, RT_TRACE_IPC = 4, RT_TRACE_FS = 8, RT_TRACE_GFX = 16, RT_TRACE_PERF = 32,
 diff --git a/runtime/input.c b/runtime/input.c
-index c2d697e..4445d8c 100644
+index c2d697e3..4445d8c6 100644
 --- a/runtime/input.c
 +++ b/runtime/input.c
 @@ -210,7 +210,7 @@ static void rec_apply(uint64_t b, const int32_t sl[2], const int32_t sr[2]) {
@@ -94,7 +94,7 @@ index c2d697e..4445d8c 100644
      }
      if (rec_state != 1) return;
 diff --git a/runtime/main.c b/runtime/main.c
-index 9710e17..e4b9785 100644
+index 9710e173..e4b9785e 100644
 --- a/runtime/main.c
 +++ b/runtime/main.c
 @@ -579,6 +579,7 @@ static void portable_paths(RtConfig *c) {
@@ -107,7 +107,7 @@ index 9710e17..e4b9785 100644
             rt_game_version % 10);
 diff --git a/runtime/provenance.c b/runtime/provenance.c
 new file mode 100644
-index 0000000..9076ec0
+index 00000000..9076ec03
 --- /dev/null
 +++ b/runtime/provenance.c
 @@ -0,0 +1,116 @@
@@ -228,7 +228,7 @@ index 0000000..9076ec0
 +    rt_build_note_file(p);
 +}
 diff --git a/runtime/rdoc.c b/runtime/rdoc.c
-index ea5a2d1..7533656 100644
+index ea5a2d17..75336568 100644
 --- a/runtime/rdoc.c
 +++ b/runtime/rdoc.c
 @@ -69,6 +69,7 @@ void rdoc_init(void) {
@@ -240,7 +240,7 @@ index ea5a2d1..7533656 100644
      api->SetCaptureFilePathTemplate(tmpl);
      rt_log("rdoc: ready, %d frame(s), captures %s", n_targets, full);
 diff --git a/runtime/vk_dump.c b/runtime/vk_dump.c
-index 092f8d6..6cdb5b6 100644
+index 092f8d67..6cdb5b62 100644
 --- a/runtime/vk_dump.c
 +++ b/runtime/vk_dump.c
 @@ -1442,6 +1442,7 @@ static void req_options(char *t) {
@@ -251,6 +251,3 @@ index 092f8d6..6cdb5b6 100644
      char path[600];
      snprintf(path, sizeof path, "%s/passes.txt", dir);
      passes_f = fopen(path, "w");
--- 
-2.56.0
-

@@ -13,7 +13,7 @@ Subject: [PATCH] vk_memory: NX2NAVI_SHADOW_RECYCLE_MB=1024 (0: old) keeps
  2 files changed, 63 insertions(+), 5 deletions(-)
 
 diff --git a/runtime/cfg.c b/runtime/cfg.c
-index d439a7a..f77579c 100644
+index d439a7a4..f77579c7 100644
 --- a/runtime/cfg.c
 +++ b/runtime/cfg.c
 @@ -78,7 +78,7 @@ static const char *const known[] = {
@@ -44,7 +44,7 @@ index d439a7a..f77579c 100644
      {"SUBMIT_BATCH", "4", "1..16", RESTART},
  #ifdef _WIN32
 diff --git a/runtime/vk_memory.c b/runtime/vk_memory.c
-index 92318f8..c1bc51e 100644
+index 92318f8a..c1bc51e4 100644
 --- a/runtime/vk_memory.c
 +++ b/runtime/vk_memory.c
 @@ -291,8 +291,58 @@ static PoolRec *phys_find(const pool_t *key) {
@@ -143,6 +143,3 @@ index 92318f8..c1bc51e 100644
      vk_texture_shutdown();
      plat_rmutex_lock(&cmd_lock);
      retire(c, 1);
--- 
-2.56.0
-

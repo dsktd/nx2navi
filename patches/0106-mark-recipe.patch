@@ -15,7 +15,7 @@ Subject: [PATCH] debug_tools: NX2NAVI_MARK_RECIPE (default 1; 0 off, 2 also a
  3 files changed, 187 insertions(+), 3 deletions(-)
 
 diff --git a/runtime/boot.c b/runtime/boot.c
-index 2b00a3d..b6d9b7a 100644
+index 2b00a3d0..b6d9b7ae 100644
 --- a/runtime/boot.c
 +++ b/runtime/boot.c
 @@ -16,6 +16,7 @@
@@ -92,7 +92,7 @@ index 2b00a3d..b6d9b7a 100644
          FILE *f = fopen(dump_path, "w");
          if (f) fclose(f);
 diff --git a/runtime/debug_tools.c b/runtime/debug_tools.c
-index cd4b660..6e9dcc7 100644
+index cd4b660e..6e9dcc72 100644
 --- a/runtime/debug_tools.c
 +++ b/runtime/debug_tools.c
 @@ -1029,11 +1029,149 @@ void dbg_pad(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *
@@ -268,7 +268,7 @@ index cd4b660..6e9dcc7 100644
              float p[3] = {0, 0, 0}, sp = dbg_speed_factor();
              int n = dbg_flags_refresh(), set = 0, found = 0;
 diff --git a/runtime/debug_tools.h b/runtime/debug_tools.h
-index 06e11ca..fb9032e 100644
+index 06e11cab..fb9032e5 100644
 --- a/runtime/debug_tools.h
 +++ b/runtime/debug_tools.h
 @@ -7,7 +7,9 @@
@@ -294,6 +294,3 @@ index 06e11ca..fb9032e 100644
  #ifdef __cplusplus
  }
  #endif
--- 
-2.56.0
-

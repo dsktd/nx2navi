@@ -15,7 +15,7 @@ Subject: [PATCH] input: NX2NAVI_MOTION_PAD, the six-axis sensor reads another
  5 files changed, 129 insertions(+), 18 deletions(-)
 
 diff --git a/runtime/cfg.c b/runtime/cfg.c
-index 4c13b41..d010b60 100644
+index 4c13b410..d010b600 100644
 --- a/runtime/cfg.c
 +++ b/runtime/cfg.c
 @@ -91,6 +91,7 @@ static const char *const known[] = {
@@ -45,7 +45,7 @@ index 4c13b41..d010b60 100644
      {"DS3", "0", "0|1", LIVE},   // input_ds3_win.c ds3_read: read a DualShock 3 directly; off: no HID scan
      {"PROMPTS", "nintendo", "nintendo|xbox|playstation|steamdeck|pc", RESTART},
 diff --git a/runtime/cfg_probe.c b/runtime/cfg_probe.c
-index 446b144..2c276b6 100644
+index 446b1445..2c276b6f 100644
 --- a/runtime/cfg_probe.c
 +++ b/runtime/cfg_probe.c
 @@ -452,6 +452,21 @@ int probe_cfg(void) {
@@ -71,7 +71,7 @@ index 446b144..2c276b6 100644
      cfg_setenv("NX2NAVI_LSTICK_DEADZONE", NULL);
      cfg_setenv("NX2NAVI_RSTICK_DEADZONE", NULL);
 diff --git a/runtime/input.c b/runtime/input.c
-index e93954a..3f00438 100644
+index e93954a6..3f004389 100644
 --- a/runtime/input.c
 +++ b/runtime/input.c
 @@ -4,7 +4,8 @@
@@ -243,7 +243,7 @@ index e93954a..3f00438 100644
          }
          plat_mutex_unlock(&lock);
 diff --git a/runtime/input_map.c b/runtime/input_map.c
-index 2987506..a8d631c 100644
+index 29875062..a8d631c4 100644
 --- a/runtime/input_map.c
 +++ b/runtime/input_map.c
 @@ -359,6 +359,35 @@ void input_mouse_stick(int32_t dx, int32_t dy, double dt_s, float sens, float ca
@@ -283,7 +283,7 @@ index 2987506..a8d631c 100644
      double fx = x / (double)STICK_MAX, fy = y / (double)STICK_MAX, m = sqrt(fx * fx + fy * fy);
      out[0] = out[1] = 0;
 diff --git a/runtime/input_map.h b/runtime/input_map.h
-index 299f482..f61f9f7 100644
+index 299f4823..f61f9f72 100644
 --- a/runtime/input_map.h
 +++ b/runtime/input_map.h
 @@ -132,6 +132,14 @@ float input_pad_deadzone(int stick);
@@ -301,6 +301,3 @@ index 299f482..f61f9f7 100644
  
  // ---- the remapping rows' edits, on a copy of input_map. Pure.
  // action's keys (table order) / its gamepad buttons in layout, at most max; returns how many.
--- 
-2.56.0
-

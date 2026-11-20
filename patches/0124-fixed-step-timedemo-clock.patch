@@ -14,7 +14,7 @@ Subject: [PATCH] NX2NAVI_FIXED_STEP=<hz> (default off): a timedemo clock for
  4 files changed, 39 insertions(+), 9 deletions(-)
 
 diff --git a/runtime/bugcap.c b/runtime/bugcap.c
-index 48ec26d..1ee2180 100644
+index 48ec26d2..1ee2180a 100644
 --- a/runtime/bugcap.c
 +++ b/runtime/bugcap.c
 @@ -649,7 +649,7 @@ void bugcap_replay_pad(uint64_t *buttons) {
@@ -36,7 +36,7 @@ index 48ec26d..1ee2180 100644
      char text[256], area[64] = "";
      float p[3] = {0, 0, 0};
 diff --git a/runtime/debug_tools.c b/runtime/debug_tools.c
-index b7034fd..383cab9 100644
+index b7034fde..383cab95 100644
 --- a/runtime/debug_tools.c
 +++ b/runtime/debug_tools.c
 @@ -911,7 +911,7 @@ void dbg_freecam_ground(const float *dist, int n, float tan_half_y, float aspect
@@ -76,7 +76,7 @@ index b7034fd..383cab9 100644
      fc.last_ns = now;
      if (dt > 0.1) dt = 0.1;
 diff --git a/runtime/frame_rate.c b/runtime/frame_rate.c
-index 912f2bd..0862c37 100644
+index 912f2bd5..0862c370 100644
 --- a/runtime/frame_rate.c
 +++ b/runtime/frame_rate.c
 @@ -841,12 +841,35 @@ static void speed_report(uint64_t now, double step, int interval) {
@@ -148,7 +148,7 @@ index 912f2bd..0862c37 100644
      }
      last_ns = display_ns;
 diff --git a/runtime/host.h b/runtime/host.h
-index 1ea4229..48b8960 100644
+index 1ea42298..48b8960b 100644
 --- a/runtime/host.h
 +++ b/runtime/host.h
 @@ -430,6 +430,8 @@ void rtss_limit_restore(void);                            // before the process
@@ -160,6 +160,3 @@ index 1ea4229..48b8960 100644
  // In-launch A/B measurement: NX2NAVI_AB=<seconds> splits the world clock (frame_step_world_us) into blocks of that much
  // game time in the order A B B A (repeated); rt_ab() is 1 in the B blocks, 0 in A blocks, before the world clock and
  // without NX2NAVI_AB. rt_knob(name, def) reads the switch
--- 
-2.56.0
-

@@ -12,7 +12,7 @@ Subject: [PATCH] vk_memory: NX2NAVI_SHADOW_WB_REARM (default 1) takes the
  1 file changed, 65 insertions(+), 4 deletions(-)
 
 diff --git a/runtime/vk_memory.c b/runtime/vk_memory.c
-index aad8be4..92318f8 100644
+index aad8be4e..92318f8a 100644
 --- a/runtime/vk_memory.c
 +++ b/runtime/vk_memory.c
 @@ -1728,6 +1728,36 @@ static int shadow_bulk_write(void) {
@@ -123,6 +123,3 @@ index aad8be4..92318f8 100644
      if (s_learn || s_check) shadow_table_log(frame);
      plat_mutex_unlock(&shadow_lock);
      if (s_check) plat_mutex_unlock_shared(&pool_lock);
--- 
-2.56.0
-

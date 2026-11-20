@@ -14,7 +14,7 @@ be diffed against another frame's.
  2 files changed, 22 insertions(+), 4 deletions(-)
 
 diff --git a/runtime/vk_dump.c b/runtime/vk_dump.c
-index ed026d4..d740a52 100644
+index ed026d45..d740a526 100644
 --- a/runtime/vk_dump.c
 +++ b/runtime/vk_dump.c
 @@ -554,6 +554,9 @@ static uint64_t shader_hash(const GfxShader *s) {
@@ -66,7 +66,7 @@ index ed026d4..d740a52 100644
      dump_ubo = du && *du ? atoi(du) : 0;
      if (dump_ubo == 1) dump_ubo = 16;
 diff --git a/runtime/vk_exec_draw.c b/runtime/vk_exec_draw.c
-index d447cad..220c6ff 100644
+index d447cad1..220c6ff5 100644
 --- a/runtime/vk_exec_draw.c
 +++ b/runtime/vk_exec_draw.c
 @@ -6551,8 +6551,12 @@ static void bind_index(VkExec *ex, const void *data, uint64_t bytes, VkIndexType
@@ -99,6 +99,3 @@ index d447cad..220c6ff 100644
      if (!prepare_draw(ex, d->prim, 0x7fffffff, restart_for(ex, d->prim, d->itype))) return;
      vk_exec_frame.draws++;
      VK_MEM_USE(ip);
--- 
-2.56.0
-

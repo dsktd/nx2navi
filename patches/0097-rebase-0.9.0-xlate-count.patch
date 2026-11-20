@@ -9,7 +9,7 @@ Subject: [PATCH] build_xlate: expect 41 patches, upstream's 0041 CAS limit
  1 file changed, 2 insertions(+), 2 deletions(-)
 
 diff --git a/tools/build_xlate.py b/tools/build_xlate.py
-index 3f74b07..a485ad0 100644
+index 3f74b071..a485ad06 100644
 --- a/tools/build_xlate.py
 +++ b/tools/build_xlate.py
 @@ -99,8 +99,8 @@ def prepare_sources() -> Path:
@@ -23,6 +23,3 @@ index 3f74b07..a485ad0 100644
      # build/xlate is inside this checkout, and git inside a repository reads a "diff --git" patch's paths from the
      # repository's top: those hunks fall outside the directory handed to --directory, git skips every file of the patch
      # and still exits 0. GIT_CEILING_DIRECTORIES stops git from walking up to the checkout, so it reads each patch as it
--- 
-2.56.0
-

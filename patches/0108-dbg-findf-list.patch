@@ -10,7 +10,7 @@ Subject: [PATCH] debug_tools: test-script commands findf <lo> <hi> (a search
  1 file changed, 54 insertions(+), 1 deletion(-)
 
 diff --git a/runtime/debug_tools.c b/runtime/debug_tools.c
-index 6b96198..1dd939f 100644
+index 6b961989..1dd939fb 100644
 --- a/runtime/debug_tools.c
 +++ b/runtime/debug_tools.c
 @@ -742,6 +742,44 @@ int dbg_search_new(uint32_t value, int size) {
@@ -89,6 +89,3 @@ index 6b96198..1dd939f 100644
          } else if (sscanf(colon + 1, "find %llu %u", &value, &size) >= 1) {
              uint64_t t0 = plat_now_ns();
              int n = dbg_search_new((uint32_t)value, (int)size), over = 0;
--- 
-2.56.0
-

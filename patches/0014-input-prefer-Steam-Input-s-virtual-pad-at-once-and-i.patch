@@ -9,7 +9,7 @@ Subject: [PATCH] input: prefer Steam Input's virtual pad at once and ignore
  1 file changed, 24 insertions(+), 2 deletions(-)
 
 diff --git a/runtime/input.c b/runtime/input.c
-index 452183b..4454845 100644
+index 452183b9..4454845d 100644
 --- a/runtime/input.c
 +++ b/runtime/input.c
 @@ -577,6 +577,22 @@ static void map_joysticks(void) {
@@ -60,6 +60,3 @@ index 452183b..4454845 100644
  }
  
  // Under lock: the layout of the open gamepad, picked again when a setting or the gamepad changed; logs each change.
--- 
-2.56.0
-

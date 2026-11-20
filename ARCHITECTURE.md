@@ -743,6 +743,13 @@ as a tag `archive/<name>` (2026-11-14: all 31 branches tagged; `play50-tip` = 15
 d2d2e64 (added lines present in the file, then each missing line checked) found nothing of play50 lacking from it;
 the misses were the merge's known renames (`dbg_camera_watch_pub`, `MADE_AGE_N`, `gfx_shader_set_spirv`'s return),
 reflowed `cfg.c` lists, and upstream's removal of the 0.8 co-op (`coop_local.c`).
+On 2026-11-20 `build` became upstream v0.12.0-3 (52569592; upstream itself is final, merged into Triforce) plus
+ONE squash commit 54065a9 whose tree is up012 f5ee23b (carry1 merged onto 0.12.0) with upstream's README (exe
+`squash1`). Every pre-squash branch and tag is under `refs/archive/pre-resync-2026-11-20/`; per-patch copies stay in
+`patches/` (README "Private local patches"). A linear per-commit replay of carry1's 69 live commits (90 minus 9
+revert pairs and the upstream carries 0126/0128/0129) conflicts in 49 of them on v0.12.0 and equally on 5ae55db, since
+the commits predate the rebase6 merge. A fresh worktree needs `tools/build_shaders.py` (generated `*_spv.h`, e.g.
+`meshfb_clamp_spv.h`) before `build-linux.py`.
 **Fixed build dirs**: one `--out` per target, `NX2navi/build/desktop` and `NX2navi/build/deck` (seeded 2026-11-14 as
 copies of `build/v111-rebase6`, deck4's and play51's out dir), so ninja objects and the lift cache are reused; never a
 fresh out dir per build. (build-linux.py keeps the lift under `<extracted>/build-cache/lift`, objects under `<out>/obj`;

@@ -11,7 +11,7 @@ Subject: [PATCH] vk_memory: NX2NAVI_SHADOW_TOUCH_LOCK=1 (0: old; ab) puts the
  2 files changed, 27 insertions(+), 4 deletions(-)
 
 diff --git a/runtime/cfg.c b/runtime/cfg.c
-index f903bcf..baa83fb 100644
+index f903bcf5..baa83fbd 100644
 --- a/runtime/cfg.c
 +++ b/runtime/cfg.c
 @@ -78,7 +78,7 @@ static const char *const known[] = {
@@ -24,7 +24,7 @@ index f903bcf..baa83fb 100644
      "COOP_STEAM", "COOP_SHARE", "COOP_NAMES", "COOP_CHAT",   // co-op (coop.c, coop_game.c, ui/coop_page.cpp)
      // retired: the settings of the co-op of versions up to 0.9.2; read by nothing, listed so that a file which still
 diff --git a/runtime/vk_memory.c b/runtime/vk_memory.c
-index 3624604..0dbcde5 100644
+index 36246046..0dbcde5c 100644
 --- a/runtime/vk_memory.c
 +++ b/runtime/vk_memory.c
 @@ -1475,14 +1475,30 @@ static int shadow_pool(VkCtx *c, PoolRec *r, uint64_t addr, uint64_t size) {
@@ -99,6 +99,3 @@ index 3624604..0dbcde5 100644
      s_live_n = s_live_bytes = 0;
      plat_mutex_unlock(&shadow_lock);
      for (int i = 0; i < nretiring; i++) destroy_rec(c, retiring[i]);   // finalized ones whose callback never ran
--- 
-2.56.0
-

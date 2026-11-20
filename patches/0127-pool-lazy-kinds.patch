@@ -12,7 +12,7 @@ Subject: [PATCH] NX2NAVI_POOL_LAZY_KINDS=1|2 (default 0): the texture pool's
  2 files changed, 66 insertions(+), 4 deletions(-)
 
 diff --git a/runtime/cfg.c b/runtime/cfg.c
-index 1c6c5e4..670d177 100644
+index 1c6c5e43..670d1774 100644
 --- a/runtime/cfg.c
 +++ b/runtime/cfg.c
 @@ -84,7 +84,7 @@ static const char *const known[] = {
@@ -43,7 +43,7 @@ index 1c6c5e4..670d177 100644
      {"SUBMIT_BATCH", "4", "1..16", RESTART},
  #ifdef _WIN32
 diff --git a/runtime/vk_exec_draw.c b/runtime/vk_exec_draw.c
-index 36949ef..29a6ab1 100644
+index 36949ef7..29a6ab12 100644
 --- a/runtime/vk_exec_draw.c
 +++ b/runtime/vk_exec_draw.c
 @@ -2746,6 +2746,54 @@ static int pool_fill(VkExec *ex, uint32_t id, uint32_t mask, uint64_t tok) {
@@ -145,6 +145,3 @@ index 36949ef..29a6ab1 100644
      if (fresh || gen != PL.gen || ep != PL.epoch || PL.retry) {
          vk_texture_create_budget_locked(spent ? 0 : pool_create_budget());
          PL.n_frame_stops += (uint64_t)spent;
--- 
-2.56.0
-

@@ -13,7 +13,7 @@ Subject: [PATCH] vk_texture: a GPU slot that follows a live entry of another
  2 files changed, 31 insertions(+), 3 deletions(-)
 
 diff --git a/runtime/cfg.c b/runtime/cfg.c
-index c2b3a89..eed8ea0 100644
+index c2b3a89f..eed8ea0f 100644
 --- a/runtime/cfg.c
 +++ b/runtime/cfg.c
 @@ -96,6 +96,7 @@ static const char *const known[] = {
@@ -43,7 +43,7 @@ index c2b3a89..eed8ea0 100644
      {"LOW_END_GPU", "0", "0|1", RESTART},   // LOWEND below
      {"STG_ARENA", "1", "0|1", RESTART}, {"ASTC_GPU_DESWIZZLE", "1", "0|1", RESTART},
 diff --git a/runtime/vk_texture.c b/runtime/vk_texture.c
-index 095fe36..2389c99 100644
+index 095fe36a..2389c993 100644
 --- a/runtime/vk_texture.c
 +++ b/runtime/vk_texture.c
 @@ -222,6 +222,14 @@ static uint32_t agen[AGEN_N];
@@ -93,6 +93,3 @@ index 095fe36..2389c99 100644
          else if (!e && cpu_slot && s->finalized && stale_kept(own)) e = own, n_stale_kept++;
          else if (!e && cpu_slot && s->finalized) stale = 1, n_stale++, n_stale_hm += terrain_heightmap(&s->t);
      }
--- 
-2.56.0
-

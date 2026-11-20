@@ -13,7 +13,7 @@ Subject: [PATCH] vk_memory: NX2NAVI_SHADOW_PRESYNC=1 (0: readers only) syncs
  1 file changed, 40 insertions(+), 7 deletions(-)
 
 diff --git a/runtime/vk_memory.c b/runtime/vk_memory.c
-index a5f41b5..532ce07 100644
+index a5f41b5f..532ce07c 100644
 --- a/runtime/vk_memory.c
 +++ b/runtime/vk_memory.c
 @@ -1399,6 +1399,7 @@ static uint64_t s_marked, s_mark_ticks;           // pages copied in whole with
@@ -113,6 +113,3 @@ index a5f41b5..532ce07 100644
      }
      s_ticks += qpc() - t0;
      plat_mutex_unlock(&shadow_lock);
--- 
-2.56.0
-

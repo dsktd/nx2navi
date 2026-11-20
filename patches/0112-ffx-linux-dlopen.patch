@@ -10,7 +10,7 @@ Subject: [PATCH] vk_ffx: NX2NAVI_FFX_LIB, a dlopen path for the FSR 3.1
  1 file changed, 42 insertions(+), 3 deletions(-)
 
 diff --git a/runtime/vk_ffx.cpp b/runtime/vk_ffx.cpp
-index 65a09f5..0ebe5b6 100644
+index 65a09f5d..0ebe5b6c 100644
 --- a/runtime/vk_ffx.cpp
 +++ b/runtime/vk_ffx.cpp
 @@ -9,6 +9,10 @@
@@ -86,6 +86,3 @@ index 65a09f5..0ebe5b6 100644
  #endif
  }
  
--- 
-2.56.0
-

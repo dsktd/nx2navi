@@ -12,7 +12,7 @@ Subject: [PATCH] NX2NAVI_ASYNC_GATE: async replay's submit call waits for the
  4 files changed, 26 insertions(+), 2 deletions(-)
 
 diff --git a/runtime/cfg.c b/runtime/cfg.c
-index baa83fb..491fb98 100644
+index baa83fbd..491fb989 100644
 --- a/runtime/cfg.c
 +++ b/runtime/cfg.c
 @@ -71,7 +71,7 @@ static const char *const known[] = {
@@ -33,7 +33,7 @@ index baa83fb..491fb98 100644
      {"SHADOW_TABLE_STORES", "0", "0|1", RESTART}, {"SHADOW_CHECK", "0", "0|1", RESTART},
      {"SVC_SLOW_MS", "0", "0..60000", RESTART},   // kernel.c kern_svc: log services slower than this
 diff --git a/runtime/vk_backend.c b/runtime/vk_backend.c
-index e71ec49..b23b454 100644
+index e71ec49b..b23b454f 100644
 --- a/runtime/vk_backend.c
 +++ b/runtime/vk_backend.c
 @@ -779,6 +779,7 @@ static uint64_t vk_be_submit(const uint64_t *handles, int n) {
@@ -45,7 +45,7 @@ index e71ec49..b23b454 100644
      return replay_enqueue(&it);
  }
 diff --git a/runtime/vk_exec.c b/runtime/vk_exec.c
-index 8ea4d48..713b875 100644
+index 8ea4d488..713b8751 100644
 --- a/runtime/vk_exec.c
 +++ b/runtime/vk_exec.c
 @@ -1461,13 +1461,34 @@ static const void *gate_first_wait(const op_hdr *h) {
@@ -85,7 +85,7 @@ index 8ea4d48..713b875 100644
      if (!w || vk_exec_event_holds_now(w) || !vk_exec_event_cpu_known((const void *)((const p_wait_event *)w)->val)) return;
      uint64_t t0 = kern_now_ns(), now = t0;
 diff --git a/runtime/vk_exec.h b/runtime/vk_exec.h
-index 545b8a0..187c2c0 100644
+index 545b8a0b..187c2c0f 100644
 --- a/runtime/vk_exec.h
 +++ b/runtime/vk_exec.h
 @@ -312,6 +312,7 @@ int vk_exec_event_holds_now(const void *payload);   // an OP_WAIT_EVENT's condit
@@ -96,6 +96,3 @@ index 545b8a0..187c2c0 100644
  int vk_exec_event_at_sync(void);              // NX2NAVI_EVENT_AT_SYNC
  uint64_t vk_exec_event_late_take(void);       // waits only a CPU signal after the copies would have passed, since the last call
  // Since the last call, which resets them: waits, waits reached before their signal, those of them a later replayed
--- 
-2.56.0
-

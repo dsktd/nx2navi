@@ -19,7 +19,7 @@ Subject: [PATCH] input: NX2NAVI_MOTION_SOCK reads gyro and accelerometer from
  create mode 100644 runtime/motion_sock_probe.c
 
 diff --git a/runtime/cfg.c b/runtime/cfg.c
-index 4a0bac7..c2b3a89 100644
+index 4a0bac7f..c2b3a89f 100644
 --- a/runtime/cfg.c
 +++ b/runtime/cfg.c
 @@ -95,6 +95,7 @@ static const char *const known[] = {
@@ -49,7 +49,7 @@ index 4a0bac7..c2b3a89 100644
      {"DS3", "0", "0|1", LIVE},   // input_ds3_win.c ds3_read: read a DualShock 3 directly; off: no HID scan
      {"PROMPTS", "nintendo", "nintendo|xbox|playstation|steamdeck|pc", RESTART},
 diff --git a/runtime/host.h b/runtime/host.h
-index 03dde03..62f17c1 100644
+index 03dde03c..62f17c1d 100644
 --- a/runtime/host.h
 +++ b/runtime/host.h
 @@ -437,6 +437,7 @@ void rt_boot(void);                                        // boot.c
@@ -61,7 +61,7 @@ index 03dde03..62f17c1 100644
  int list_monitors(void);                                   // --list-monitors: gfx_window_win.c, gfx_window_sdl.c
  int probe_mods(void);                                      // mods_probe.c
 diff --git a/runtime/input.c b/runtime/input.c
-index 3f00438..c2d697e 100644
+index 3f004389..c2d697e3 100644
 --- a/runtime/input.c
 +++ b/runtime/input.c
 @@ -5,7 +5,8 @@
@@ -128,7 +128,7 @@ index 3f00438..c2d697e 100644
          double acc[3], gyro[3];
          input_motion_axes(a, g, acc, gyro);
 diff --git a/runtime/main.c b/runtime/main.c
-index 635bc4c..9710e17 100644
+index 635bc4c7..9710e173 100644
 --- a/runtime/main.c
 +++ b/runtime/main.c
 @@ -13,6 +13,7 @@
@@ -158,7 +158,7 @@ index 635bc4c..9710e17 100644
  #endif
 diff --git a/runtime/motion_sock.c b/runtime/motion_sock.c
 new file mode 100644
-index 0000000..2e568b5
+index 00000000..2e568b52
 --- /dev/null
 +++ b/runtime/motion_sock.c
 @@ -0,0 +1,111 @@
@@ -275,7 +275,7 @@ index 0000000..2e568b5
 +#endif
 diff --git a/runtime/motion_sock.h b/runtime/motion_sock.h
 new file mode 100644
-index 0000000..54b11fe
+index 00000000..54b11fef
 --- /dev/null
 +++ b/runtime/motion_sock.h
 @@ -0,0 +1,33 @@
@@ -314,7 +314,7 @@ index 0000000..54b11fe
 +#endif
 diff --git a/runtime/motion_sock_probe.c b/runtime/motion_sock_probe.c
 new file mode 100644
-index 0000000..3575ddc
+index 00000000..3575ddca
 --- /dev/null
 +++ b/runtime/motion_sock_probe.c
 @@ -0,0 +1,120 @@
@@ -438,6 +438,3 @@ index 0000000..3575ddc
 +    return fails != 0;
 +}
 +#endif
--- 
-2.56.0
-

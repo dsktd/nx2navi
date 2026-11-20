@@ -14,7 +14,7 @@ Play sessions hit that limit in bursts (LimitReached), once right before ground 
  1 file changed, 12 insertions(+), 1 deletion(-)
 
 diff --git a/runtime/memory.c b/runtime/memory.c
-index 95774c6..cc855ac 100644
+index 95774c6d..cc855ac1 100644
 --- a/runtime/memory.c
 +++ b/runtime/memory.c
 @@ -53,6 +53,7 @@ static uint64_t heap_size, alias_bytes;
@@ -58,6 +58,3 @@ index 95774c6..cc855ac 100644
          break;
      case 12: v = L.aslr.base; break;
      case 13: v = L.aslr.size; break;
--- 
-2.56.0
-

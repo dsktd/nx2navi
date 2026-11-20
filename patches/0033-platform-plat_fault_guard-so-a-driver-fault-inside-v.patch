@@ -17,7 +17,7 @@ module truncated to its header: same fault offset, 4 caught, the replay to frame
  3 files changed, 49 insertions(+), 3 deletions(-)
 
 diff --git a/runtime/platform/linux.c b/runtime/platform/linux.c
-index de4b4ae..3c387f1 100644
+index de4b4ae6..3c387f1b 100644
 --- a/runtime/platform/linux.c
 +++ b/runtime/platform/linux.c
 @@ -1242,6 +1242,8 @@ static int (*fault_hook)(uint64_t addr);
@@ -49,7 +49,7 @@ index de4b4ae..3c387f1 100644
          int found = dladdr((void *)rip, &at) && at.dli_fname;
          PlatCrash c = {sig == SIGSEGV ? "access violation" : sig == SIGBUS ? "bus error"
 diff --git a/runtime/platform/platform.h b/runtime/platform/platform.h
-index 1261242..298dde6 100644
+index 12612420..298dde66 100644
 --- a/runtime/platform/platform.h
 +++ b/runtime/platform/platform.h
 @@ -297,6 +297,22 @@ void plat_crash_context(const char *s);
@@ -76,7 +76,7 @@ index 1261242..298dde6 100644
  int plat_mem_readable(uint64_t addr, uint64_t n);         // every page of [addr, addr + n) can be read; no fault
  void *plat_aligned_alloc(size_t size, size_t align);      // free with plat_aligned_free; NULL on failure
 diff --git a/runtime/vk_pipeline.c b/runtime/vk_pipeline.c
-index c543196..5d49b2c 100644
+index c5431962..5d49b2c7 100644
 --- a/runtime/vk_pipeline.c
 +++ b/runtime/vk_pipeline.c
 @@ -583,9 +583,24 @@ static volatile uint32_t cache_merges;
@@ -123,6 +123,3 @@ index c543196..5d49b2c 100644
          plat_crash_context(NULL);
          double ms = ms_since(t1);   // the link alone: library builds are counted apart
          if (build) plat_mutex_lock(&P.lock);
--- 
-2.56.0
-

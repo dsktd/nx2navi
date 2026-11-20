@@ -13,7 +13,7 @@ Subject: [PATCH] NX2NAVI_FIXED_TICKS=1 (default off, needs
  3 files changed, 34 insertions(+), 1 deletion(-)
 
 diff --git a/runtime/frame_rate.c b/runtime/frame_rate.c
-index 0862c37..f095064 100644
+index 0862c370..f0950643 100644
 --- a/runtime/frame_rate.c
 +++ b/runtime/frame_rate.c
 @@ -865,6 +865,7 @@ static uint64_t presents;
@@ -25,7 +25,7 @@ index 0862c37..f095064 100644
  // NX2NAVI_FIXED_STEP, so they act on the same frames in every run; the host clock without it, as before.
  uint64_t frame_step_script_ns(void) {
 diff --git a/runtime/host.h b/runtime/host.h
-index 48b8960..5570934 100644
+index 48b8960b..55709343 100644
 --- a/runtime/host.h
 +++ b/runtime/host.h
 @@ -432,6 +432,7 @@ int64_t frame_step_world_us(void);                         // game time since th
@@ -37,7 +37,7 @@ index 48b8960..5570934 100644
  // game time in the order A B B A (repeated); rt_ab() is 1 in the B blocks, 0 in A blocks, before the world clock and
  // without NX2NAVI_AB. rt_knob(name, def) reads the switch
 diff --git a/runtime/main.c b/runtime/main.c
-index dbc1cc8..1174dac 100644
+index dbc1cc85..1174dac1 100644
 --- a/runtime/main.c
 +++ b/runtime/main.c
 @@ -42,6 +42,7 @@
@@ -87,6 +87,3 @@ index dbc1cc8..1174dac 100644
  
  // ---- crash reporter
  typedef struct { uintptr_t host; uint64_t guest; } FnRev;
--- 
-2.56.0
-

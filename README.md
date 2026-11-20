@@ -210,6 +210,16 @@ Field, HDR10 native through niri-spicy, 240 Hz panel. Since the 2026-11-08 morni
 `build` branch of the `NX2navi` worktree and are never pushed or published (the license forbids
 distribution). After `just update`, `build` may need a rebase onto the new upstream.
 
+**Since 2026-11-20 `build` is one squash commit** (54065a9, exe `squash1`) on upstream v0.12.0-3 (52569592, readme
+only past v0.12.0): its tree is up012 f5ee23b with upstream's README, i.e. carry1 c4b2254 as merged onto 0.12.0. A
+per-commit rebase was not done (49 of the 69 live commits conflict, ~140 hunks). The old history is kept under
+`refs/archive/pre-resync-2026-11-20/{heads,tags}/*`. `patches/` stays the per-patch reference, regenerated
+2026-11-20 with `git format-patch` from carry1's 69 live commits (old numbers kept; only 0120 had drifted from its
+commit). Live: 0003,0005,0007,0011,0012,0014,0015,0017,0018,0023,0026,0031,0032,0033,0034,0034,0035,0039,0040,0041,0043,0045,0049,0051,0053,0055,0056,0057,0058,0059,0060,0061,0062,0063,0067,0070,0079,0081,0084,0087,0088,0089,0090,0091,0092,0093,0094,0095,0096,0097,0099,0100,0101,0106,0107,0108,0109,0112,0114,0115,0116,0120,0124,0125,0127,0132-0135 (the four formerly unnumbered commits: 0132 shader reload without pipelines,
+0133 udmabuf guest memory, 0134 Deck picture window fallback, 0135 widescreen monitor log). Not in the squash: 0130
+(the merge itself, folded in) and 0131 (up012sc only). **Dropped** (reverted on build, taken over by upstream 0126/0128/0129,
+or folded earlier; files kept as history, not applied): 0001,0002,0004,0006,0008,0009,0010,0013,0016,0019,0020,0022,0024,0025,0027,0028,0029,0030,0033,0035,0036,0037,0038,0042,0044,0046,0047,0048,0050,0052,0054,0064,0065,0066,0068,0069,0071,0072,0073,0074,0075,0076,0077,0078,0080,0082,0083,0085,0086,0098,0102,0103,0104,0113,0118,0123,0126,0128,0129,0130,0131.
+
 - `0001-shadow-write-back-changed-pages.patch`: shadow write-back copies only pages the GPU changed
   (fixes the outdoor write-back storm, ~23 -> 30 fps).
 - `0004-shadow-sync-next-part-writes.patch`: the shadow sync copies the CPU's bytes under the next part's own GPU

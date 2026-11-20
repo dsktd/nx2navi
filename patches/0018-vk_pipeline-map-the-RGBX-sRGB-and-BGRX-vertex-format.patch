@@ -16,7 +16,7 @@ frame.
  1 file changed, 11 insertions(+), 1 deletion(-)
 
 diff --git a/runtime/vk_pipeline.c b/runtime/vk_pipeline.c
-index 8fde28b..c543196 100644
+index 8fde28b0..c5431962 100644
 --- a/runtime/vk_pipeline.c
 +++ b/runtime/vk_pipeline.c
 @@ -1195,7 +1195,7 @@ typedef struct { VkFormat vk; uint8_t type; } VtxFmt;
@@ -52,6 +52,3 @@ index 8fde28b..c543196 100644
              a->binding = VK_PIPE_ZERO_BINDING, a->format = zero_format(io[l].type);
              zero = 1;
          }
--- 
-2.56.0
-

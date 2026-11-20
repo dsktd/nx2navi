@@ -23,7 +23,7 @@ translator (59867f7d) is added, which also revives NX2NAVI_AO=0.
  6 files changed, 107 insertions(+), 2 deletions(-)
 
 diff --git a/runtime/cfg.c b/runtime/cfg.c
-index 51bb21f..2cc8b8c 100644
+index 51bb21f2..2cc8b8ca 100644
 --- a/runtime/cfg.c
 +++ b/runtime/cfg.c
 @@ -71,7 +71,7 @@ static const char *const known[] = {
@@ -44,7 +44,7 @@ index 51bb21f..2cc8b8c 100644
      {"SHADOW_TABLE_STORES", "0", "0|1", RESTART}, {"SHADOW_CHECK", "0", "0|1", RESTART},
      {"SVC_SLOW_MS", "0", "0..60000", RESTART},   // kernel.c kern_svc: log services slower than this
 diff --git a/runtime/gfx.h b/runtime/gfx.h
-index 46e9af0..d3024b1 100644
+index 46e9af09..d3024b15 100644
 --- a/runtime/gfx.h
 +++ b/runtime/gfx.h
 @@ -28,6 +28,7 @@ uint64_t gfx_vsync_time_ns(uint64_t tick);                 // kern_now_ns() time
@@ -56,7 +56,7 @@ index 46e9af0..d3024b1 100644
  
  // ---- shader service client (gfx_shader.c)
 diff --git a/runtime/nvn_api_cmd.c b/runtime/nvn_api_cmd.c
-index 257f1ff..f57d765 100644
+index 257f1ff4..f57d7656 100644
 --- a/runtime/nvn_api_cmd.c
 +++ b/runtime/nvn_api_cmd.c
 @@ -1296,6 +1296,15 @@ void nvn_submit_prepare_async(const uint64_t *handles, uint64_t *out, int n) {
@@ -76,7 +76,7 @@ index 257f1ff..f57d765 100644
      doom_free(doomed);
      for (int i = 0; i < n; i++) {
 diff --git a/runtime/vk_exec.c b/runtime/vk_exec.c
-index 28218a8..60132fa 100644
+index 28218a8a..60132faf 100644
 --- a/runtime/vk_exec.c
 +++ b/runtime/vk_exec.c
 @@ -1583,6 +1583,86 @@ static void evo_resume(VkExec *ex) {
@@ -191,7 +191,7 @@ index 28218a8..60132fa 100644
          }
          if (vk_exec_signalled && depth == 0 && !evo_in) evo_resume(ex);   // their ops go through this walk's checks
 diff --git a/runtime/vk_exec.h b/runtime/vk_exec.h
-index b74d044..6a4dffb 100644
+index b74d044b..6a4dffb3 100644
 --- a/runtime/vk_exec.h
 +++ b/runtime/vk_exec.h
 @@ -288,6 +288,7 @@ void vk_c0_fill(uint8_t bank[VK_C0_BYTES], int stage, const p_bind_buf ssbo[16],
@@ -203,7 +203,7 @@ index b74d044..6a4dffb 100644
  VkImageAspectFlags vk_exec_view_aspect(const VkTexImage *img, const view_t *v, int hv);
  VkImageView vk_exec_target_view(const VkTexImage *img, VkFormat format, VkImageViewType type, uint32_t aspect,
 diff --git a/runtime/vk_exec_draw.c b/runtime/vk_exec_draw.c
-index 3739818..6000c70 100644
+index 37398185..6000c706 100644
 --- a/runtime/vk_exec_draw.c
 +++ b/runtime/vk_exec_draw.c
 @@ -2472,6 +2472,7 @@ static void ao_trace(VkExec *ex, const GfxShader *sh, int draw) {
@@ -246,6 +246,3 @@ index 3739818..6000c70 100644
  }
  
  // DispatchComputeIndirect: vkCmdDispatchIndirect from the pool buffer. The shader reads the group counts from c0 0x200,
--- 
-2.56.0
-

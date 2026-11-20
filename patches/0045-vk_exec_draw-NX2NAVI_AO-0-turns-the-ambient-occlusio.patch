@@ -12,7 +12,7 @@ Subject: [PATCH] vk_exec_draw: NX2NAVI_AO=0 turns the ambient occlusion off:
  2 files changed, 40 insertions(+)
 
 diff --git a/runtime/cfg.c b/runtime/cfg.c
-index d010b60..8aca3e2 100644
+index d010b600..8aca3e2e 100644
 --- a/runtime/cfg.c
 +++ b/runtime/cfg.c
 @@ -92,6 +92,7 @@ static const char *const known[] = {
@@ -24,7 +24,7 @@ index d010b60..8aca3e2 100644
  
  // The nx2navi.ini section a key cfg_set may write goes to when the file lacks it (nx2navi.ini.example's sections).
 diff --git a/runtime/vk_exec_draw.c b/runtime/vk_exec_draw.c
-index bc20c5e..cf55489 100644
+index bc20c5ee..cf554894 100644
 --- a/runtime/vk_exec_draw.c
 +++ b/runtime/vk_exec_draw.c
 @@ -2410,6 +2410,44 @@ static void pool_catch_up(uint64_t from, uint64_t to) {
@@ -80,6 +80,3 @@ index bc20c5e..cf55489 100644
  }
  
  // DispatchComputeIndirect: vkCmdDispatchIndirect from the pool buffer. The shader reads the group counts from c0 0x200,
--- 
-2.56.0
-

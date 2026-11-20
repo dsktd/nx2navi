@@ -11,7 +11,7 @@ Subject: [PATCH] boot: NX2NAVI_WATCH_REQ=1 polls watch.req (<addr>:<size>,
  1 file changed, 86 insertions(+)
 
 diff --git a/runtime/boot.c b/runtime/boot.c
-index e693a6c..f11fc36 100644
+index e693a6c9..f11fc369 100644
 --- a/runtime/boot.c
 +++ b/runtime/boot.c
 @@ -404,6 +404,91 @@ static int mark_knob(const char *name) {
@@ -114,6 +114,3 @@ index e693a6c..f11fc36 100644
      plat_write_trace_rearm();
      const char *why = input_mark_key() ? "F9" : input_mark_take() ? "gamepad chord" : NULL;
      if (!why && mark_req[0] && n % 4 == 0 && plat_file_exists(mark_req)) why = "mark.req", plat_file_delete(mark_req);
--- 
-2.56.0
-

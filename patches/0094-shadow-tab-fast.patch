@@ -11,7 +11,7 @@ Subject: [PATCH] vk_memory: NX2NAVI_SHADOW_TAB_FAST=1 (0: old) reads a table
  1 file changed, 38 insertions(+), 4 deletions(-)
 
 diff --git a/runtime/vk_memory.c b/runtime/vk_memory.c
-index 84cdb50..99b494c 100644
+index 84cdb508..99b494cd 100644
 --- a/runtime/vk_memory.c
 +++ b/runtime/vk_memory.c
 @@ -1398,6 +1398,7 @@ static uint64_t s_marked, s_mark_ticks;           // pages copied in whole with
@@ -96,6 +96,3 @@ index 84cdb50..99b494c 100644
      }
      s_ticks += qpc() - t0;
      plat_mutex_unlock(&shadow_lock);
--- 
-2.56.0
-

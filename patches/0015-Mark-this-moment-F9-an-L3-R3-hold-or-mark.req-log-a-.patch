@@ -17,7 +17,7 @@ Subject: [PATCH] Mark this moment: F9, an L3+R3 hold or mark.req log a mark,
  9 files changed, 162 insertions(+), 6 deletions(-)
 
 diff --git a/runtime/boot.c b/runtime/boot.c
-index 19925c9..253b91e 100644
+index 19925c98..253b91e7 100644
 --- a/runtime/boot.c
 +++ b/runtime/boot.c
 @@ -20,7 +20,9 @@
@@ -154,7 +154,7 @@ index 19925c9..253b91e 100644
      int64_t w = cfg->seconds ? frame_step_world_us() : -1;
      if (w < 0 || (double)w < cfg->seconds * 1e6) return;
 diff --git a/runtime/cfg.c b/runtime/cfg.c
-index 5708bfa..a075164 100644
+index 5708bfa7..a0751644 100644
 --- a/runtime/cfg.c
 +++ b/runtime/cfg.c
 @@ -89,6 +89,7 @@ static const char *const known[] = {
@@ -166,7 +166,7 @@ index 5708bfa..a075164 100644
  
  // The nx2navi.ini section a key cfg_set may write goes to when the file lacks it (nx2navi.ini.example's sections).
 diff --git a/runtime/flight.h b/runtime/flight.h
-index 173c529..41bf2f1 100644
+index 173c529f..41bf2f18 100644
 --- a/runtime/flight.h
 +++ b/runtime/flight.h
 @@ -51,3 +51,7 @@ void vk_thumbs_frame(uint64_t frame);    // the present thread names the frame o
@@ -178,7 +178,7 @@ index 173c529..41bf2f1 100644
 +// NX2NAVI_MARK_RING=1 (boot.c): the thumbnail ring also runs for marks, which write its last frames out.
 +extern int mark_ring_on;
 diff --git a/runtime/gfx_present.c b/runtime/gfx_present.c
-index 93ea8ce..2db8a46 100644
+index 93ea8ce0..2db8a46e 100644
 --- a/runtime/gfx_present.c
 +++ b/runtime/gfx_present.c
 @@ -637,7 +637,7 @@ static void record_thumb(VkCommandBuffer cb, VkImage dst, unsigned fence_slot) {
@@ -226,7 +226,7 @@ index 93ea8ce..2db8a46 100644
      plat_rmutex_lock(&g_pl);
      g_capture = on;
 diff --git a/runtime/input.c b/runtime/input.c
-index 4454845..e93954a 100644
+index 4454845d..e93954a6 100644
 --- a/runtime/input.c
 +++ b/runtime/input.c
 @@ -818,6 +818,47 @@ static int32_t shake_stick(int held) {
@@ -286,7 +286,7 @@ index 4454845..e93954a 100644
  }
  
 diff --git a/runtime/input.h b/runtime/input.h
-index 9e0fea8..5ba0348 100644
+index 9e0fea87..5ba03480 100644
 --- a/runtime/input.h
 +++ b/runtime/input.h
 @@ -74,6 +74,10 @@ int input_flight_key(void);
@@ -301,7 +301,7 @@ index 9e0fea8..5ba0348 100644
  // Mouse camera and cursor (input_win.c, Win32 window thread). The window procedure calls input_window_msg first for raw
  // mouse input, cursor hiding and confinement; it returns 1 with *res set when the message is handled. input_cursor_suspend(1)
 diff --git a/runtime/input_sdl.c b/runtime/input_sdl.c
-index a8ccc92..5207916 100644
+index a8ccc926..5207916f 100644
 --- a/runtime/input_sdl.c
 +++ b/runtime/input_sdl.c
 @@ -16,10 +16,11 @@
@@ -335,7 +335,7 @@ index a8ccc92..5207916 100644
          if (k) key_held[k] = (uint8_t)down;
          break;
 diff --git a/runtime/input_win.c b/runtime/input_win.c
-index 228626d..ff622d3 100644
+index 228626d6..ff622d39 100644
 --- a/runtime/input_win.c
 +++ b/runtime/input_win.c
 @@ -197,6 +197,14 @@ int input_flight_key(void) {
@@ -354,7 +354,7 @@ index 228626d..ff622d3 100644
  int ikb_foreground(void) {
      HWND w = gfx_window_handle();
 diff --git a/runtime/vk_backend.c b/runtime/vk_backend.c
-index 3332c10..56b1d2a 100644
+index 3332c107..56b1d2aa 100644
 --- a/runtime/vk_backend.c
 +++ b/runtime/vk_backend.c
 @@ -84,7 +84,7 @@ static void present_main(void *arg) {
@@ -366,6 +366,3 @@ index 3332c10..56b1d2a 100644
          vk_dlssg_present_frame(j.frame);
          vk_present_blit(j.image, VK_IMAGE_LAYOUT_GENERAL, j.format, j.w, j.h, j.has_crop ? j.crop : NULL);
          uint64_t f = vk_sync_submit(NULL, 0);   // a timeline value after the blit: deferred destruction waits for the blit too
--- 
-2.56.0
-

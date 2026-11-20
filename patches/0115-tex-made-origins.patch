@@ -10,7 +10,7 @@ Subject: [PATCH] NX2NAVI_TRACE=perf: where the textures made in a perf window
  1 file changed, 91 insertions(+)
 
 diff --git a/runtime/vk_texture.c b/runtime/vk_texture.c
-index 547c989..ba0a669 100644
+index 547c989c..ba0a669a 100644
 --- a/runtime/vk_texture.c
 +++ b/runtime/vk_texture.c
 @@ -2000,6 +2000,7 @@ static void wb_cfg_init(void);
@@ -137,6 +137,3 @@ index 547c989..ba0a669 100644
          memset(n_drop_by, 0, sizeof n_drop_by), memset(n_cpu_empty, 0, sizeof n_cpu_empty);
          n_mark_empty = n_mark_none = n_drop_wb = 0;
          rt_log("perf: frame %llu: texture finalizes: slots marked %llu; slots of another live texture with the same "
--- 
-2.56.0
-

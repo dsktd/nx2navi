@@ -10,7 +10,7 @@ Subject: [PATCH] memory: log the first MapPhysicalMemory that gets new pages
  1 file changed, 9 insertions(+), 1 deletion(-)
 
 diff --git a/runtime/memory.c b/runtime/memory.c
-index 5dd7ade..95774c6 100644
+index 5dd7adea..95774c6d 100644
 --- a/runtime/memory.c
 +++ b/runtime/memory.c
 @@ -54,6 +54,7 @@ static int heap_lazy;               // NX2NAVI_HEAP_LAZY, Windows: the heap is c
@@ -61,6 +61,3 @@ index 5dd7ade..95774c6 100644
      if (r) rt_log("%sMapPhysicalMemory %#llx+%#llx failed %#x (alias %#llx used, heap %#llx)", unmap ? "Un" : "",
                    (unsigned long long)a, (unsigned long long)n, r, (unsigned long long)alias_bytes,
                    (unsigned long long)heap_size);
--- 
-2.56.0
-

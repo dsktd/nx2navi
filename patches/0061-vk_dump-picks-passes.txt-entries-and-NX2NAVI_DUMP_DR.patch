@@ -12,7 +12,7 @@ Subject: [PATCH] vk_dump: picks, passes.txt entries and NX2NAVI_DUMP_DRAWS
  2 files changed, 32 insertions(+), 4 deletions(-)
 
 diff --git a/runtime/vk_dump.c b/runtime/vk_dump.c
-index 93f5d30..7c4d0ef 100644
+index 93f5d30a..7c4d0ef7 100644
 --- a/runtime/vk_dump.c
 +++ b/runtime/vk_dump.c
 @@ -888,6 +888,27 @@ static void cbank_list(Str *b, const VkExec *ex, const VkPipeInfo *info) {
@@ -68,7 +68,7 @@ index 93f5d30..7c4d0ef 100644
      r->text = b.s;
      pick_sc = sc, pick_q = pick_n++;
 diff --git a/runtime/vk_exec_draw.c b/runtime/vk_exec_draw.c
-index ef14a2a..d0a48ec 100644
+index ef14a2ac..d0a48eca 100644
 --- a/runtime/vk_exec_draw.c
 +++ b/runtime/vk_exec_draw.c
 @@ -5698,6 +5698,9 @@ int vk_mvobj_execute(VkExec *ex, uint64_t cam, VkImageView mv, VkImageView depth
@@ -118,6 +118,3 @@ index ef14a2a..d0a48ec 100644
      if (d->count <= 0 || !prepare_draw(ex, d->prim, d->count, restart)) return;
      vk_exec_frame.draws++;
      uint64_t bytes = (uint64_t)d->count * isize[d->itype];
--- 
-2.56.0
-

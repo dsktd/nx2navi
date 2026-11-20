@@ -10,7 +10,7 @@ Subject: [PATCH] vk_dump: passes.txt lists every bound uniform block's address
  1 file changed, 21 insertions(+), 4 deletions(-)
 
 diff --git a/runtime/vk_dump.c b/runtime/vk_dump.c
-index 1621382..f7ddc50 100644
+index 1621382f..f7ddc507 100644
 --- a/runtime/vk_dump.c
 +++ b/runtime/vk_dump.c
 @@ -784,12 +784,13 @@ static void describe_bindings(Str *b, const VkExec *ex, const VkPipeInfo *info)
@@ -64,6 +64,3 @@ index 1621382..f7ddc50 100644
      if (pipe >= 0) {
          ents[pipe].draws++;
          goto out;
--- 
-2.56.0
-

@@ -12,7 +12,7 @@ Subject: [PATCH] NX2NAVI_WATCH=<addr>:<size>: log what touches a guest range
  4 files changed, 32 insertions(+)
 
 diff --git a/runtime/vk.h b/runtime/vk.h
-index 2c6c1af..8eb894d 100644
+index 2c6c1af3..8eb894d6 100644
 --- a/runtime/vk.h
 +++ b/runtime/vk.h
 @@ -420,6 +420,7 @@ void vk_gpu_written(uint64_t addr, uint64_t size);
@@ -24,7 +24,7 @@ index 2c6c1af..8eb894d 100644
  uint64_t vk_mem_mirror_uploaded(void);   // --probe-vkexec: bytes copied into mirrors since the last summary line
  int vk_mem_mirror_probe(uint64_t addr);   // --probe-vkexec: the pool at addr gets its mirror as on a first buffer use;
 diff --git a/runtime/vk_exec_draw.c b/runtime/vk_exec_draw.c
-index 7a8ae07..d447cad 100644
+index 7a8ae07f..d447cad1 100644
 --- a/runtime/vk_exec_draw.c
 +++ b/runtime/vk_exec_draw.c
 @@ -7203,6 +7203,7 @@ static void op_update_ub(VkExec *ex, const p_update_ub *u) {
@@ -36,7 +36,7 @@ index 7a8ae07..d447cad 100644
      // results the game reads, from the bytes here, and takes no write-back: one after the tail would land when the
      // game is already writing the next frame's data. Not with the lazy write-back, where the block's pages may be
 diff --git a/runtime/vk_exec_xfer.c b/runtime/vk_exec_xfer.c
-index 4b6695c..4317723 100644
+index 4b6695c9..43177231 100644
 --- a/runtime/vk_exec_xfer.c
 +++ b/runtime/vk_exec_xfer.c
 @@ -1088,6 +1088,7 @@ static void clear_buf(VkExec *ex, const p_clear_buf *p) {
@@ -48,7 +48,7 @@ index 4b6695c..4317723 100644
          ex->recorded++;
          vk_mem_count(d.cls, VK_MUSE_GPU_WRITE, n);
 diff --git a/runtime/vk_memory.c b/runtime/vk_memory.c
-index b340281..1d23714 100644
+index b3402816..1d237143 100644
 --- a/runtime/vk_memory.c
 +++ b/runtime/vk_memory.c
 @@ -1223,6 +1223,32 @@ static int query_stamp(uint64_t lo, uint64_t hi, uint32_t g) {
@@ -108,6 +108,3 @@ index b340281..1d23714 100644
          uint64_t t0 = qpc();
          mem_thaw(addr, size);
          if (bulk) plat_mem_prepare_write(addr, size);
--- 
-2.56.0
-

@@ -17,7 +17,7 @@ Subject: [PATCH] vk_exec_draw: NX2NAVI_POOL_IDLE_MS=<ms> (0: off) looks newly
  6 files changed, 119 insertions(+), 3 deletions(-)
 
 diff --git a/runtime/cfg.c b/runtime/cfg.c
-index a88eee8..f903bcf 100644
+index a88eee8f..f903bcf5 100644
 --- a/runtime/cfg.c
 +++ b/runtime/cfg.c
 @@ -78,7 +78,7 @@ static const char *const known[] = {
@@ -48,7 +48,7 @@ index a88eee8..f903bcf 100644
      {"SUBMIT_BATCH", "4", "1..16", RESTART},
  #ifdef _WIN32
 diff --git a/runtime/vk.h b/runtime/vk.h
-index a86892a..b640cd8 100644
+index a86892a2..b640cd82 100644
 --- a/runtime/vk.h
 +++ b/runtime/vk.h
 @@ -411,6 +411,7 @@ void vk_mem_shadow_sync(uint64_t fence);
@@ -60,7 +60,7 @@ index a86892a..b640cd8 100644
  int vk_mem_shadow_table_stores(void);   // shadow storage keeps what shaders store through the table (NX2NAVI_SHADOW_TABLE_STORES)
  void vk_mem_gpu_pending(uint64_t addr, uint64_t size);
 diff --git a/runtime/vk_exec.c b/runtime/vk_exec.c
-index 60132fa..8ea4d48 100644
+index 60132faf..8ea4d488 100644
 --- a/runtime/vk_exec.c
 +++ b/runtime/vk_exec.c
 @@ -2738,6 +2738,7 @@ int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t
@@ -72,7 +72,7 @@ index 60132fa..8ea4d48 100644
      if (evo && evq[slot].head) {   // the queue waits: this submission lines up behind it
          if (n) cont_push(slot, cont_new(handles, n, 0, NULL)), evo_held++, vk_exec_evt('p', NULL, 0);
 diff --git a/runtime/vk_exec.h b/runtime/vk_exec.h
-index 6a4dffb..545b8a0 100644
+index 6a4dffb3..545b8a0b 100644
 --- a/runtime/vk_exec.h
 +++ b/runtime/vk_exec.h
 @@ -196,6 +196,9 @@ void vk_exec_draw_shaders(const GfxShader **vs, const GfxShader **fs);
@@ -86,7 +86,7 @@ index 6a4dffb..545b8a0 100644
  // vk_exec.c: the stand-in a 3D BC render target is drawn through goes with its image (vk_exec_image_gone).
  void vk_exec_bc_gone(VkImage image);
 diff --git a/runtime/vk_exec_draw.c b/runtime/vk_exec_draw.c
-index 8b7d5ec..fe49819 100644
+index 8b7d5ecc..fe49819e 100644
 --- a/runtime/vk_exec_draw.c
 +++ b/runtime/vk_exec_draw.c
 @@ -2001,6 +2001,7 @@ static struct {
@@ -218,7 +218,7 @@ index 8b7d5ec..fe49819 100644
  
  // A slot whose token changed: filled, or noted as left (pool_defer). With the frame's creation time spent (spent), a
 diff --git a/runtime/vk_memory.c b/runtime/vk_memory.c
-index 532ce07..3624604 100644
+index 532ce07c..36246046 100644
 --- a/runtime/vk_memory.c
 +++ b/runtime/vk_memory.c
 @@ -1426,6 +1426,14 @@ static uint64_t s_t_over_all;                     // shadow_lock: s_tab_over sin
@@ -247,6 +247,3 @@ index 532ce07..3624604 100644
      if (res != VK_SUCCESS) {
          rt_log("vk: pool %#llx+%#llx: shadow allocation failed (%d)", (unsigned long long)addr, (unsigned long long)size,
                 (int)res);
--- 
-2.56.0
-

@@ -11,7 +11,7 @@ Subject: [PATCH] vk_memory: NX2NAVI_SHADOW_TAB_DIRTY=1 (0: walk all) indexes
  1 file changed, 93 insertions(+), 5 deletions(-)
 
 diff --git a/runtime/vk_memory.c b/runtime/vk_memory.c
-index 99b494c..11f1d5d 100644
+index 99b494cd..11f1d5d1 100644
 --- a/runtime/vk_memory.c
 +++ b/runtime/vk_memory.c
 @@ -95,6 +95,7 @@ typedef struct PoolRec {
@@ -173,6 +173,3 @@ index 99b494c..11f1d5d 100644
              PoolRec *r = stab[i];
              if (r->stouched) continue;
              uint64_t r0 = r->import_lo >> SNAP_SHIFT, r1 = (r->import_hi - 1) >> SNAP_SHIFT;
--- 
-2.56.0
-

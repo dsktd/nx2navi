@@ -14,7 +14,7 @@ Subject: [PATCH] kernel: NX2NAVI_STALL_MS (default 0, off) logs, for a present
  4 files changed, 93 insertions(+), 2 deletions(-)
 
 diff --git a/runtime/cfg.c b/runtime/cfg.c
-index 07226ca..51bb21f 100644
+index 07226ca0..51bb21f2 100644
 --- a/runtime/cfg.c
 +++ b/runtime/cfg.c
 @@ -68,7 +68,7 @@ static const char *const known[] = {
@@ -35,7 +35,7 @@ index 07226ca..51bb21f 100644
      {"PCSS", "0", "0..200", RESTART},
      // Game
 diff --git a/runtime/host.h b/runtime/host.h
-index 8a2df2e..b15d137 100644
+index 8a2df2e6..b15d1374 100644
 --- a/runtime/host.h
 +++ b/runtime/host.h
 @@ -320,6 +320,7 @@ void kern_host_left(void *thread);                         // back at depth 0 wi
@@ -47,7 +47,7 @@ index 8a2df2e..b15d137 100644
  uint32_t kern_handle_new(int kind, void *obj);             // kind: KERN_SESSION or KERN_TMEM (ipc.c)
  void *kern_handle_get(uint32_t h, int kind);
 diff --git a/runtime/kernel.c b/runtime/kernel.c
-index 31701e7..524c3b6 100644
+index 31701e70..524c3b64 100644
 --- a/runtime/kernel.c
 +++ b/runtime/kernel.c
 @@ -86,6 +86,7 @@ struct RtThread {
@@ -170,7 +170,7 @@ index 31701e7..524c3b6 100644
  static inline uint32_t ld32(uint64_t a) { return __atomic_load_n((uint32_t *)(uintptr_t)a, __ATOMIC_SEQ_CST); }
  static inline void st32(uint64_t a, uint32_t v) { __atomic_store_n((uint32_t *)(uintptr_t)a, v, __ATOMIC_SEQ_CST); }
 diff --git a/runtime/perf.c b/runtime/perf.c
-index fb0d0c8..b9db9c9 100644
+index fb0d0c8d..b9db9c98 100644
 --- a/runtime/perf.c
 +++ b/runtime/perf.c
 @@ -824,6 +824,7 @@ void perf_present(uint64_t frame) {
@@ -181,6 +181,3 @@ index fb0d0c8..b9db9c9 100644
      if (flight_on) flight_frame(frame, now, d, frame_ns, counts);
      if (!(rt_trace & RT_TRACE_PERF)) {
          memset(frame_ns, 0, sizeof frame_ns);
--- 
-2.56.0
-
