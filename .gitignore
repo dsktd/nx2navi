@@ -21,3 +21,4 @@ refs/
 __pycache__/
 *.so
 *.lock
+dist/
