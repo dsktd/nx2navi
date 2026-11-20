@@ -6,5 +6,5 @@
 # keeps them. First start translates those shaders again (~300 in a field/graveyard session).
 export NX2NAVI_RUN_NAME="${NX2NAVI_RUN_NAME:-xl701}" NX2NAVI_EXE="${NX2NAVI_EXE:-xl149}"
 export NX2NAVI_SHADER_CARRY_POOL="${NX2NAVI_SHADER_CARRY_POOL:-1}"
-export NX2NAVI_XLATE="${NX2NAVI_XLATE:-$(dirname "$0")/../NX2navi/build/xlate-701e7ce/nx2navi_xlate}"
+export NX2NAVI_XLATE="${NX2NAVI_XLATE:-$(cd "$(dirname "$0")/.." && pwd)/NX2navi/build/xlate-701e7ce/nx2navi_xlate}"
 exec sh "$(dirname "$0")/play51.sh" "$@"
