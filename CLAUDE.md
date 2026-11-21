@@ -2,6 +2,8 @@
 
 This repo builds and runs NX2navi on Cal's Arch desktop through Nix. NX2navi is a static recompilation of Zelda: Ocarina of Time (Switch 2, version 1.1.1) to x86-64 with Vulkan. The GPU is an RX 6900 XT on RADV, and the desktop is Niri with a 240 Hz BenQ QD-OLED.
 
+New here: this repo turns your own OoT 1.1.1 `.nup` into a playable Linux build. `just setup /path/game.nup`, then `just play`. New machine or tuning: use the `nx2navi-setup` skill; lab work: `nx2navi-lab-start`.
+
 Read `README.md` first: build steps, workarounds, private patches. The investigation log is in `NOTES-fog-nan.md`. To debug rendering, load the skill `.claude/skills/nx2navi-shader-debug/SKILL.md`. How it all works, plus pitfalls and current recipes: `ARCHITECTURE.md`.
 
 Working in the `NX2navi/` checkout: follow its `NX2navi/AGENTS.md` too (content boundary, build rules).
@@ -60,7 +62,7 @@ Long investigations report to `~/claude/.services/screensavers/feeds/nx2navi-lab
 
 ## Day-to-day
 
-- `just play` runs the game with the defaults: `PIPE_SKIP=any`, `REPLAY_ASYNC=1`, `VK_RECORDER=1`, `TEX_RELEASED_MIB=3072`. Any of them can be overridden from the environment. HDR is left to nx2navi.ini and the in-game option (an env value overrides and locks it, Cal 2026-11-12).
+- `just play` runs the game with the defaults: `PIPE_SKIP=any`, `REPLAY_ASYNC=0` (flickers, Cal 2026-11-18), `VK_RECORDER=1`, `TEX_RELEASED_MIB=3072`. Any of them can be overridden from the environment. HDR is left to nx2navi.ini and the in-game option (an env value overrides and locks it, Cal 2026-11-12).
 - After `just update` (an upstream pull), rebase `build` and rebuild with `just xlate game shaders`, then re-check the private patches.
 - `just shaders` re-runs `fmzpow`, a pow NaN stopgap that is probably obsolete since `f33ed65` but not yet proven so.
 - State of record: the tracker in `dsktd/context` (#128 is 240 fps, #132 is performance), plus git history and the notes.
