@@ -92,6 +92,7 @@ Read at run time:
 - Textures, mostly ASTC, decoded on the GPU and re-encoded to BC3 (play log 141-143).
 - AV1 movies.
 - Saves in `build/v111/profile/save` (14 files, 1.0 MiB; play log 340-341).
+- **Where `build/` lives (2026-11-20).** `NX2navi/build` is a symlink to `~/claude/.build/nx2navi/build` (moved by rename, ~200 GB: exes, caches, extracted game files, logs, dumps), outside the snapshotted `~/claude` scope; `.lab/parity` and `.lab/t175` likewise point into `~/claude/.build/nx2navi/lab/`. Baked-in `build/...` paths keep working through the link. Git ignores it via `/build` in `.bare/NX2navi.git/info/exclude` (the tree's `/build/` only matches a directory, not a symlink).
 
 ## 5. One frame, end to end
 
