@@ -172,6 +172,8 @@ play *args:
     set -euo pipefail
     # `just play <name> [args]`: a run script runs/<name>.sh (its knobs), else build/<ver>/nx2navi.<name>
     set -- {{args}}
+    # no argument: the default run (carry1 knobs on the squash1 exe)
+    [ $# -gt 0 ] || set -- carry1
     if [ $# -gt 0 ] && [ -f "{{justfile_directory()}}/runs/$1.sh" ]; then n=$1; shift; exec sh "{{justfile_directory()}}/runs/$n.sh" "$@"; fi
     if [ $# -gt 0 ] && [ -x "{{src}}/build/{{ver}}/nx2navi.$1" ]; then export NX2NAVI_EXE=$1; shift; fi
     cd "{{src}}"
@@ -291,7 +293,7 @@ pin-desktop CPUS="8-11,24-27":
 # One entry point: `just run` plays with the current best settings (runs/play.sh: the rebased build, build/v111/nx2navi.play32);
 # `just run play13` is the fallback (pre-rebase build). `just run <name>` runs runs/<name>.sh; each script holds its
 # settings, with a header saying what it is. Extra arguments go to the game.
-run NAME="play49" *args:
+run NAME="carry1" *args:
     #!/usr/bin/env sh
     export NX2NAVI_RUN_NAME="${NX2NAVI_RUN_NAME:-{{NAME}}}"   # the log's build line names it
     f="{{justfile_directory()}}/runs/{{NAME}}.sh"
