@@ -55,6 +55,55 @@ default:
 # Everything from the .nup to a playable build: venvs, extract, xlate, game (lift, glue, compile), shaders
 build: venvs extract xlate game shaders
 
+# From a fresh checkout to what a plain `just play` runs (runs/carry1.sh: exe nx2navi.squash1, translator
+# build/xlate-701e7ce, caches shader-cache-rebase + pipeline-cache-rebase.bin), given only the .nup:
+# `just setup /path/game.nup` (or NX2NAVI_NUP). Re-running skips every finished step.
+setup path=nup:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    j() { {{just_executable()}} -f "{{justfile()}}" "$@"; }
+    nup="{{path}}"
+    [ -n "$nup" ] || { echo "setup: give the .nup: just setup /path/game.nup (or set NX2NAVI_NUP)"; exit 1; }
+    [ -f "$nup" ] || { echo "setup: no such file: $nup"; exit 1; }
+    nup=$(realpath "$nup")
+    V="{{src}}/build/{{ver}}" X="{{work}}/extracted/{{ver}}"
+    case "$X" in /*) ;; *) X="{{src}}/$X" ;; esac
+    echo "setup: needs about 45 GB free (extract ~30 GB, game build + shader caches ~15 GB); free here:"
+    df -h "$(dirname "{{src}}")" | tail -1
+    step() { echo "setup: $1"; }
+    [ -e "{{src}}/.git" ] && step "worktree: there" || { step worktree; j worktree; }
+    [ -e "{{src}}/config.local.toml" ] && step "config: there" || { step config; j config; }
+    [ -x "{{src}}/.venv/bin/python" ] && [ -x "{{src}}/.venv-py314/bin/python" ] && step "venvs: there" || { step venvs; j venvs; }
+    step "check $nup"; j nup="$nup" check || { echo "setup: just check rejects $nup (not Ocarina of Time 1.1.1?)"; exit 1; }
+    # game files and the plain translator only feed the exe and the shader caches: skipped when both exist
+    have_exe=0 have_cache=0
+    [ -x "$V/nx2navi.squash1" ] && have_exe=1
+    [ -f "$V/pipeline-cache-rebase.bin" ] && [ -n "$(ls -A "$V/shader-cache-rebase" 2>/dev/null)" ] && have_cache=1
+    if [ $have_exe = 1 ] && [ $have_cache = 1 ]; then step "extract, xlate: not needed (exe and caches there)"; else
+        [ -d "$X/romfs" ] && [ -d "$X/exefs" ] && step "extract: there" || { step "extract (~30 GB)"; j nup="$nup" extract; }
+        [ -x "{{src}}/build/xlate/nx2navi_xlate" ] && step "xlate: there" || { step xlate; j xlate; }
+    fi
+    [ -x "{{src}}/build/xlate-701e7ce/nx2navi_xlate" ] && step "xlate-701e7ce: there" || { step xlate-701e7ce; j xlate-pin; }
+    [ $have_exe = 1 ] && step "exe squash1: there" || { [ -x "$V/nx2navi" ] || { step game; j game; }; step "exe squash1 = build/{{ver}}/nx2navi"; cp "$V/nx2navi" "$V/nx2navi.squash1.tmp"; mv "$V/nx2navi.squash1.tmp" "$V/nx2navi.squash1"; }
+    [ $have_cache = 1 ] && step "shaders: there" || { step "shaders (opens a window)"; j shaders-play; }
+    mkdir -p "$V/logs" "$V/profile"
+    echo "setup: done; play with: just play"
+
+# The translator `just play` uses (runs/xl701.sh), built from upstream 701e7ce into build/xlate-701e7ce
+xlate-pin rev="701e7ce":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd "{{src}}"
+    w="build/xlate-src-{{rev}}"
+    [ -e "$w/.git" ] || git worktree add --detach "$w" {{rev}}
+    {{dev}} env GIT_CEILING_DIRECTORIES="$PWD/$w" {{py}} -I "$w/tools/build_xlate.py" --out "$PWD/build/xlate-{{rev}}"
+    git worktree remove --force "$w"
+
+# `just shaders` into the caches `just play` reads (runs/play.sh, translator runs/xl701.sh), then fmzpow on them
+shaders-play:
+    cd "{{src}}" && {{dev}} env {{radv}} NX2NAVI_EXE=squash1 NX2NAVI_XLATE="$PWD/build/xlate-701e7ce/nx2navi_xlate" NX2NAVI_SHADER_CACHE="$PWD/build/{{ver}}/shader-cache-rebase" NX2NAVI_PIPELINE_CACHE="$PWD/build/{{ver}}/pipeline-cache-rebase.bin" {{wrapper}} {{py314}} tools/prepare_shaders.py build/{{ver}} --version {{ver}} --exe nx2navi.squash1 --romfs "{{work}}/extracted/{{ver}}/romfs" --exefs "{{work}}/extracted/{{ver}}/exefs" --no-list
+    {{just_executable()}} -f "{{justfile()}}" fmzpow shader-cache-rebase
+
 # A worktree of the bare clone in ~/claude/.bare at {{src}}, branch build on origin/main
 worktree:
     test -e "{{src}}/.git" || git -C ~/claude/.bare/NX2navi.git worktree add "{{src}}" -b build --track origin/main
@@ -106,8 +155,8 @@ shaders: && fmzpow
 # NaN instead of 1; a NaN in the sky-ambient SH block then blacks fog and ambient for good. Scans the shader cache
 # (in parallel) for that pattern and rewrites those multiplies as (a == 0 || b == 0) ? 0 : a * b. Runs after
 # `shaders`; files already fixed have a .orig beside them and are rewritten from it (idempotent).
-fmzpow:
-    cd "{{src}}" && {{dev}} bash -c 'find build/{{ver}}/shader-cache -name "*.spv" -print0 | xargs -0 -P"$(nproc)" -n 500 python3 "{{flake}}/tools/fmz-pow-scan.py" | cut -d" " -f1 | xargs -r -n 200 python3 "{{flake}}/tools/fmz-pow.py"'
+fmzpow cache="shader-cache":
+    cd "{{src}}" && {{dev}} bash -c 'find build/{{ver}}/{{cache}} -name "*.spv" -print0 | xargs -0 -P"$(nproc)" -n 500 python3 "{{flake}}/tools/fmz-pow-scan.py" | cut -d" " -f1 | xargs -r -n 200 python3 "{{flake}}/tools/fmz-pow.py"'
 
 # OBSOLETE (root cause fixed by private patch 0004 / build f33ed65; kept only for `nanguard restore`): NaN guard on the volumetric fog light-injection shader (its NaN blacks the picture; NOTES-fog-nan.md).
 # Runs after `shaders`; `just nanguard restore` puts the original SPIR-V back.

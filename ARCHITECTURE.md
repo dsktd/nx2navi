@@ -669,6 +669,8 @@ PATH that does `env -0` yields its final environment (`launcher/src/run.rs` Plan
 `build/extracted/v111`); 1.1.1 = main.npdm ACI0 program id 0x0400486024DEC000 (ACI0 offset at 0x70, id at +0x10)
 and main's NSO build id e0f3ccfa... at 0x40 (`tools/make_game.py` check). Upstream's own launcher is Windows-only.
 
+**`just setup <nup>` (2026-11-21)** produces exactly what `just play` (carry1 -> xl701 -> ... -> play.sh) reads: exe `build/v111/nx2navi.squash1` (a fresh setup copies `just game`'s `nx2navi`; its baked ExeFS/RomFS path is `{work}/extracted/v111`, not this machine's `extracted-rebase6`), translator `build/xlate-701e7ce/nx2navi_xlate` (`just xlate-pin`), caches `shader-cache-rebase` + `pipeline-cache-rebase.bin` (`just shaders-play`: prepare_shaders with `NX2NAVI_XLATE`/`NX2NAVI_SHADER_CACHE`/`NX2NAVI_PIPELINE_CACHE` set, so the cache is keyed by the translator play uses; plain `just shaders` fills `shader-cache` with `build/xlate`, which play never reads). `fmzpow` takes the cache dir as an argument. Unverified end to end with a real .nup.
+
 ### AppImage for Cal's other machines: `just appimage` (2026-11-20, squash1 54065a9)
 
 `tools/appimage` + `tools/appimage-AppRun.in` -> `dist/NX2navi-<exe>.AppImage` (private, gitignored). Facts it rests on:

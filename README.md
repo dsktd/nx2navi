@@ -22,6 +22,17 @@ Ocarina 1.1.1 but compiles only with MSYS2 on Windows. `build-linux.py` here run
 bring-up fixes) and glue writer, then compiles and links with the Linux flags of `build_game.py` through Ninja, plus
 dav1d (the Switch 2 movies) and `-fdeclspec` (the FidelityFX header). Nothing in the checkout changes.
 
+## Setup from a .nup (`just setup`)
+
+`just setup /path/game.nup` (or `NX2NAVI_NUP`) takes a fresh checkout to what a plain `just play` runs: worktree,
+config, venvs, `just check` of the .nup (fails early), extract (~30 GB; it prints the need and the free space
+first), `xlate`, the pinned translator `build/xlate-701e7ce` (`just xlate-pin`, a detached worktree of 701e7ce),
+`game` copied to `build/v111/nx2navi.squash1`, then `just shaders-play` (prepare into `shader-cache-rebase` +
+`pipeline-cache-rebase.bin` with that translator, then `fmzpow` on it), and `logs/`, `profile/`. Each step is skipped
+when its output exists; extract and `xlate` are skipped when exe and caches already exist. A fresh worktree is
+upstream main without the private patches on `build`. Project skills in `.claude/`: `nx2navi-setup` (players),
+`nx2navi-lab-start`, `nx2navi-shader-debug` and the agent `nx2navi-lab` (lab).
+
 ## Game files
 
 A `.nup` dump is unencrypted and needs no keys: `NX2NAVI_NUP=/path/game.nup just extract` unpacks it with
