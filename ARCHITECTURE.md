@@ -749,6 +749,8 @@ pos=x,y,z yaw=<deg> age=adult|child` (Link's exact place: actor +0x31c position,
 
 ### One codebase, one branch (Cal, 2026-11-14)
 
+**Disk cleanup 2026-11-20 (Cal: keep only the version he plays).** `just play` = runs/carry1.sh -> xl701.sh -> play51 chain, exe `build/v111/nx2navi.squash1` (54065a9), translator `build/xlate-701e7ce`. Its data, from the play log: shader cache `build/v111/shader-cache-rebase` (set by runs/play.sh, not `shader-cache`), pipeline caches `pipeline-cache-rebase.bin` + `pipeline-cache-rebase-play.bin`, `romfs-index.bin`, and game files `build/extracted-rebase6/v111/{romfs,exefs}` (path baked into the exe at build time; romfs.bin is a hardlink shared with `extracted`/`extracted-rebase`). All other exes, `build/store`, `v111-rebase*`, `v111-slim`, `up101-game`, dumps and every `.lab` worktree are gone; their branches live only as `refs/archive/pre-resync-2026-11-20/heads/*`. Run scripts that name another exe now need `NX2NAVI_EXE=squash1` or a rebuild.
+
 The desktop and the Steam Deck build from **one commit of the one working branch, `build`** (worktree `NX2navi/`).
 Only build flags and target may differ (today both are `build-linux.py --cpu v3`, the same flags); behaviour that
 differs per machine goes into runtime config (`cfg.c` device profiles such as the `DECK` table, `nx2navi.ini`), never
