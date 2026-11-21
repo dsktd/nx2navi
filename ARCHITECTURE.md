@@ -668,6 +668,22 @@ PATH that does `env -0` yields its final environment (`launcher/src/run.rs` Plan
 `build/extracted/v111`); 1.1.1 = main.npdm ACI0 program id 0x0400486024DEC000 (ACI0 offset at 0x70, id at +0x10)
 and main's NSO build id e0f3ccfa... at 0x40 (`tools/make_game.py` check). Upstream's own launcher is Windows-only.
 
+### AppImage for Cal's other machines: `just appimage` (2026-11-20, squash1 54065a9)
+
+`tools/appimage` + `tools/appimage-AppRun.in` -> `dist/NX2navi-<exe>.AppImage` (private, gitignored). Facts it rests on:
+- The exe writes beside itself: `nx2navi.ini` (cfg.c `find_ini`, no env override), `shader-cache` default and the
+  translator lookup (gfx_shader.c `init_paths`), exefs/romfs/profile/shared-fonts/romfs-patches probes (main.c
+  `portable_paths`), all via `readlink /proc/self/exe`. So it cannot run from the read-only mount: AppRun copies exe +
+  libs once into `$XDG_DATA_HOME/nx2navi/<exe>/` and symlinks the game folder's parts beside it.
+- The exe is EXEC (non-PIE, 0x200000) with a /nix/store glibc interpreter. AppRun starts it as
+  `ld-linux-x86-64.so.2 --library-path ... nx2navi`; with the loader copied next to the exe, /proc/self/exe's folder is
+  still the exe's, and `plat_reexec` (settings restart) re-runs the same cmdline. Side effect: the log's build line says
+  `exe=ld-linux-x86-64.so.2`.
+- nixpkgs' glibc loader ignores the host's /etc/ld.so.cache: host dirs (/usr/lib..., /run/opengl-driver/lib) are listed
+  explicitly after the bundle. Host-only: libvulkan, libEGL/GL, libgbm, libdrm (driver-coupled).
+- nixpkgs SDL3 links X11, JACK, PulseAudio, PipeWire, libusb, libdecor directly (NEEDED, not dlopen): all bundled (~50
+  libs). The translator (NativeAOT) needs only glibc; it is spawned through a wrapper script (posix_spawn takes scripts).
+
 ### A/B cells in one run: `tools/ab-cell` (2026-11-12)
 
 `tools/ab-cell <exe> <west|grave|mid> <tag> <reps> NX2NAVI_<KNOB> [KEY=VAL...]`: lab-run `--warp` straight into the scene (save load only, no walking), the knob set to `ab` with `NX2NAVI_AB=5` (ABBA 5 s blocks, perf.c `rt_ab`), `ab_summary.py --skip 40` per run, then mean and spread of B-A over the reps (`.lab/ab-<tag>-<scene>.txt`). Warm parity caches (`.lab/parity/scR`, `pcR.bin`); FRAME=5400 is ~3 min per run. Always run a null cell beside it (`NX2NAVI_NULL_KNOB`). The perf window holding the dump frame (~280 ms a frame) must be left out: it lands on one side and read as a -13 ms B-A interval with a null knob; ab-cell drops perf windows from FRAME on (`run-ab.log`). With that, play35 (70965ce) null cells give interval B-A -0.04..-0.09 ms in Hyrule west and 0.00 in Graveyard, which runs at the 60 fps cap (16.67 ms), so Graveyard can only show replay time. Only knobs read through `RT_KNOB_ON(mode)` at each use switch live. An exe that aborts at boot (svc 0x26 Break after appletOE) was built while another build ran in `build/v111-rebase`: build under `flock /tmp/nx2navi-build.lock`.

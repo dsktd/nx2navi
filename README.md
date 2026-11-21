@@ -777,6 +777,16 @@ set `NX2NAVI_RDOC` in its environment block or the game requires the hidden exte
 `NX2NAVI_EXE=rdoc` picks `nx2navi.rdoc` until patch 0026 is in the plain binary. HDR: the lab runs SDR; a native-HDR
 capture holds the PQ swapchain, `rdc save` writes it as stored.
 
+## AppImage of one build (Cal's own Linux machines only)
+
+`just appimage [exe] [xlate] [run]` (defaults squash1, xlate-701e7ce, carry1) writes `dist/NX2navi-<exe>.AppImage`
+(~100 MB): exe, translator, their libraries and runs/<run>.sh's knobs as overridable defaults (`knobs.env`). No game
+files, no Mesa or Vulkan loader (the host's are used), Wayland. On the other machine: copy a game folder laid out as
+`NX2navi/tools/package_build.py` writes it (exefs/, romfs/romfs.bin, shared-fonts/, romfs-patches*/, *.bin, optional
+shader-cache/), then `NX2navi-squash1.AppImage game <folder>` once and `NX2navi-squash1.AppImage` to play
+(`where` prints the folders; `NX2NAVI_GAME_DIR` overrides). Saves/cache/logs go to XDG dirs. Never publish it.
+How it works: ARCHITECTURE.md 11 "AppImage".
+
 ## Flatpak build kit (Steam Deck)
 
 `flatpak/` packages a **build kit**, not the game: the toolchain (clang/lld 22, Python 3.12 and 3.14 venvs with the

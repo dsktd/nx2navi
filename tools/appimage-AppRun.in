@@ -1,0 +1,79 @@
+#!/bin/sh
+# NX2navi AppImage (exe @EXE@, translator @XLATE_ID@), built by tools/appimage. PRIVATE: Cal's machines only.
+#
+#   NX2navi-@EXE@.AppImage [game args]       play
+#   NX2navi-@EXE@.AppImage game <dir>        remember the game folder (once per machine)
+#   NX2navi-@EXE@.AppImage where             print the folders it uses
+#
+# The game folder holds what the build made from Cal's own dump, laid out as tools/package_build.py writes it:
+# exefs/ (main.npdm), romfs/romfs.bin, shared-fonts/, romfs-patches*/, romfs-index.bin and the prepared *.bin files
+# (optional: shader-cache/, seeds a fresh cache). Found as $NX2NAVI_GAME_DIR, else the folder `game <dir>` saved,
+# else $XDG_DATA_HOME/nx2navi/game. Nothing of it is inside this file.
+#
+# The exe writes beside itself (nx2navi.ini, logs), so it runs from a copy in $XDG_DATA_HOME/nx2navi/@EXE@ (made
+# once per build). Saves: $XDG_DATA_HOME/nx2navi/profile; shader and pipeline cache: $XDG_CACHE_HOME/nx2navi; logs:
+# $XDG_STATE_HOME/nx2navi/logs. Vulkan: the host's libvulkan and driver. Wayland only. Knobs: knobs.env (runs/carry1.sh
+# as `just play` sets them); a variable already set in the environment wins.
+set -eu
+here=$(dirname "$(readlink -f "$0")")
+data=${XDG_DATA_HOME:-$HOME/.local/share}/nx2navi
+cache=${XDG_CACHE_HOME:-$HOME/.cache}/nx2navi
+state=${XDG_STATE_HOME:-$HOME/.local/state}/nx2navi
+conf=${XDG_CONFIG_HOME:-$HOME/.config}/nx2navi
+inst=$data/@EXE@
+
+case "${1:-}" in
+game)
+    [ -f "${2:-}/romfs/romfs.bin" ] && [ -f "$2/exefs/main.npdm" ] || { echo "nx2navi: $2 has no romfs/romfs.bin or exefs/main.npdm" >&2; exit 1; }
+    mkdir -p "$conf"; readlink -f "$2" > "$conf/game-dir"; echo "nx2navi: game folder $(cat "$conf/game-dir")"; exit 0 ;;
+esac
+game=${NX2NAVI_GAME_DIR:-$(cat "$conf/game-dir" 2>/dev/null || echo "$data/game")}
+if [ "${1:-}" = where ]; then printf 'game    %s\nexe     %s\nsaves   %s\ncache   %s\nlogs    %s\n' "$game" "$inst" "$data/profile" "$cache" "$state/logs"; exit 0; fi
+if [ ! -f "$game/romfs/romfs.bin" ] || [ ! -f "$game/exefs/main.npdm" ]; then
+    echo "nx2navi: no game in $game (needs exefs/main.npdm and romfs/romfs.bin)." >&2
+    echo "  run: $0 game <folder>   or set NX2NAVI_GAME_DIR" >&2
+    exit 1
+fi
+
+# The installed copy: exe, loader, libraries, translator; refreshed when this AppImage's build differs.
+if ! cmp -s "$here/knobs.env" "$inst/knobs.env" 2>/dev/null || ! cmp -s "$here/nx2navi" "$inst/nx2navi"; then
+    mkdir -p "$inst"; rm -rf "$inst/lib" "$inst/xlate"
+    cp -r "$here/lib" "$here/xlate" "$inst/"
+    for f in "$here"/*.so; do [ -e "$f" ] && cp "$f" "$inst/"; done
+    cp "$here/lib/ld-linux-x86-64.so.2" "$inst/"
+    cp "$here/nx2navi" "$inst/nx2navi.tmp" && mv "$inst/nx2navi.tmp" "$inst/nx2navi"
+    cp "$here/xlate/nx2navi_xlate.id" "$inst/nx2navi_xlate.id"
+    cp "$here/knobs.env" "$inst/knobs.env"
+fi
+# Bundled libraries first, then the host's (libvulkan, the driver, Wayland, audio): the bundled loader has no ld.so.cache.
+libs=$inst/lib:$inst:/run/opengl-driver/lib:/run/current-system/sw/lib:/usr/lib64:/usr/lib/x86_64-linux-gnu:/usr/lib:/lib64:/lib/x86_64-linux-gnu:/lib
+cat > "$inst/nx2navi_xlate" <<EOF
+#!/bin/sh
+exec "$inst/ld-linux-x86-64.so.2" --library-path "$libs" "$inst/xlate/nx2navi_xlate" "\$@"
+EOF
+chmod +x "$inst/nx2navi_xlate"
+# The game folder's parts beside the exe, where the runtime looks for them (main.c portable_paths).
+for f in "$game"/*; do
+    n=${f##*/}
+    case $n in nx2navi|nx2navi.*|nx2navi_xlate*|lib|xlate|profile|logs|shader-cache|*.so|knobs.env|ld-linux*) continue ;; esac
+    ln -sfn "$f" "$inst/$n"
+done
+
+mkdir -p "$data/profile" "$cache" "$state/logs"
+[ -d "$cache/shader-cache" ] || { [ -d "$game/shader-cache" ] && cp -r "$game/shader-cache" "$cache/shader-cache"; } || true
+while IFS= read -r kv; do
+    case $kv in ''|'#'*) continue ;; esac
+    k=${kv%%=*}
+    eval "[ -n \"\${$k+x}\" ]" || export "$kv"
+done < "$inst/knobs.env"
+export NX2NAVI_XLATE="${NX2NAVI_XLATE:-$inst/nx2navi_xlate}"
+export NX2NAVI_SHADER_CACHE="${NX2NAVI_SHADER_CACHE:-$cache/shader-cache}"
+export NX2NAVI_PIPELINE_CACHE="${NX2NAVI_PIPELINE_CACHE:-$cache/pipeline-cache.bin}"
+export NX2NAVI_PROFILE_DIR="${NX2NAVI_PROFILE_DIR:-$data/profile}"
+export NX2NAVI_DUMP_DIR="${NX2NAVI_DUMP_DIR:-$state/dump}"
+export NX2NAVI_EXEFS="${NX2NAVI_EXEFS:-$game/exefs}" NX2NAVI_ROMFS="${NX2NAVI_ROMFS:-$game/romfs}"
+cd "$state"
+log=$state/logs/play-$(date +%Y%m%d-%H%M%S).log
+echo "nx2navi: log $log"
+# The loader as the process: /proc/self/exe is then $inst/ld-linux..., so the runtime's "beside the exe" is $inst.
+"$inst/ld-linux-x86-64.so.2" --library-path "$libs" "$inst/nx2navi" "$@" 2>&1 | tee "$log"

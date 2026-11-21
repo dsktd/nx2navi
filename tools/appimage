@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# Pack one build into a single-file AppImage for Cal's own Linux machines: dist/NX2navi-<exe>.AppImage.
+# PRIVATE: holds the recompiled game code; never publish, upload or share it (the upstream license forbids it).
+#
+#   tools/appimage [exe=squash1] [xlate=xlate-701e7ce] [run=carry1]
+#
+# Inside: the exe, the shader translator, their libraries (glibc, SDL3, opus, vpx, dav1d, zstd, gcc runtime) and the
+# knobs of runs/<run>.sh frozen as overridable defaults. Not inside: game files, Mesa, the Vulkan loader (the host's
+# libvulkan and driver are used), Wayland/audio libraries (SDL loads the host's). AppRun.in documents the run side.
+set -euo pipefail
+here=$(cd "$(dirname "$0")/.." && pwd)
+exe=${1:-squash1} xlate=${2:-xlate-701e7ce} run=${3:-carry1}
+v111=$here/NX2navi/build/v111 xdir=$here/NX2navi/build/$xlate
+work=$here/dist/.appdir-$exe out=$here/dist/NX2navi-$exe.AppImage
+nix_appimage=github:ralismark/nix-appimage/28b2101de3f7d0a30e3fff0ed4b6862adba42939   # as voice-room's lock
+[ -x "$v111/nx2navi.$exe" ] || { echo "appimage: no $v111/nx2navi.$exe" >&2; exit 1; }
+[ -x "$xdir/nx2navi_xlate" ] && [ -f "$xdir/nx2navi_xlate.id" ] || { echo "appimage: no translator in $xdir" >&2; exit 1; }
+
+# The knobs `just play $run` sets: the run-script chain with `just` stubbed out, plus the play recipe's own env.
+stub=$(mktemp -d); trap 'rm -rf "$stub"' EXIT
+printf '#!/bin/sh\nenv | grep -E "^(NX2NAVI_|SDL_|RADV_)" | sort\n' > "$stub/just"; chmod +x "$stub/just"
+knobs=$(env -i HOME="$HOME" PATH="$stub:$PATH" sh "$here/runs/$run.sh" |
+    grep -v -E '^NX2NAVI_(EXE|XLATE|SHADER_CACHE|PIPELINE_CACHE|RUN_NAME)=')   # paths: AppRun sets them
+knobs+=$'\n'"NX2NAVI_RUN_NAME=appimage-$exe"$'\n'"NX2NAVI_VK_RECORDER=1"$'\n'"NX2NAVI_TEX_RELEASED_MIB=3072"
+knobs+=$'\n'"NX2NAVI_GPU_WAIT=0"$'\n'"NX2NAVI_PIPE_SKIP=any"$'\n'"SDL_VIDEODRIVER=wayland"$'\n'"SDL_JOYSTICK_HIDAPI_STEAM=0"
+knobs+=$'\n'"RADV_DEBUG=nogpl"
+
+# Library dirs of the dev shell the exe was linked in, and the glibc of its interpreter.
+interp=$(nix shell nixpkgs#binutils -c readelf -l "$v111/nx2navi.$exe" | sed -n 's/.*interpreter: \(.*\)]/\1/p')
+dirs=$(nix develop "$here" -c sh -c 'echo $LD_LIBRARY_PATH' 2>/dev/null | tail -1):$(dirname "$interp")
+# ... and every lib/ in their runtime closures (SDL3's X11, Wayland, audio and libusb libraries live there).
+dirs+=$(IFS=:; for d in $dirs; do nix-store -qR "${d%/lib}"; done | sort -u | sed 's|.*|&/lib\n&/lib/pulseaudio|' | tr '\n' ':' | sed 's/^/:/')
+
+rm -rf "$work"; mkdir -p "$work/lib" "$work/xlate"
+cp "$v111/nx2navi.$exe" "$work/nx2navi"
+cp "$xdir/nx2navi_xlate" "$xdir/nx2navi_xlate.id" "$work/xlate/"
+for f in libamd_fidelityfx_vk.so libffx_backend_vk_x64.so; do [ -f "$v111/$f" ] && cp "$v111/$f" "$work/"; done
+cp -L "$interp" "$work/lib/ld-linux-x86-64.so.2"
+
+# Copy every NEEDED library (transitively) except the host's GPU stack: the Vulkan loader, EGL/GL (glvnd), gbm and
+# libdrm must match the host's driver, so they are never bundled. Everything else nixpkgs' SDL3 links (X11, Wayland,
+# libdecor, ALSA, Pulse, PipeWire, JACK, libusb) is bundled: it talks to the host's servers over stable protocols.
+host_libs='^(libvulkan|libEGL|libGL|libgbm|libdrm)\.'
+needed() { nix shell nixpkgs#binutils -c readelf -d "$@" 2>/dev/null | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' | sort -u; }
+todo=$(needed "$work/nx2navi" "$work/xlate/nx2navi_xlate" "$work"/lib*.so 2>/dev/null)
+todo+=$'\n'"libstdc++.so.6"   # the translator's NativeAOT runtime may load it
+while [ -n "$todo" ]; do
+    next=
+    for n in $todo; do
+        [ "$n" = ld-linux-x86-64.so.2 ] && continue
+        [[ $n =~ $host_libs ]] && continue
+        [ -e "$work/lib/$n" ] || [ -e "$work/$n" ] && continue
+        src=; IFS=: read -ra ds <<< "$dirs"
+        for d in "${ds[@]}"; do [ -e "$d/$n" ] && { src=$d/$n; break; }; done
+        [ -n "$src" ] || { echo "appimage: $n not found in the dev shell" >&2; exit 1; }
+        cp -L "$src" "$work/lib/$n"; chmod u+w "$work/lib/$n"
+        next+=$'\n'$(needed "$work/lib/$n")
+    done
+    todo=$next
+done
+
+# No search paths into this machine's /nix/store: everything resolves in the bundle, else on the host.
+nix shell nixpkgs#patchelf -c sh -c 'for f in "$@"; do patchelf --remove-rpath "$f"; done' _ "$work"/lib/lib* "$work"/*.so "$work/nx2navi" "$work/xlate/nx2navi_xlate"
+sed -e "s|@EXE@|$exe|" -e "s|@XLATE_ID@|$(head -c 12 "$xdir/nx2navi_xlate.id")|" "$here/tools/appimage-AppRun.in" > "$work/AppRun"
+{ echo "# knobs of runs/$run.sh (just play $run); any set in the environment wins"; echo "$knobs" | sed '/^$/d'; } > "$work/knobs.env"
+chmod +x "$work/AppRun"
+cp "$here/flatpak/io.github.dsktd.NX2navi.svg" "$work/nx2navi.svg"
+cat > "$work/nx2navi.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=NX2navi
+Exec=AppRun
+Icon=nx2navi
+Categories=Game;
+EOF
+
+runtime=$(nix build "$nix_appimage#appimage-runtimes.x86_64-linux.appimage-type2-runtime" --no-link --print-out-paths)
+rm -f "$out" "$out.sqfs"
+nix shell nixpkgs#squashfsTools -c mksquashfs "$work" "$out.sqfs" -root-owned -noappend -comp zstd -Xcompression-level 15 -quiet
+cat "$runtime" "$out.sqfs" > "$out"; rm -f "$out.sqfs"; chmod +x "$out"
+rm -rf "$work"
+echo "appimage: $out ($(du -h "$out" | cut -f1)), exe $exe, translator $xlate, knobs runs/$run.sh"

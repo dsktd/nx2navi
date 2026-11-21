@@ -259,6 +259,12 @@ flatpak:
         flatpak-builder --user --install-deps-from=flathub --force-clean --ccache --repo=.repo .build io.github.dsktd.NX2navi.yml && \
         flatpak build-bundle --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo .repo nx2navi-kit.flatpak io.github.dsktd.NX2navi'
 
+# One build as a single-file AppImage for Cal's own Linux machines (tools/appimage): exe + translator + their libraries,
+# runs/<run>.sh's knobs as defaults; the host's Vulkan, no game files. PRIVATE: never publish or upload it.
+# Writes dist/NX2navi-<exe>.AppImage. On the other machine: `<file> game <folder>` once, then `<file>`.
+appimage exe="squash1" xlate="xlate-701e7ce" run="carry1":
+    nice -n 19 "{{flake}}/tools/appimage" {{exe}} {{xlate}} {{run}}
+
 # Install the bundle for this user (the runtime comes from Flathub)
 flatpak-install:
     nix shell nixpkgs#flatpak -c flatpak install --user -y "{{flake}}/flatpak/nx2navi-kit.flatpak"
