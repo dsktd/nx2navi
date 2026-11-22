@@ -1,0 +1,35 @@
+From f69ce77decad0d54c84ad4716fe9463ab20b6c21 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Sun, 8 Nov 2026 14:06:11 -0500
+Subject: [PATCH] Shader reload: a shader without pipelines swaps at once; 256
+ pending reloads
+
+---
+ runtime/vk_pipeline.c | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/runtime/vk_pipeline.c b/runtime/vk_pipeline.c
+index eb39907c..8fde28b0 100644
+--- a/runtime/vk_pipeline.c
++++ b/runtime/vk_pipeline.c
+@@ -8052,7 +8052,7 @@ void vk_pipeline_sizes(PerfSizes *s) {
+ // build of the new SPIR-V that fails puts the old SPIR-V and the old entries back. One log line per reload.
+ volatile uint32_t vk_pipeline_epoch;
+ typedef struct { const GfxShader *s; uint32_t *old; uint64_t old_words; Pipe *pipes; Lib *libs; int frames; } Reload;
+-static Reload RL[32];
++static Reload RL[256];
+ static int n_rl;
+ 
+ static int key_has(const uint8_t *key, size_t n, const GfxShader *s) {
+@@ -8161,6 +8161,11 @@ void vk_pipeline_reload_poll(void) {
+         }
+         uint64_t ow;
+         uint32_t *old = (uint32_t *)gfx_shader_spirv(s, &ow);
++        if (!r && !got && !RL[n_rl].libs) {   // nothing built from it: nothing to wait for
++            gfx_shader_set_spirv(s, w, n);
++            rt_log("vk_pipeline: reload %s ok: not in use", hex);
++            continue;
++        }
+         if (r) {
+             free(old);   // the previous reload's SPIR-V; r keeps the original
+         } else {

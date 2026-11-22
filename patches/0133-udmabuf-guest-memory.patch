@@ -1,0 +1,1020 @@
+From b065449a094b890ff343da18bcce1487381c9877 Mon Sep 17 00:00:00 2001
+From: Vasilis Manetas <vasilis.manetas@fh-erfurt.de>
+Date: Thu, 12 Nov 2026 18:12:08 +0100
+Subject: [PATCH] Import guest memory as dma-bufs through udmabuf on Linux
+ instead of keeping shadow copies of it.
+
+On Linux every CPU-visible pool had a host-visible shadow copy, because amdgpu treats a host-pointer import as a userptr object that it looks up again at every submission and invalidates whenever the write watch or a freeze re-protects its pages. Now the watched reservations are shared mappings of one memfd, /dev/udmabuf makes dma-bufs of page ranges of it, and the device imports them (VK_KHR_external_memory_fd, VK_EXT_external_memory_dma_buf). A dma-buf pins its pages once and is not tied to the process's page tables, so protection changes leave the GPU's mapping alone, and nothing is copied.
+
+RADV puts every imported memory object into every submission, so pools share their imports: guest addresses are cut into 64 MiB spans (NX2NAVI_DMABUF_MB), and each pool is a buffer bound into its span's memory at its offset. A new span is cut back at the spans already there, so spans overlap only where a pool itself lies across an older span's edge, since amdgpu counts every span's pages in its GTT use. A decommit punches the pages out of the memfd, or zeroes them in place where a dma-buf pins them, and the pages a freed span pinned that nothing committed go back to the system.
+
+It is on by default where /dev/udmabuf opens, udmabuf's size_limit_mb is 1024 or more, the device has both extensions and NVIDIA's kernel module is not loaded. A start-up probe imports one page as the pools will be; any refusal keeps the shadow copies, and the log says why. NX2NAVI_DMABUF=0 keeps the copies. tests/platform_dmabuf_test.c checks the shared mapping without a GPU, and docs/building.md ("Memory") describes the imports and what they need.
+
+RX 6800 XT (RADV, Mesa 26.2.6), one build, interleaved pairs with NX2NAVI_DMABUF=1 and 0: Kokiri Forest 60.7 against 40.3 fps (3 pairs, +51%, standard error 0.4), 1% low 50.9 against 34.0, frames over 25 ms 5 against 768; Hyrule Field 55.7 against 42.4 fps (2 pairs, +31%, standard error 0.4). No pool was left without a span, no span was refused, and --probe-vkmem passes with and without the imports.
+---
+ docs/README-BuildKit.md      |   7 +
+ docs/building.md             |  36 +++-
+ runtime/cfg.c                |   2 +-
+ runtime/platform/linux.c     | 218 +++++++++++++++++++++-
+ runtime/platform/platform.h  |  11 ++
+ runtime/platform/win32.c     |   5 +
+ runtime/vk.h                 |   8 +
+ runtime/vk_device.c          |  16 ++
+ runtime/vk_memory.c          | 351 ++++++++++++++++++++++++++++++++++-
+ tests/platform_dmabuf_test.c | 111 +++++++++++
+ 10 files changed, 750 insertions(+), 15 deletions(-)
+ create mode 100644 tests/platform_dmabuf_test.c
+
+diff --git a/docs/README-BuildKit.md b/docs/README-BuildKit.md
+index 6df775cc..734f6c2c 100644
+--- a/docs/README-BuildKit.md
++++ b/docs/README-BuildKit.md
+@@ -121,6 +121,13 @@ memory runs short, it ends the process, so while less than the larger of 4 GB an
+ drops stale textures and evicts idle ones. The log names the limits at the first check (`platform: memory limits`). That
+ cannot give back what the game needs after its start: about 10 GB in Kokiri Forest at a 2160p game resolution.
+ 
++Without NVIDIA's driver, the game hands its memory to the GPU through `/dev/udmabuf` instead of copying it there for
++every submission, which is faster on AMD cards (61 frames a second instead of 40 in Kokiri Forest on an RX 6800 XT).
++That needs the device readable and writable by you (recent systemd gives it to the logged-in user) and udmabuf's
++`size_limit_mb` (`/sys/module/udmabuf/parameters/size_limit_mb`) at 1024 or more (`udmabuf.size_limit_mb=1024` on the
++kernel command line raises it). Otherwise the game copies as before, and the log's `mem:` lines say why
++(`docs/building.md`, "Memory").
++
+ AMD FSR 3.1 loads AMD's `amd_fidelityfx_vk.dll`, which only the Windows build can use: on Linux the menu offers neither
+ FSR 3.1 upscaling nor FSR 3.1 frame generation, and `taa = fsr3` or `framegen = fsr3` in `nx2navi.ini` leave the
+ game's own scaling and swapchain as they are (the log says so). AMD FSR 4 is in the Windows build alone for the same
+diff --git a/docs/building.md b/docs/building.md
+index 2e6ca997..d444041f 100644
+--- a/docs/building.md
++++ b/docs/building.md
+@@ -279,7 +279,8 @@ folder can be deleted; `ocarina --warm-shaders` fills it again.
+ 
+ Memory: on Windows the GPU imports guest memory and `GetWriteWatch` tracks the CPU's writes to it. On Linux,
+ re-protecting imported memory invalidates the driver's userptr buffer on every submit (about 1.3 ms per 16 MiB on
+-amdgpu), and importing pins the pages, which drops their write protection. Each CPU-visible pool therefore gets a
++amdgpu), and importing pins the pages, which drops their write protection. Where guest memory cannot be imported as
++dma-bufs (below), each CPU-visible pool therefore gets a
+ host-visible copy (shadow storage, `runtime/vk_memory.c`): the pages the CPU wrote go in before each submit, and the GPU's
+ writes come back at its fence. Pages both sides write keep a base copy, so each direction moves only its own bytes;
+ a VRAM mirror's write-back merge marks the pages it changed, and only those are compared at the fence; a lookup that
+@@ -295,6 +296,30 @@ copies are only the slower path. In Kokiri Forest on 0.7.1 (RTX 4090, driver 615
+ 51.9 frames a second and the copies at 27.4; on that version the copies also flickered between two looks almost every
+ frame, which the wait for the write-backs under shadow storage (`vk_sync_exec_wait`) has since addressed.
+ 
++On Linux the pools are imports after all where the system allows dma-bufs of guest memory (`runtime/platform/linux.c`,
++"Guest memory as a memfd's"; `runtime/vk_memory.c`, "dma-buf imports"). The watched reservations are then shared
++mappings of one memfd, `/dev/udmabuf` makes dma-bufs of page ranges of it, and the device imports those
++(`VK_KHR_external_memory_fd`, `VK_EXT_external_memory_dma_buf`). A dma-buf pins its pages once and is not tied to the
++process's page tables, so the write watch and the freezes leave the GPU's mapping alone, and nothing is copied. RADV
++puts every imported memory object into every submission (about 0.6 us each), and the game keeps over 4,000 pools, so
++pools share their imports: guest addresses are cut into spans of 64 MiB (`NX2NAVI_DMABUF_MB`), and a pool is a buffer
++bound into its span's memory at its offset. A new span is cut back at the spans already there, so spans overlap only
++where a pool itself lies across an older span's edge: amdgpu counts every span's pages in its GTT use, an overlap twice.
++A span pins all of its pages, those the game never touched included, until some frames after its last pool is gone. It
++takes `/dev/udmabuf` readable and writable by the player (recent systemd gives it to the logged-in user with its
++`uaccess` tag; elsewhere it is often `root` and group `kvm` only), udmabuf's `size_limit_mb`
++(`/sys/module/udmabuf/parameters/size_limit_mb`) at 1024 or more, since the largest pools need about 300 MiB in one
++dma-buf (where it is lower, `udmabuf.size_limit_mb=1024` on the kernel command line raises it), a device with both
++extensions, and NVIDIA's kernel module not loaded: NVIDIA's own driver imports host pointers without amdgpu's cost, as
++above. A start-up probe imports one page of guest memory as the pools will be; where anything is missing or refused, the
++pools keep their shadow copies and the log says why (`mem: dma-buf imports off`, `mem: guest memory is not a memfd's`).
++`NX2NAVI_DMABUF=0` keeps the copies, and `NX2NAVI_DMABUF=1` makes guest memory a memfd's even where NVIDIA's module is
++loaded; both only from the environment, since the reservations are made before `nx2navi.ini` is read. `NX2NAVI_SHADOW=1`
++still forces the copies. In Kokiri Forest (1.1.1, RX 6800 XT, Mesa 26.2) the imports ran at 60.7 frames a second and the
++copies at 40.3, in Hyrule Field at 55.7 and 42.4; the spans then held 8.0 to 9.6 GiB, and amdgpu counted 8.6 to 10.1 GiB
++of its 15.8 GiB host heap in use, against 5.2 to 5.6 GiB with the copies, which are memory of their own beside guest
++memory.
++
+ The device address table (`runtime/vk_gpa.c`) names a pool's shadow copy as it names an import, so shaders follow guest
+ pointers into either. A shader that reads through the table resolves nothing, so the pool it reaches is not queued for
+ the copy-in: a guest submission whose record binds the table (`vk_exec_draw.c` `ssbo_info`) brings the shadow of
+@@ -315,12 +340,13 @@ write-backs landed on pages the CPU had written since their copy-in, and what th
+ plain CPU write and a guest submission that does not bind the table, and hold the written `0x2468ACE0` after one that
+ does; and with `NX2NAVI_SHADOW_TABLE_STORES=1` the store: a GPU
+ write into a shadow page that nothing notes must survive the CPU's writes of that page and reach guest memory. On
+-Linux, run it for each backing:
++Linux, run it for each backing (with `NX2NAVI_DMABUF=1` and `NX2NAVI_SHADOW=0` the pools are dma-buf imports, with
++`NX2NAVI_DMABUF=0` and `NX2NAVI_SHADOW=0` host-pointer imports):
+ 
+ ```sh
+-for shadow in 0 1; do for memory in import mirror; do
+-    NX2NAVI_GPA=1 NX2NAVI_SHADOW=$shadow NX2NAVI_MEMORY=$memory ./ocarina --probe-vkmem
+-done; done
++for dmabuf in 0 1; do for shadow in 0 1; do for memory in import mirror; do
++    NX2NAVI_DMABUF=$dmabuf NX2NAVI_GPA=1 NX2NAVI_SHADOW=$shadow NX2NAVI_MEMORY=$memory ./ocarina --probe-vkmem
++done; done; done
+ ```
+ 
+ The Deck's GPU (Van Gogh) has no native ASTC, so its textures go through the compute decoder (`runtime/vk_astc.c`,
+diff --git a/runtime/cfg.c b/runtime/cfg.c
+index 491fb989..78919a00 100644
+--- a/runtime/cfg.c
++++ b/runtime/cfg.c
+@@ -43,7 +43,7 @@ static const char *const known[] = {
+     "BIND_SKIP", "BIND_STATS", "BIND_UP", "BIND_X", "BIND_Y",
+     "BIND_ZL", "BIND_ZR", "BLOCK_VIEWS_3D", "CACHE_DIE", "CLOTH_REALTIME", "COLOR_BRIGHTNESS", "COMPUTE_KEEP", "COLOR_CONTRAST", "COLOR_GAMMA",
+     "COLOR_PRESET", "COLOR_SATURATION", "CONTACT_DEBUG", "CONTACT_SHADOWS", "CORE_DIAG", "CRIT", "CRIT_OUT",
+-    "DESC_TEMPLATE", "DEVICE_PROFILE", "DISCORD_APP_ID", "DISCORD_IMAGE", "DISCORD_RPC", "DLAA", "DLAA_CAM_KEEP", "DLAA_CUT", "DLSS_IDLE_FREE", "DLAA_EDGE_FILL", "DLAA_AT_UPSCALER", "FFX_DEBUG", "FFX_KEYS", "FSR3_SHARPEN", "DLAA_JITTER", "DLAA_MV", "DLAA_MASKDEBUG", "DLAA_MVDEBUG", "DLAA_OBJMV", "DLAA_SURVEY", "DLAA_TARGET_KEEP", "DLAA_TIMES", "DLSS", "DLSS_CHAR_MASK", "DLSS_PRESET", "DLSS_REACTIVE", "DUMP", "DUMP_BUF", "DUMP_DIR",
++    "DESC_TEMPLATE", "DEVICE_PROFILE", "DMABUF", "DMABUF_MB", "DISCORD_APP_ID", "DISCORD_IMAGE", "DISCORD_RPC", "DLAA", "DLAA_CAM_KEEP", "DLAA_CUT", "DLSS_IDLE_FREE", "DLAA_EDGE_FILL", "DLAA_AT_UPSCALER", "FFX_DEBUG", "FFX_KEYS", "FSR3_SHARPEN", "DLAA_JITTER", "DLAA_MV", "DLAA_MASKDEBUG", "DLAA_MVDEBUG", "DLAA_OBJMV", "DLAA_SURVEY", "DLAA_TARGET_KEEP", "DLAA_TIMES", "DLSS", "DLSS_CHAR_MASK", "DLSS_PRESET", "DLSS_REACTIVE", "DUMP", "DUMP_BUF", "DUMP_DIR",
+     "DUMP_LOG", "DUMP_RAW", "DUMP_SHADERS", "DUMP_FILE", "DS3", "LOG_CS_BINDS", "LOG_TEX_FLAGS", "LOG_MESH", "MESH", "POOL", "NATIVE_TENSOR", "LOG_RCOND", "LOG_RT_SIZES", "DUMP_WHITE", "DUMP_AFTER", "DUMP_MOVIE", "SUBMIT_FINISH", "ACQUIRE_WAIT", "CRASH_FILTER_GUARD", "CS_FALLBACK", "EXEFS", "FEEDBACK", "FIX_C0", "FIX_ZERO", "FLIGHT", "FLIGHT_AT", "FLIGHT_DIR", "FLIGHT_FRAMES", "GPU_TIMELINE",
+     "FFX_PIPE_CACHE", "FLIGHT_SPIKE_MS", "FLIGHT_THUMBS", "FLIGHT_EVERY", "FLUSH_SPAN", "FLUSH_UPLOAD", "FOG_CULL", "FOLIAGE_SHADOW_CULL", "FOLIAGE_SHADOW_VRS", "FOV", "FOV_PATCH", "FG_HUDLESS_SHOW", "FG_MULT", "FPS60", "FPS_LIMIT", "FRAMEGEN", "FRAMEGEN_MULTIPLIER", "FREEZE_IDLE", "FREEZE_ASYNC", "FREEZE_BUDGET_US", "FREE_CORES",
+     "FULLSCREEN", "FXAA", "GAME_ASPECT", "GAME_RES", "GPA", "GPA_EMPTY", "GPA_TWIN", "GPA_TWIN_MAX_KB", "MIRROR_CAPTURE_KB", "WB_SKIP_MB", "GPL", "GPL_DRAW_BUILD", "GPL_FEEDBACK", "PIPE_AHEAD", "PIPE_FAST_WORKERS", "PIPE_FRAME_WAIT_MS", "PIPE_LINK_DRAW_MS", "PIPE_SKIP_STEADY", "PROG_LEAD", "GPU", "GPU_INDEX", "GPU_PASSES", "GPU_NAME", "HDR",
+diff --git a/runtime/platform/linux.c b/runtime/platform/linux.c
+index 72b636c2..d532da46 100644
+--- a/runtime/platform/linux.c
++++ b/runtime/platform/linux.c
+@@ -1113,6 +1113,189 @@ static void ps_set(uint64_t addr, uint64_t n, uint8_t v) {
+     if (addr < PS_LIMIT) memset(pstate + addr / PG, v, (size_t)((n + PG - 1) / PG));
+ }
+ 
++// Guest memory as a memfd's (NX2NAVI_DMABUF, read from the environment: the reservations come before nx2navi.ini; on
++// by default where /dev/udmabuf opens, udmabuf's size limit is 1 GiB or more and NVIDIA's kernel module is not loaded;
++// 0 off, 1 on wherever it can be).
++// The watched reservations are MAP_SHARED mappings of one memfd, each at its own offset, so that /dev/udmabuf can make
++// a dma-buf of the game's own pages and the GPU driver import it (vk_memory.c "dma-buf imports"). A host-pointer
++// import is a userptr object to amdgpu, which the kernel looks up page by page again at every submission and
++// invalidates whenever the write watch or a freeze changes the pages' protection; a udmabuf pins the memfd's pages
++// once and never looks at the process's page tables, so protection changes leave the GPU's mapping alone. Everything
++// else stays as it was: the write watch, the freezes and the access faults work the same on a shared mapping.
++// Two things differ from private memory, and both are handled here under vm_lock:
++// - Decommitted pages must read zero when committed again. MADV_DONTNEED leaves a shared mapping's pages in the
++//   memfd, so a decommit punches them out of it (fallocate) instead. A page a dma-buf pins cannot go that way: the
++//   dma-buf would keep the old page while the CPU got a new one, and the GPU and the CPU would no longer see the same
++//   memory. Those pages are zeroed in place (gm_decommit).
++// - A dma-buf pins every page of its range, allocating the ones nothing has touched. When it is gone
++//   (plat_mem_dmabuf_done) the pages of its range that are not committed and that no other dma-buf pins are punched
++//   out, so they cost no memory.
++#if __has_include(<linux/udmabuf.h>)
++#include <linux/udmabuf.h>
++#else   // the kernel's ABI (include/uapi/linux/udmabuf.h), for headers older than it
++struct udmabuf_create { __u32 memfd; __u32 flags; __u64 offset; __u64 size; };
++#define UDMABUF_FLAGS_CLOEXEC 0x01
++#define UDMABUF_CREATE _IOW('u', 0x42, struct udmabuf_create)
++#endif
++#define GM_RES_MAX 4
++typedef struct { uint64_t addr, n, off; } GmRes;
++typedef struct { uint64_t lo, hi; } GmPin;
++static int gm_state;                   // vm_lock: 0 not decided, 1 the watched reservations are the memfd's, -1 not
++static int gm_fd = -1, gm_udev = -1;   // the memfd and /dev/udmabuf
++static uint64_t gm_size, gm_limit;     // bytes of the memfd handed out; udmabuf's size limit
++static GmRes gm_res[GM_RES_MAX];       // the shared reservations and their offsets in the memfd
++static int gm_nres;
++static GmPin *gm_pins;                 // vm_lock: the ranges live dma-bufs pin (one entry per dma-buf)
++static int gm_npins, gm_cpins;
++static char gm_note[200];              // why the reservations are not a memfd's ("" when NX2NAVI_DMABUF=0 or they are)
++
++// The largest dma-buf the udmabuf ioctl accepts, in bytes: the module's size_limit_mb parameter, or the module's
++// default of 64 MiB where the parameter cannot be read.
++static uint64_t udmabuf_limit(void) {
++    uint64_t mib;
++    if (!read_u64_file("/sys/module/udmabuf/parameters/size_limit_mb", &mib)) mib = 64;
++    return (mib < (1ull << 40) ? mib : 1ull << 40) << 20;
++}
++
++static void gm_open(void) {   // vm_lock held: the first watched reservation decides
++    const char *e = getenv("NX2NAVI_DMABUF");
++    int asked = e && !strcmp(e, "1");
++    gm_state = -1;
++    if (e && !strcmp(e, "0")) return;
++    // Unset: on where it can work and pays. NVIDIA's driver imports host pointers without amdgpu's costs (vk_memory.c
++    // mirror_mode), and its import of these dma-bufs has not been tried, so where its kernel module is loaded the memory
++    // stays private.
++    if (!asked && !access("/sys/module/nvidia", F_OK)) {
++        snprintf(gm_note, sizeof gm_note, "NVIDIA's kernel module is loaded (NX2NAVI_DMABUF=1 makes it a memfd's anyway)");
++        return;
++    }
++    gm_udev = open("/dev/udmabuf", O_RDWR | O_CLOEXEC);
++    if (gm_udev < 0) {   // many systems give the device to root and group kvm only
++        snprintf(gm_note, sizeof gm_note, "/dev/udmabuf cannot be opened (%s)", strerror(errno));
++        fprintf(stderr, "platform: guest memory as dma-bufs (NX2NAVI_DMABUF): %s: guest memory stays private\n", gm_note);
++        return;
++    }
++    gm_limit = udmabuf_limit();
++    // The game's largest pools need about 300 MiB in one dma-buf (vk_memory.c mirror_mode): below 1 GiB the back end
++    // would keep the shadow copies anyway, so unasked the memory stays private.
++    if (!asked && gm_limit < (1ull << 30)) {
++        snprintf(gm_note, sizeof gm_note, "udmabuf's size_limit_mb is %llu, below the 1024 a pool of the game may need "
++                 "(/sys/module/udmabuf/parameters/size_limit_mb)", (unsigned long long)(gm_limit >> 20));
++        close(gm_udev), gm_udev = -1;
++        return;
++    }
++    gm_fd = (int)syscall(SYS_memfd_create, "nx2navi-guest", MFD_CLOEXEC | MFD_ALLOW_SEALING);
++    if (gm_fd < 0) {
++        snprintf(gm_note, sizeof gm_note, "no memfd (%s)", strerror(errno));
++        fprintf(stderr, "platform: guest memory as dma-bufs (NX2NAVI_DMABUF): %s: guest memory stays private\n", gm_note);
++        close(gm_udev), gm_udev = -1;
++        return;
++    }
++    gm_state = 1;
++}
++
++static int gm_find(uint64_t addr, uint64_t n) {   // the shared reservation holding [addr, addr + n), -1 none
++    for (int i = 0; i < gm_nres; i++)
++        if (addr >= gm_res[i].addr && n <= gm_res[i].n && addr - gm_res[i].addr <= gm_res[i].n - n) return i;
++    return -1;
++}
++
++// vm_lock held. Whether x is pinned by a live dma-buf; *end gets the end of the run of [x, limit) that is the same.
++static int gm_pinned_run(uint64_t x, uint64_t limit, uint64_t *end) {
++    uint64_t cur = x;
++    for (int grew = 1; grew && cur < limit;) {
++        grew = 0;
++        for (int i = 0; i < gm_npins; i++)
++            if (gm_pins[i].lo <= cur && cur < gm_pins[i].hi) cur = gm_pins[i].hi, grew = 1;
++    }
++    if (cur > x) {
++        *end = cur < limit ? cur : limit;
++        return 1;
++    }
++    uint64_t next = limit;
++    for (int i = 0; i < gm_npins; i++)
++        if (gm_pins[i].lo > x && gm_pins[i].lo < next) next = gm_pins[i].lo;
++    *end = next;
++    return 0;
++}
++
++static int gm_punch(int gi, uint64_t addr, uint64_t n) {
++    return !fallocate(gm_fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, (off_t)(gm_res[gi].off + addr - gm_res[gi].addr),
++                      (off_t)n);
++}
++
++// vm_lock held: a decommit of [addr, addr + n) in shared reservation gi.
++static int gm_decommit(int gi, uint64_t addr, uint64_t n) {
++    uint64_t end = addr + n;
++    for (uint64_t x = addr, y; x < end; x = y) {
++        if (!gm_pinned_run(x, end, &y)) {
++            if (!gm_punch(gi, x, y - x)) return 0;
++            continue;
++        }
++        for (uint64_t a = x, b; a < y; a = b) {   // the committed runs; a reserved page is zero already
++            uint8_t v = pstate[a / PG];
++            for (b = a + PG; b < y && pstate[b / PG] == v; b += PG) {}
++            if (v < PS_NONE) continue;
++            if (v != PS_RW && mprotect((void *)(uintptr_t)a, b - a, PROT_READ | PROT_WRITE)) return 0;
++            memset((void *)(uintptr_t)a, 0, b - a);
++        }
++    }
++    if (mprotect((void *)(uintptr_t)addr, n, PROT_NONE)) return 0;
++    ps_set(addr, n, PS_RESERVED);
++    return 1;
++}
++
++int plat_mem_dmabuf_ok(uint64_t *limit, uint64_t *any, const char **why) {
++    plat_mutex_lock(&vm_lock);
++    int ok = gm_state > 0 && gm_nres > 0;
++    *limit = gm_limit;
++    *any = gm_nres ? gm_res[0].addr : 0;
++    *why = ok ? "" : gm_state > 0 ? "the memfd could not back a reservation" : gm_note;
++    plat_mutex_unlock(&vm_lock);
++    return ok;
++}
++
++int plat_mem_dmabuf(uint64_t addr, uint64_t n) {
++    if (!n || ((addr | n) & (PG - 1))) return -1;
++    plat_mutex_lock(&vm_lock);
++    int gi = gm_state > 0 && n <= gm_limit ? gm_find(addr, n) : -1, fd = -1, err = EINVAL;
++    if (gi >= 0 && gm_npins == gm_cpins) {
++        int c = gm_cpins ? gm_cpins * 2 : 64;
++        GmPin *p = realloc(gm_pins, (size_t)c * sizeof *p);
++        if (p) gm_pins = p, gm_cpins = c;
++    }
++    if (gi >= 0 && gm_npins < gm_cpins) {
++        struct udmabuf_create c = {.memfd = (__u32)gm_fd, .flags = UDMABUF_FLAGS_CLOEXEC,
++                                   .offset = gm_res[gi].off + addr - gm_res[gi].addr, .size = n};
++        fd = ioctl(gm_udev, UDMABUF_CREATE, &c);
++        err = errno;
++        if (fd >= 0) gm_pins[gm_npins++] = (GmPin){addr, addr + n};
++    }
++    plat_mutex_unlock(&vm_lock);
++    if (fd < 0) errno = err;
++    return fd;
++}
++
++void plat_mem_dmabuf_done(uint64_t addr, uint64_t n) {
++    plat_mutex_lock(&vm_lock);
++    for (int i = 0; i < gm_npins; i++)
++        if (gm_pins[i].lo == addr && gm_pins[i].hi == addr + n) {
++            gm_pins[i] = gm_pins[--gm_npins];
++            break;
++        }
++    int gi = gm_find(addr, n);
++    uint64_t end = addr + n;
++    for (uint64_t x = addr, y; gi >= 0 && x < end; x = y) {
++        if (gm_pinned_run(x, end, &y)) continue;
++        for (uint64_t a = x, b; a < y; a = b) {
++            uint8_t v = pstate[a / PG];
++            for (b = a + PG; b < y && pstate[b / PG] == v; b += PG) {}
++            if (v < PS_NONE) gm_punch(gi, a, b - a);
++        }
++    }
++    plat_mutex_unlock(&vm_lock);
++}
++
+ static void ww_open(void) {
+     int fd = (int)syscall(SYS_userfaultfd, O_CLOEXEC | O_NONBLOCK | UFFD_USER_MODE_ONLY);
+     struct uffdio_api api = {.api = UFFD_API,
+@@ -1138,12 +1321,29 @@ int plat_mem_reserve(uint64_t addr, uint64_t n, int watch) {
+         pstate = p == MAP_FAILED ? NULL : p;
+     }
+     if (watch && ww_fd < 0 && pm_fd < 0) ww_open();
++    if (watch && !gm_state) gm_open();
++    int shared = watch && gm_state > 0 && gm_nres < GM_RES_MAX;
+     void *p = pstate && addr + n <= PS_LIMIT
+                   ? mmap((void *)(uintptr_t)addr, n, PROT_NONE,
+-                         MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED_NOREPLACE, -1, 0)
++                         (shared ? MAP_SHARED : MAP_PRIVATE | MAP_ANONYMOUS) | MAP_NORESERVE | MAP_FIXED_NOREPLACE,
++                         shared ? gm_fd : -1, shared ? (off_t)gm_size : 0)
+                   : MAP_FAILED;
+     int ok = p == (void *)(uintptr_t)addr;
+     if (p != MAP_FAILED && !ok) munmap(p, n);   // a kernel without MAP_FIXED_NOREPLACE put it elsewhere
++    if (ok && shared) {   // the memfd grows by the reservation; shrinking is sealed off, as udmabuf requires
++        if (ftruncate(gm_fd, (off_t)(gm_size + n)) || (!gm_nres && fcntl(gm_fd, F_ADD_SEALS, F_SEAL_SHRINK))) {
++            fprintf(stderr, "platform: the memfd for %#llx+%#llx failed (%s): private memory there\n",
++                    (unsigned long long)addr, (unsigned long long)n, strerror(errno));
++            munmap(p, n);
++            p = mmap((void *)(uintptr_t)addr, n, PROT_NONE,
++                     MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED_NOREPLACE, -1, 0);
++            ok = p == (void *)(uintptr_t)addr;
++            if (p != MAP_FAILED && !ok) munmap(p, n);
++        } else {
++            gm_res[gm_nres++] = (GmRes){addr, n, gm_size};
++            gm_size += n;
++        }
++    }
+     if (ok) {
+         ps_set(addr, n, PS_RESERVED);
+         // Transparent huge pages would populate (and count as written) 2 MiB at the first write of one page; writes are
+@@ -1164,12 +1364,22 @@ void *plat_mem_alloc(size_t n) {
+ }
+ 
+ int plat_mem_commit(uint64_t addr, size_t n) {
+-    if (mprotect((void *)(uintptr_t)addr, n, PROT_READ | PROT_WRITE)) return 0;
+-    ps_set(addr, n, PS_RW);
+-    return 1;
++    // In a shared reservation under vm_lock: plat_mem_dmabuf_done punches out the pages it finds not committed.
++    int locked = gm_nres > 0 && gm_find(addr, n) >= 0;
++    if (locked) plat_mutex_lock(&vm_lock);
++    int ok = !mprotect((void *)(uintptr_t)addr, n, PROT_READ | PROT_WRITE);
++    if (ok) ps_set(addr, n, PS_RW);
++    if (locked) plat_mutex_unlock(&vm_lock);
++    return ok;
+ }
+ 
+ int plat_mem_decommit(uint64_t addr, uint64_t n) {
++    if (gm_nres > 0) {
++        plat_mutex_lock(&vm_lock);
++        int gi = gm_find(addr, n), ok = gi >= 0 && gm_decommit(gi, addr, n);
++        plat_mutex_unlock(&vm_lock);
++        if (gi >= 0) return ok;
++    }
+     if (madvise((void *)(uintptr_t)addr, n, MADV_DONTNEED) || mprotect((void *)(uintptr_t)addr, n, PROT_NONE)) return 0;
+     ps_set(addr, n, PS_RESERVED);
+     return 1;
+diff --git a/runtime/platform/platform.h b/runtime/platform/platform.h
+index 0ffbf9f3..b2b292b5 100644
+--- a/runtime/platform/platform.h
++++ b/runtime/platform/platform.h
+@@ -258,6 +258,17 @@ uint64_t plat_mem_written(uint64_t addr, uint64_t n, uint64_t *pages, uint64_t m
+ // pages in one call, where the watch works by protecting pages (Linux), so the stores do not fault page by page. The
+ // pages count as written. Returns 0 when there is nothing to clear or it cannot be done; the write is valid either way.
+ int plat_mem_prepare_write(uint64_t addr, uint64_t n);
++// Guest memory as dma-bufs (Linux, NX2NAVI_DMABUF, on by default; vk_memory.c "dma-buf imports"): the watched
++// reservations are shared mappings of one memfd, and /dev/udmabuf makes a dma-buf of a page range of it, which the GPU
++// driver imports like its own memory. plat_mem_dmabuf_ok: 1 when that is so, with udmabuf's size limit in bytes in *limit and the
++// first page of a shared reservation in *any; 0 with the reason in *why ("" when NX2NAVI_DMABUF=0 turned it off).
++// plat_mem_dmabuf: a new dma-buf file descriptor over [addr, addr + n) (whole pages inside one watched reservation),
++// -1 with errno on failure. Its pages stay pinned (a decommit zeroes them in place) until plat_mem_dmabuf_done is
++// told, after the last user of the dma-buf (the imported memory) is gone; the pages of its range that nothing has
++// committed then go back to the system. Elsewhere these report 0 and -1.
++int plat_mem_dmabuf_ok(uint64_t *limit, uint64_t *any, const char **why);
++int plat_mem_dmabuf(uint64_t addr, uint64_t n);
++void plat_mem_dmabuf_done(uint64_t addr, uint64_t n);
+ // A write that faulted on a read-only page at addr goes to fn first; fn returns 1 when it made the page writable and
+ // the write should run again, 0 to let the fault go on (to the crash handler). One hook per process.
+ void plat_mem_fault_hook(int (*fn)(uint64_t addr));
+diff --git a/runtime/platform/win32.c b/runtime/platform/win32.c
+index 9eadddcd..aeeda0ed 100644
+--- a/runtime/platform/win32.c
++++ b/runtime/platform/win32.c
+@@ -866,6 +866,11 @@ int plat_mem_prepare_write(uint64_t addr, uint64_t n) {
+     return 0;
+ }
+ 
++// Guest memory as dma-bufs is Linux's (platform.h).
++int plat_mem_dmabuf_ok(uint64_t *limit, uint64_t *any, const char **why) { *limit = *any = 0, *why = ""; return 0; }
++int plat_mem_dmabuf(uint64_t addr, uint64_t n) { (void)addr; (void)n; return -1; }
++void plat_mem_dmabuf_done(uint64_t addr, uint64_t n) { (void)addr; (void)n; }
++
+ // Contains code Copyright (c) 2026 Peiikai (MIT; see THIRD_PARTY_NOTICES.md).
+ // GetWriteWatch with the reset flag.
+ uint64_t plat_mem_written(uint64_t addr, uint64_t n, uint64_t *pages, uint64_t max, int reset) {
+diff --git a/runtime/vk.h b/runtime/vk.h
+index b640cd82..bf1e9913 100644
+--- a/runtime/vk.h
++++ b/runtime/vk.h
+@@ -426,6 +426,14 @@ int vk_mem_flush_add_probe(void);        // --probe-vkexec: the flush range list
+ uint64_t vk_mem_mirror_uploaded(void);   // --probe-vkexec: bytes copied into mirrors since the last summary line
+ int vk_mem_mirror_probe(uint64_t addr);   // --probe-vkexec: the pool at addr gets its mirror as on a first buffer use;
+                                           // 1 when it has one
++// Guest memory as dma-bufs (vk_memory.c "dma-buf imports"): pick_device tells whether the device has
++// VK_KHR_external_memory_fd and VK_EXT_external_memory_dma_buf (before vk_mem_class_log); create_device enables them
++// when the pools are imported that way.
++void vk_mem_dmabuf_caps(int exts);
++int vk_mem_dmabuf_on(void);
++// After vkCreateDevice, before vk_mem_lazy_decide: a page of guest memory imported as the pools will be; any refusal
++// turns the dma-buf imports off for the run (shadow storage then). bda: buffers get device addresses.
++void vk_mem_dmabuf_probe(VkDevice dev, const VkPhysicalDeviceMemoryProperties *mp, int bda);
+ void vk_mem_class_log(const VkPhysicalDeviceProperties *p, const VkPhysicalDeviceMemoryProperties *m);   // once
+ int vk_mem_class_of(uint64_t addr);               // VK_MCLS_* of the pool at addr (NONE when unbacked)
+ void vk_mem_census(uint64_t frame);               // at each present: pool census and traffic, logged at frame 1800 and,
+diff --git a/runtime/vk_device.c b/runtime/vk_device.c
+index 867aea2c..ee25a4b9 100644
+--- a/runtime/vk_device.c
++++ b/runtime/vk_device.c
+@@ -14,6 +14,7 @@
+ #include "vk.h"
+ #include "platform/platform.h"
+ #include "vk_dlaa.h"
++#include "vk_gpa.h"
+ #include "vk_fg.h"
+ #include "vk_dlssg.h"
+ 
+@@ -316,6 +317,15 @@ retry:
+     free(qp);
+     rt_log("vk: using gpu %d: %s", best, g_vk.props.deviceName);
+     vk_caps_driver(g_vk.phys);   // before vk_mem_class_log, which chooses the pools' storage by driver
++    {   // and by whether the device imports dma-bufs (vk_memory.c "dma-buf imports")
++        uint32_t ne = 0;
++        vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, NULL);
++        VkExtensionProperties *ep = calloc(ne ? ne : 1, sizeof *ep);
++        vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, ep);
++        vk_mem_dmabuf_caps(has_ext(ep, ne, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME) &&
++                           has_ext(ep, ne, VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME));
++        free(ep);
++    }
+     vk_mem_class_log(&g_vk.props, &g_vk.mem_props);
+     return 1;
+ }
+@@ -498,6 +508,11 @@ static int create_device(void) {
+         g_vk.has_nv_checkpoints = 1;
+         ext[n_ext++] = VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME;
+     }
++    // Guest memory imported as dma-bufs (vk_memory.c "dma-buf imports"; pick_device checked the extensions)
++    if (vk_mem_dmabuf_on() && n_ext + 4 <= sizeof ext / sizeof *ext) {
++        ext[n_ext++] = VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME;
++        ext[n_ext++] = VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME;
++    }
+     // Graphics pipeline library: chained last so it can be dropped again when vk_caps_gpl declines it.
+     void **gpl_link = NULL;
+     if (has_ext(ep, ne, VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME) && has_ext(ep, ne, VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME)) {
+@@ -650,6 +665,7 @@ static int create_device(void) {
+     vkGetPhysicalDeviceProperties2(g_vk.phys, &p2);
+     g_vk.min_imported_host_alignment = (uint32_t)emh.minImportedHostPointerAlignment;
+     vk_caps_init(&g_vk);
++    vk_mem_dmabuf_probe(g_vk.device, &g_vk.mem_props, vk_gpa_wanted_ctx(&g_vk));   // may turn shadow storage on
+     vk_mem_lazy_decide();   // the driver is known: the lazy write-back's default depends on it
+     rt_fatal_note_add(fatal_note);
+ 
+diff --git a/runtime/vk_memory.c b/runtime/vk_memory.c
+index 0dbcde5c..73c1d2ef 100644
+--- a/runtime/vk_memory.c
++++ b/runtime/vk_memory.c
+@@ -8,6 +8,7 @@
+ // users. Virtual pools are a GPU-side page table
+ // over device-local memory and dirty pages come from GetWriteWatch (mem_written_pages), so neither host VM aliasing
+ // nor page protection (a fault handler) is needed.
++#include <errno.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+@@ -51,6 +52,7 @@ typedef struct PoolRec {
+     uint64_t import_lo, import_hi;     // POOL_IMPORT: the imported host range (aligned outwards)
+     VkBuffer buf;
+     VkDeviceMemory mem;                // POOL_IMPORT
++    struct Span *span;                 // POOL_IMPORT as a dma-buf: the span whose memory buf is bound to ("dma-buf imports")
+     VmaAllocation alloc;               // POOL_PHYS
+     VPage *pt;                         // POOL_VIRT: size / 64 KiB entries
+     uint64_t npages;
+@@ -163,9 +165,310 @@ static int memory_type(const VkCtx *c, uint32_t bits, VkMemoryPropertyFlags want
+     return -1;
+ }
+ 
+-// CPU-visible storage: the guest pages themselves become the buffer's memory (VK_EXT_external_memory_host).
++// ---------------------------------------------------------------- dma-buf imports
++// Where guest memory is a memfd's (Linux, NX2NAVI_DMABUF, on by default: platform/linux.c "Guest memory as a memfd's"), a
++// CPU-visible pool is imported as a dma-buf of its own pages, not as a host pointer and not as a shadow copy. It keeps
++// what an import is to the rest of this file (the GPU's writes are in guest memory once the GPU has made them, the
++// device address table's twin is guest memory, mirrors sync from it and write back into it), without amdgpu's costs
++// for host pointers: those are userptr objects, which the kernel looks up page by page at every submission and
++// invalidates whenever the write watch or a freeze re-protects their pages (about 0.2 frames a second in Kokiri
++// Forest), which is why Linux had shadow storage. A dma-buf's pages are pinned once and the process's page tables
++// never matter to it again: the write watch, the freezes and the lazy write-back's armed pages leave the GPU alone.
++// RADV puts every imported memory object in every submission, at about 0.6 us each (RX 6800 XT, Linux 7.3, Mesa 26.2:
++// 2.6 ms a vkQueueSubmit with 4096 of them, 0.04 ms with 64), and the game keeps over 4,000 pools, so a pool does not
++// get a dma-buf of its own: guest addresses are cut into aligned spans of NX2NAVI_DMABUF_MB (64 by default), the first
++// pool made in a span imports the span's dma-buf, and every pool is a buffer bound into the memory of a span that holds
++// it, at its offset. A pool that no span holds gets a new one over the aligned range around it, cut back at the spans
++// already there (span_get): spans overlap only where such a pool itself lies in an older span, because every span's
++// pages count in amdgpu's GTT use (an overlap twice) and stay pinned. A span whose
++// last pool is gone stays SPAN_KEEP frames for the pools the game makes again at the same addresses, then is freed
++// (span_gc); its dma-buf goes with the memory.
++// A new span pins its pages: about 13 us per MiB the game had touched and 260 us per MiB it had not, which are
++// allocated then (the same RX 6800 XT machine), so a 64 MiB span costs 1-17 ms once. A span over udmabuf's size limit
++// (/sys/module/udmabuf/parameters/size_limit_mb) is not made; such a pool, or one outside the memfd, falls back to a
++// host-pointer import, which a shared mapping's pages refuse on RADV: it gets no GPU buffer (logged).
++typedef struct Span { uint64_t lo, hi; VkDeviceMemory mem; int32_t refs; uint64_t idle_frame; } Span;
++#define SPAN_KEEP 600
++static int dmabuf_on;                  // mirror_mode
++static int dmabuf_exts;                // vk_mem_dmabuf_caps: the device has VK_KHR_external_memory_fd and _dma_buf
++static uint64_t dmabuf_limit;          // udmabuf's size limit, bytes
++static uint64_t span_size = 64ull << 20;
++static PlatMutex span_lock = PLAT_MUTEX_INIT;   // after pool_lock
++static Span **spans;                   // span_lock
++static int nspans, cspans;
++static uint32_t dmabuf_type = UINT32_MAX;   // span_lock: the memory type of the imports, asked at the first one
++static PFN_vkGetMemoryFdPropertiesKHR p_fd_props;
++static int64_t sp_live_bytes;          // span_lock
++static uint64_t sp_made, sp_made_bytes, sp_ns, sp_max_ns, sp_freed, sp_freed_bytes, sp_fail, sp_fallback;   // span_lock, since the log
++static uint64_t sp_fail_all;           // span_lock
++static volatile uint64_t span_frame;   // the frame vk_mem_census last saw
++#ifdef _WIN32
++static void dmabuf_close(int fd) { (void)fd; }
++#else
++#include <unistd.h>
++static void dmabuf_close(int fd) { close(fd); }
++#endif
++
++void vk_mem_dmabuf_caps(int exts) { dmabuf_exts = exts; }
++int vk_mem_dmabuf_on(void) { return dmabuf_on; }
++
++// The memory type of the imports, from the types the driver offers for the dma-buf fd: cached where offered, as guest
++// memory is to the CPU (RADV: the GPU snoops it); not one of AMD's device-coherent or device-uncached types, which the
++// third pass takes only when nothing else is offered. Sets dmabuf_type (UINT32_MAX: none fits); returns the offer.
++static uint32_t dmabuf_pick_type(VkDevice dev, const VkPhysicalDeviceMemoryProperties *mp, int fd) {
++    if (!p_fd_props) p_fd_props = (PFN_vkGetMemoryFdPropertiesKHR)vk_dpa(dev, "vkGetMemoryFdPropertiesKHR");
++    VkMemoryFdPropertiesKHR fp = {.sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR};
++    uint32_t bits = p_fd_props && p_fd_props(dev, VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, fd, &fp) == VK_SUCCESS
++                        ? fp.memoryTypeBits : 0;
++    const VkMemoryPropertyFlags hv = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
++    dmabuf_type = UINT32_MAX;
++    for (int w = 0; w < 3 && dmabuf_type == UINT32_MAX; w++)
++        for (uint32_t i = 0; i < mp->memoryTypeCount && dmabuf_type == UINT32_MAX; i++) {
++            VkMemoryPropertyFlags f = mp->memoryTypes[i].propertyFlags;
++            if ((bits >> i & 1) && (w == 0 ? f == (hv | VK_MEMORY_PROPERTY_HOST_CACHED_BIT) : w == 1 ? f == hv : (f & hv) == hv))
++                dmabuf_type = i;
++        }
++    rt_log("mem: dma-bufs of guest memory may have memory types %#x; type %d taken", bits,
++           dmabuf_type == UINT32_MAX ? -1 : (int)dmabuf_type);
++    return bits;
++}
++
++static uint64_t dmabuf_any;            // a page of guest memory a dma-buf can be made of (vk_mem_dmabuf_probe)
++
++// After device creation, before the first pool and before anything asks for the storage mode (vk_mem_lazy_decide): one
++// page of guest memory is made a dma-buf, imported and bound to a buffer, as every pool will be. Any step refused turns
++// the dma-buf imports off for the run: the pools are shadow copies, as with NX2NAVI_DMABUF=0. A refusal later, for
++// one span, leaves its pools without a GPU buffer (span_log counts them), so the probe asks once for what all need.
++static int s_learn, s_check;
++void vk_mem_dmabuf_probe(VkDevice dev, const VkPhysicalDeviceMemoryProperties *mp, int bda) {
++    if (!dmabuf_on) return;
++    const char *no = NULL;
++    long err = 0;
++    uint32_t bits = 0;
++    VkDeviceMemory mem = VK_NULL_HANDLE;
++    VkBuffer buf = VK_NULL_HANDLE;
++    int fd = plat_mem_dmabuf(dmabuf_any, 4096);
++    if (fd < 0) {
++        no = "udmabuf refused a dma-buf of guest memory", err = errno;
++    } else if (bits = dmabuf_pick_type(dev, mp, fd), dmabuf_type == UINT32_MAX) {
++        no = "the device offers no host-visible coherent memory type for it";
++        dmabuf_close(fd);
++    } else {
++        VkImportMemoryFdInfoKHR im = {.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR,
++                                      .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, .fd = fd};
++        VkMemoryAllocateFlagsInfo fi = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO, .pNext = &im,
++                                        .flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT};
++        VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = bda ? (void *)&fi : (void *)&im,
++                                   .allocationSize = 4096, .memoryTypeIndex = dmabuf_type};
++        VkExternalMemoryBufferCreateInfo eb = {.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO,
++                                               .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
++        VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .pNext = &eb, .size = 4096,
++                                 .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
++                                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
++                                          (bda ? VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT : 0),
++                                 .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
++        VkMemoryRequirements req;
++        VkResult r = vkAllocateMemory(dev, &ai, NULL, &mem);
++        if (r != VK_SUCCESS) {
++            mem = VK_NULL_HANDLE;
++            dmabuf_close(fd);   // a failed import leaves the descriptor with us
++            no = "the device refused to import it", err = r;
++        } else if ((r = vkCreateBuffer(dev, &bi, NULL, &buf)) != VK_SUCCESS) {
++            buf = VK_NULL_HANDLE;
++            no = "no buffer for it", err = r;
++        } else if (vkGetBufferMemoryRequirements(dev, buf, &req), !(req.memoryTypeBits >> dmabuf_type & 1)) {
++            no = "a buffer cannot be bound to its memory type", err = (long)req.memoryTypeBits;
++        } else if ((r = vkBindBufferMemory(dev, buf, mem, 0)) != VK_SUCCESS) {
++            no = "binding a buffer to it failed", err = r;
++        }
++    }
++    if (buf) vkDestroyBuffer(dev, buf, NULL);
++    if (mem) vkFreeMemory(dev, mem, NULL);
++    if (fd >= 0) plat_mem_dmabuf_done(dmabuf_any, 4096);
++    if (!no) return;
++    dmabuf_on = 0, shadow_on = 1;
++    s_learn = rt_knob("SHADOW_TABLE_STORES", "0") == 1;
++    s_check = cfg_bool("NX2NAVI_SHADOW_CHECK");
++    rt_log("mem: dma-buf imports off: %s (%ld; memory types %#x): CPU-visible pools are host-visible copies of guest "
++           "memory (shadow storage), as with NX2NAVI_DMABUF=0", no, err, bits);
++}
++
++static void span_fail(const char *what, uint64_t lo, uint64_t hi, long err) {   // span_lock held
++    sp_fail++;
++    if (++sp_fail_all <= 8)
++        rt_log("mem: dma-buf of %#llx+%#llx: %s (%ld)%s", (unsigned long long)lo, (unsigned long long)(hi - lo), what, err,
++               sp_fail_all == 8 ? "; no more of these lines" : "");
++}
++
++// span_lock held: a new span over [lo, hi), NULL when udmabuf or the import refuses it.
++static Span *span_create(VkCtx *c, uint64_t lo, uint64_t hi) {
++    uint64_t t0 = qpc();
++    int fd = plat_mem_dmabuf(lo, hi - lo);
++    if (fd < 0) {
++        span_fail("udmabuf refused it", lo, hi, errno);
++        return NULL;
++    }
++    if (dmabuf_type == UINT32_MAX) {   // every dma-buf of guest memory has the same types: asked once
++        dmabuf_pick_type(c->device, &c->mem_props, fd);
++        if (dmabuf_type == UINT32_MAX) {
++            dmabuf_close(fd);
++            plat_mem_dmabuf_done(lo, hi - lo);
++            span_fail("no host-visible coherent memory type", lo, hi, 0);
++            dmabuf_type = UINT32_MAX - 1;   // not asked again: every span fails
++            return NULL;
++        }
++    }
++    if (dmabuf_type >= c->mem_props.memoryTypeCount) {
++        dmabuf_close(fd);
++        plat_mem_dmabuf_done(lo, hi - lo);
++        return NULL;
++    }
++    VkImportMemoryFdInfoKHR im = {.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR,
++                                  .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, .fd = fd};
++    // A buffer with device address usage needs memory allocated for device addresses (vk_gpa.c).
++    VkMemoryAllocateFlagsInfo fi = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO, .pNext = &im,
++                                    .flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT};
++    VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
++                               .pNext = vk_gpa_wanted() ? (void *)&fi : (void *)&im, .allocationSize = hi - lo,
++                               .memoryTypeIndex = dmabuf_type};
++    VkDeviceMemory mem = VK_NULL_HANDLE;
++    VkResult res = vkAllocateMemory(c->device, &ai, NULL, &mem);
++    Span *s = res == VK_SUCCESS ? calloc(1, sizeof *s) : NULL;
++    if (!s) {
++        if (res == VK_SUCCESS) vkFreeMemory(c->device, mem, NULL);
++        else dmabuf_close(fd);   // a failed import leaves the descriptor with us; a successful one took it
++        plat_mem_dmabuf_done(lo, hi - lo);
++        span_fail("the import failed", lo, hi, res);
++        return NULL;
++    }
++    s->lo = lo, s->hi = hi, s->mem = mem;
++    if (nspans == cspans) grow((void **)&spans, &cspans, sizeof *spans);
++    spans[nspans++] = s;
++    uint64_t ns = qpc() - t0;
++    sp_made++, sp_made_bytes += hi - lo, sp_ns += ns, sp_live_bytes += (int64_t)(hi - lo);
++    if (ns > sp_max_ns) sp_max_ns = ns;
++    return s;
++}
++
++// span_lock held: the span a pool's [lo, hi) is bound into, with a reference for it; NULL when none can be made. al is
++// the alignment the pool's buffer needs inside the span's memory.
++// A new span covers the span_size-aligned range around the pool, less what other spans hold below and above the pool:
++// a pool across an edge of an older span then pins only its own pages twice, not the older span's whole range. With
++// the whole aligned range, Hyrule Field's area loads left 11.5-11.7 GiB of spans counted in amdgpu's GTT use; cut back,
++// 9.5-9.6 GiB, over the same 9.3 GiB of distinct pages, at the same frame rate (RX 6800 XT, 2 pairs).
++static Span *span_get(VkCtx *c, uint64_t lo, uint64_t hi, uint64_t al) {
++    Span *best = NULL;
++    for (int i = 0; i < nspans; i++)
++        if (spans[i]->lo <= lo && hi <= spans[i]->hi && (!best || spans[i]->hi - spans[i]->lo > best->hi - best->lo))
++            best = spans[i];
++    if (!best) {
++        uint64_t a = lo / span_size * span_size, b = (hi + span_size - 1) / span_size * span_size;
++        for (int i = 0; i < nspans; i++) {   // no span holds [lo, hi): none reaches below lo and above hi at once
++            const Span *s = spans[i];
++            if (s->lo < lo && s->hi > a) a = s->hi < lo ? s->hi : lo;
++            if (s->hi > hi && s->lo < b) b = s->lo > hi ? s->lo : hi;
++        }
++        if (al > 1) a = lo - (lo - a) / al * al;   // the pool's offset in the span a multiple of al
++        if (b - a <= dmabuf_limit) best = span_create(c, a, b);
++        // the aligned range may leave the memfd's reservation: the pool's own pages then
++        if (!best && (a != lo || b != hi) && hi - lo <= dmabuf_limit) best = span_create(c, lo, hi);
++    }
++    if (best) best->refs++;
++    return best;
++}
++
++static void span_put(Span *s) {
++    plat_mutex_lock(&span_lock);
++    if (!--s->refs) s->idle_frame = __atomic_load_n(&span_frame, __ATOMIC_RELAXED);
++    plat_mutex_unlock(&span_lock);
++}
++
++// Frees the spans no pool has used for SPAN_KEEP frames (all: every span without a pool). A span without a reference
++// is out of the GPU's work: a pool's reference goes when its record is destroyed, after the GPU is done with it.
++static void span_gc(uint64_t frame, int all) {
++    VkCtx *c = vk_ctx();
++    if (!c || !dmabuf_on) return;
++    Span *gone[64];
++    int ng;
++    do {
++        ng = 0;
++        plat_mutex_lock(&span_lock);
++        for (int i = 0; i < nspans && ng < 64;)
++            if (!spans[i]->refs && (all || frame - spans[i]->idle_frame >= SPAN_KEEP)) {
++                gone[ng++] = spans[i];
++                sp_freed++, sp_freed_bytes += spans[i]->hi - spans[i]->lo;
++                sp_live_bytes -= (int64_t)(spans[i]->hi - spans[i]->lo);
++                spans[i] = spans[--nspans];
++            } else {
++                i++;
++            }
++        plat_mutex_unlock(&span_lock);
++        for (int i = 0; i < ng; i++) {   // the dma-buf goes with the memory; then its pages are let go
++            vkFreeMemory(c->device, gone[i]->mem, NULL);
++            plat_mem_dmabuf_done(gone[i]->lo, gone[i]->hi - gone[i]->lo);
++            free(gone[i]);
++        }
++    } while (ng == 64);
++}
++
++static void span_log(uint64_t frame) {
++    if (!dmabuf_on) return;
++    plat_mutex_lock(&span_lock);
++    int64_t refs = 0;
++    for (int i = 0; i < nspans; i++) refs += spans[i]->refs;
++    rt_log("mem: dma-buf spans at frame %llu: %d live, %.0f MiB, %lld pools in them; since the last line %llu made "
++           "(%.0f MiB, %.1f ms, the longest %.1f ms), %llu freed (%.0f MiB), %llu refused, %llu pools left out",
++           (unsigned long long)frame, nspans, sp_live_bytes / 1048576.0, (long long)refs, (unsigned long long)sp_made,
++           sp_made_bytes / 1048576.0, qpc_ms(sp_ns), qpc_ms(sp_max_ns), (unsigned long long)sp_freed,
++           sp_freed_bytes / 1048576.0, (unsigned long long)sp_fail, (unsigned long long)sp_fallback);
++    sp_made = sp_made_bytes = sp_ns = sp_max_ns = sp_freed = sp_freed_bytes = sp_fail = sp_fallback = 0;
++    plat_mutex_unlock(&span_lock);
++}
++
++// A pool's buffer bound into a span's memory; 0 when no span can be made for it.
++static int import_dmabuf(VkCtx *c, PoolRec *r, uint64_t addr, uint64_t size) {
++    r->import_lo = addr & ~0xfffull;
++    r->import_hi = (addr + size + 0xfff) & ~0xfffull;
++    uint64_t n = r->import_hi - r->import_lo;
++    VkExternalMemoryBufferCreateInfo eb = {.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO,
++                                           .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
++    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .pNext = &eb, .size = n,
++                             .usage = pool_usage(c), .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
++    VkResult res = vkCreateBuffer(c->device, &bi, NULL, &r->buf);
++    if (res != VK_SUCCESS) {
++        r->buf = VK_NULL_HANDLE;
++        return 0;
++    }
++    VkMemoryRequirements req;
++    vkGetBufferMemoryRequirements(c->device, r->buf, &req);
++    uint64_t need = ((req.size > n ? req.size : n) + 0xfff) & ~0xfffull;
++    plat_mutex_lock(&span_lock);
++    Span *s = span_get(c, r->import_lo, r->import_lo + need, req.alignment);
++    int ok = s && (r->import_lo - s->lo) % (req.alignment ? req.alignment : 1) == 0 && (req.memoryTypeBits >> dmabuf_type & 1);
++    if (!s) sp_fallback++;
++    plat_mutex_unlock(&span_lock);
++    if (ok && (res = vkBindBufferMemory(c->device, r->buf, s->mem, r->import_lo - s->lo)) != VK_SUCCESS) ok = 0;
++    if (!ok) {
++        if (s) {
++            rt_log("vk: pool %#llx+%#llx: binding into its dma-buf span failed (alignment %llu, types %#x, %d)",
++                   (unsigned long long)addr, (unsigned long long)size, (unsigned long long)req.alignment,
++                   req.memoryTypeBits, (int)res);
++            span_put(s);
++        }
++        vkDestroyBuffer(c->device, r->buf, NULL);
++        r->buf = VK_NULL_HANDLE;
++        return 0;
++    }
++    r->span = s;
++    plat_inc32(&n_imports);
++    return 1;
++}
++
++// CPU-visible storage: the guest pages themselves become the buffer's memory (VK_EXT_external_memory_host, or a
++// dma-buf of them: "dma-buf imports" above).
+ static int import_pool(VkCtx *c, PoolRec *r, uint64_t addr, uint64_t size) {
+     if (shadow_on) return shadow_pool(c, r, addr, size);
++    if (dmabuf_on && import_dmabuf(c, r, addr, size)) return 1;
+     if (!p_host_props)
+         p_host_props = (PFN_vkGetMemoryHostPointerPropertiesEXT)vk_dpa(c->device, "vkGetMemoryHostPointerPropertiesEXT");
+     uint64_t al = c->min_imported_host_alignment ? c->min_imported_host_alignment : 0x1000;
+@@ -350,6 +653,7 @@ static void destroy_rec(VkCtx *c, PoolRec *r) {
+     if (r->salloc) vmaDestroyBuffer(c->vma, r->buf, r->salloc), r->buf = VK_NULL_HANDLE;
+     if (r->buf) vkDestroyBuffer(c->device, r->buf, NULL);
+     if (r->mem) vkFreeMemory(c->device, r->mem, NULL);
++    if (r->span) span_put(r->span);
+     if (r->alloc) vmaFreeMemory(c->vma, r->alloc);
+     for (uint32_t i = 0; i < r->csb; i++) free(r->sb[i].base);   // shadow base copies shadow_forget left (shutdown)
+     free(r->sb);
+@@ -412,7 +716,7 @@ static int pool_init(pool_t *p) {
+     // The imported pages, or the shadow that stands for them, go into the device address table: shaders that read a
+     // pointer from memory reach them there. A shadow in the table is kept up to date for the table's readers whether
+     // or not the replay resolves it (vk_mem_shadow_sync).
+-    if (r->kind == POOL_IMPORT && (r->mem || r->smap) && r->buf && r->import_hi > r->import_lo) {
++    if (r->kind == POOL_IMPORT && (r->mem || r->span || r->smap) && r->buf && r->import_hi > r->import_lo) {
+         r->gpa_rec = vk_gpa_map(r->import_lo, r->import_hi, r->buf, r->import_lo);
+         if (r->smap && r->gpa_rec) shadow_table_add(r);
+     }
+@@ -725,13 +1029,15 @@ void vk_mem_snapshot(uint64_t frame) {
+ 
+ void vk_mem_census(uint64_t frame) {
+     mirror_frame = frame;
++    __atomic_store_n(&span_frame, frame, __ATOMIC_RELAXED);
++    if (dmabuf_on && frame % 60 == 0) span_gc(frame, 0);
+     static uint64_t window_start;
+     if ((rt_trace & RT_TRACE_PERF) && frame % 600 == 0) vram_log(frame), mirror_pool_log(frame);
+     else if (!(rt_trace & RT_TRACE_PERF) && frame % 1800 == 0) vram_log(frame);   // what grows over a long session
+     if ((rt_trace & RT_TRACE_PERF) && frame % 60 == 0) outside_watch(frame), up_ts_log(frame), vk_gtl_log(frame, 60);
+     if ((rt_trace & RT_TRACE_PERF) && !vk_mirror_on) dirty_frame(frame);
+     if ((rt_trace & RT_TRACE_PERF) ? frame % 60 == 0 : frame == 600 || frame == 1800)
+-        mirror_log(frame), shadow_log(frame);   // mirror_log also logs the write-watch line
++        mirror_log(frame), shadow_log(frame), span_log(frame);   // mirror_log also logs the write-watch line
+     else if (shadow_check_on() && frame % 60 == 0)
+         shadow_log(frame);   // NX2NAVI_SHADOW_CHECK: the shadow lines at that rate without the perf trace
+     if (frame == 1200) {   // loading is over: the first window starts here
+@@ -1387,8 +1693,8 @@ static uint64_t s_wb_seen, s_wb_ticks;            // shadow_lock: bytes the fenc
+ static uint64_t s_q_ticks;                        // shadow_lock: the copy-ins' write-watch queries
+ static int wb_no_reup(void);
+ // Pages a shader stores into through the device address table. The two switches are read in mirror_mode.
+-static int s_learn;                               // NX2NAVI_SHADOW_TABLE_STORES: such pages get a base copy and a write-back
+-static int s_check;                               // NX2NAVI_SHADOW_CHECK: the counts below marked "check"
++// s_learn (NX2NAVI_SHADOW_TABLE_STORES: such pages get a base copy and a write-back) and s_check (NX2NAVI_SHADOW_CHECK:
++// the counts below marked "check") are defined with vk_mem_dmabuf_probe, which may turn shadow storage on late.
+ static PoolRec **tpools;                          // shadow_lock: the pools that have such pages
+ static int ntpools, ctpools;
+ static uint64_t s_tab_pages;                      // shadow_lock: such pages, all pools
+@@ -2517,6 +2823,40 @@ static void mirror_mode(int discrete, int nvidia_own) {
+     // memory (vk_gpa.c). The pools stay imports unless NX2NAVI_SHADOW asks for the copies. The open driver for the same
+     // cards keeps the copies: it is not measured. The AppImage's play.sh has set the same for this driver since 0.6.0.
+     shadow_on = sh && *sh ? strcmp(sh, "0") != 0 : !nvidia_own;
++    // Guest memory a memfd's (NX2NAVI_DMABUF, platform/linux.c): the pools are dma-buf imports ("dma-buf imports"),
++    // whatever the driver, unless NX2NAVI_SHADOW=1 asks for the copies. A device that cannot import dma-bufs keeps the
++    // copies: a shared mapping's pages are no host-pointer import on RADV.
++    uint64_t lim = 0;
++    const char *dmwhy = "";
++    static char small[200];
++    if (plat_mem_dmabuf_ok(&lim, &dmabuf_any, &dmwhy)) {
++        int forced = sh && *sh && strcmp(sh, "0");
++        // The game's largest pools take about 300 MiB, each in one dma-buf: below 1 GiB (the module's default is 64 MB)
++        // some would get none, so the copies stay.
++        if (lim < (1ull << 30))
++            snprintf(small, sizeof small, "udmabuf's size_limit_mb is %llu, below the 1024 a pool of the game may need "
++                     "(/sys/module/udmabuf/parameters/size_limit_mb)", (unsigned long long)(lim >> 20));
++        dmabuf_on = dmabuf_exts && !forced && lim >= (1ull << 30);
++        shadow_on = !dmabuf_on;
++        dmabuf_limit = lim;
++        const char *mbs = cfg_get("NX2NAVI_DMABUF_MB");
++        int mb = mbs && *mbs ? atoi(mbs) : 64;
++        span_size = (uint64_t)(mb > 0 ? mb : 64) << 20;
++        if (span_size > dmabuf_limit) span_size = dmabuf_limit & ~0xfffull;
++        if (span_size < (2ull << 20)) span_size = 2ull << 20;
++        if (dmabuf_on)
++            rt_log("mem: guest memory is a memfd's: CPU-visible pools are imported as dma-bufs of it, in spans of %llu MiB "
++                   "(NX2NAVI_DMABUF_MB; udmabuf's limit %llu MiB)", (unsigned long long)(span_size >> 20),
++                   (unsigned long long)(dmabuf_limit >> 20));
++        else
++            rt_log("mem: guest memory is a memfd's, but its pools get shadow copies: %s",
++                   forced ? "NX2NAVI_SHADOW asks for them"
++                   : !dmabuf_exts ? "the device cannot import dma-bufs (VK_KHR_external_memory_fd, VK_EXT_external_memory_dma_buf)"
++                                  : small);
++    } else if (*dmwhy) {
++        rt_log("mem: guest memory is not a memfd's (NX2NAVI_DMABUF): %s: CPU-visible pools are %s, as with NX2NAVI_DMABUF=0", dmwhy,
++               shadow_on ? "host-visible copies of guest memory (shadow storage)" : "host-pointer imports");
++    }
+ #endif
+     if (shadow_on) rt_log("mem: shadow storage: CPU-visible pools are host-visible copies of guest memory, not imports%s",
+                           sh && *sh ? " (NX2NAVI_SHADOW)" : "");
+@@ -5533,6 +5873,7 @@ void vk_mem_shutdown(void) {
+     __atomic_add_fetch(&pool_gen, 1, __ATOMIC_RELEASE);
+     nphys = 0;
+     plat_mutex_unlock(&pool_lock);
++    span_gc(0, 1);   // every pool is gone: so are the spans' references
+     plat_mutex_lock(&gen_lock);
+     for (uint64_t i = 0; i < GEN_CHUNKS; i++) free(gen_chunk[i]), gen_chunk[i] = NULL, free(cgen_chunk[i]), cgen_chunk[i] = NULL;
+     plat_mutex_unlock(&gen_lock);
+diff --git a/tests/platform_dmabuf_test.c b/tests/platform_dmabuf_test.c
+new file mode 100644
+index 00000000..8dd3358f
+--- /dev/null
++++ b/tests/platform_dmabuf_test.c
+@@ -0,0 +1,111 @@
++// Guest memory as a memfd's (runtime/platform/linux.c, NX2NAVI_DMABUF): a dma-buf of a watched range maps the very
++// pages the CPU writes; a decommit inside it zeroes them in place (the dma-buf still sees the CPU's pages), one outside
++// it reads zero when committed again; the write watch keeps working. No GPU, no game files. Build and run from the
++// repository root:
++//   clang -O2 -ffunction-sections -fdata-sections -Iruntime -c runtime/platform/linux.c -o /tmp/plat.o
++//   clang -O2 -Wall -Iruntime tests/platform_dmabuf_test.c /tmp/plat.o -Wl,--gc-sections -lpthread -ldl -o /tmp/dmabuf
++//   /tmp/dmabuf      (exit 77: no /dev/udmabuf or no write watch here)
++#include <assert.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <dirent.h>
++#include <sys/mman.h>
++#include <sys/stat.h>
++#include <unistd.h>
++#include "platform/platform.h"
++
++#define MiB (1ull << 20)
++
++static uint64_t memfd_bytes(void) {   // the guest memfd's allocated bytes
++    DIR *dir = opendir("/proc/self/fd");
++    struct dirent *e;
++    uint64_t got = 0;
++    while (dir && (e = readdir(dir))) {
++        char path[64], link[128];
++        snprintf(path, sizeof path, "/proc/self/fd/%s", e->d_name);
++        ssize_t k = readlink(path, link, sizeof link - 1);
++        struct stat st;
++        if (k > 0 && (link[k] = 0, strstr(link, "memfd:nx2navi-guest")) && !stat(path, &st)) got = (uint64_t)st.st_blocks * 512;
++    }
++    if (dir) closedir(dir);
++    return got;
++}
++
++int main(void) {
++    const uint64_t a = 0x6100000000ull, n = 64 * MiB;
++    uint64_t pages[16], limit = 0, any = 0;
++    const char *why = "";
++    setenv("NX2NAVI_DMABUF", "1", 0);
++    assert(plat_mem_reserve(a, n, 1));
++    if (!plat_mem_dmabuf_ok(&limit, &any, &why)) { printf("SKIP: guest memory is not a memfd's here: %s\n", why); return 77; }
++    assert(any == a);
++    assert(plat_mem_commit(a, 16 * MiB));
++    memset((void *)(uintptr_t)a, 0x11, 16 * MiB);
++    for (uint64_t k = 16; k == 16;)   // read and reset until a call has fewer than it could take
++        if ((k = plat_mem_written(a, n, pages, 16, 1)) == UINT64_MAX) { puts("SKIP: asynchronous write watch unavailable"); return 77; }
++    assert(plat_mem_written(a, n, pages, 16, 0) == 0);
++
++    // a dma-buf of the first 8 MiB maps the guest's own pages
++    int fd = plat_mem_dmabuf(a, 8 * MiB);
++    assert(fd >= 0);
++    volatile uint8_t *d = mmap(NULL, 8 * MiB, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
++    assert(d != MAP_FAILED);
++    assert(d[0] == 0x11 && d[8 * MiB - 1] == 0x11);
++    ((volatile uint8_t *)(uintptr_t)a)[4096 + 5] = 0x22;
++    assert(d[4096 + 5] == 0x22);
++    d[3 * 4096] = 0x33;   // as a GPU write: the guest sees it, the write watch does not
++    assert(((volatile uint8_t *)(uintptr_t)a)[3 * 4096] == 0x33);
++    assert(plat_mem_written(a, n, pages, 16, 1) == 1 && pages[0] == a + 4096);
++
++    // protection changes (a freeze, an armed lazy range) leave the dma-buf alone
++    assert(plat_mem_protect(a, 2 * MiB, PLAT_PROT_READ));
++    assert(d[4096 + 5] == 0x22);
++    assert(plat_mem_protect(a, 2 * MiB, PLAT_PROT_RW));
++
++    // a decommit inside the dma-buf: zero in place, the same pages for both
++    assert(plat_mem_decommit(a + 4096, 4096));
++    assert(plat_mem_commit(a + 4096, 4096));
++    assert(((volatile uint8_t *)(uintptr_t)a)[4096 + 5] == 0 && d[4096 + 5] == 0);
++    ((volatile uint8_t *)(uintptr_t)a)[4096 + 6] = 0x44;
++    assert(d[4096 + 6] == 0x44);
++
++    // a decommit that straddles the dma-buf's end: zero both sides when committed again
++    assert(plat_mem_decommit(a + 8 * MiB - 4096, 2 * 4096));
++    assert(plat_mem_commit(a + 8 * MiB - 4096, 2 * 4096));
++    assert(((volatile uint8_t *)(uintptr_t)(a + 8 * MiB - 1))[0] == 0 && d[8 * MiB - 1] == 0);
++    assert(((volatile uint8_t *)(uintptr_t)(a + 8 * MiB))[0] == 0);
++
++    // a decommit outside any dma-buf: the pages leave the memfd and read zero
++    assert(plat_mem_decommit(a + 12 * MiB, MiB));
++    assert(plat_mem_commit(a + 12 * MiB, MiB));
++    assert(((volatile uint8_t *)(uintptr_t)(a + 12 * MiB))[77] == 0);
++
++    // a dma-buf over pages nothing committed yet allocates them; when it is gone they go back, the committed ones stay
++    uint64_t before = memfd_bytes();
++    int fd2 = plat_mem_dmabuf(a + 32 * MiB, 8 * MiB);
++    assert(fd2 >= 0);
++    uint64_t pinned = memfd_bytes();
++    close(fd2);
++    plat_mem_dmabuf_done(a + 32 * MiB, 8 * MiB);
++    uint64_t after = memfd_bytes();
++    printf("memfd: %.1f MiB, %.1f MiB with an 8 MiB dma-buf over uncommitted pages, %.1f MiB after it\n", before / 1048576.0,
++           pinned / 1048576.0, after / 1048576.0);
++    assert(pinned >= before + 8 * MiB && after == before);
++    assert(plat_mem_commit(a + 32 * MiB, 4096));
++    assert(((volatile uint8_t *)(uintptr_t)(a + 32 * MiB))[9] == 0);
++
++    munmap((void *)d, 8 * MiB);
++    close(fd);
++    plat_mem_dmabuf_done(a, 8 * MiB);
++    assert(((volatile uint8_t *)(uintptr_t)a)[4096 + 6] == 0x44 && ((volatile uint8_t *)(uintptr_t)a)[2 * MiB] == 0x11);
++
++    // outside the reservation, or not whole pages: no dma-buf
++    assert(plat_mem_dmabuf(a + n - 4096, 2 * 4096) < 0);
++    assert(plat_mem_dmabuf(a + 1, 4096) < 0);
++    *(volatile uint8_t *)(uintptr_t)(a + 5 * MiB) = 1;
++    assert(plat_mem_written(a, n, pages, 16, 1) >= 1);
++    puts("dma-buf of guest memory: same pages both ways, decommits zero in place inside and punch outside, write watch kept");
++    return 0;
++}

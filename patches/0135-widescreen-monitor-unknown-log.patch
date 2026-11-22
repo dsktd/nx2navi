@@ -1,0 +1,23 @@
+From e90b9a09ac1c572d6504d8955daccfa8c847b563 Mon Sep 17 00:00:00 2001
+From: desocketed <desocketed@users.noreply.github.com>
+Date: Fri, 13 Nov 2026 14:27:42 -0500
+Subject: [PATCH] widescreen.c: say where the monitor is unknown at start
+
+---
+ runtime/widescreen.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/runtime/widescreen.c b/runtime/widescreen.c
+index bae3e6d5..a348e3a4 100644
+--- a/runtime/widescreen.c
++++ b/runtime/widescreen.c
+@@ -70,7 +70,8 @@ static unsigned picture_height(void) {
+     int w = 0, h = GAME_H, min = PICTURE_MIN_H, max = 4320;
+     int own_min = lo && *lo && atoi(lo) >= 360;
+     if (!strcmp(s, "window")) {
+-        if (!screen_size(&w, &h)) {   // the monitor is not known yet (gamescope's X display): with a minimum, the window setting
++        if (!screen_size(&w, &h)) {   // the monitor is not known yet (gamescope's X display at start, Steam Deck Game
++                                      // Mode): with a minimum, the window setting (the Deck profile's 1280x800)
+             h = GAME_H;
+             if (own_min) gfx_cfg_window_size(&w, &h);
+             if (h <= 0) h = GAME_H;
